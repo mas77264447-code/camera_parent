@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 class CameraService {
 
   static const String server =
-      "http://192.168.1.96:8080";
+      "https://camera-parent-server.onrender.com";
 
   static Future<String?> createCameraSession() async {
 
