@@ -10,66 +10,65 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
 
-  String? link;
+  String? childUrl;
   bool loading = false;
 
-  Future<void> createSession() async {
+  Future<void> createCameraLink() async {
+
     setState(() {
       loading = true;
     });
 
-    try {
-      final result = await CameraService.createCameraSession();
-
-      setState(() {
-        link = result;
-      });
-
-    } catch (e) {
-      setState(() {
-        link = "Error: $e";
-      });
-    }
+    final url = await CameraService.createCameraSession();
 
     setState(() {
       loading = false;
+      childUrl = url;
     });
   }
 
 
   @override
   Widget build(BuildContext context) {
+
     return Scaffold(
       appBar: AppBar(
         title: const Text("Camera Parent"),
       ),
 
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
+      body: Padding(
+        padding: const EdgeInsets.all(20),
 
-              ElevatedButton(
-                onPressed: loading ? null : createSession,
-                child: Text(
-                  loading
-                      ? "Creating..."
-                      : "Create Camera Request",
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+
+          children: [
+
+            ElevatedButton(
+              onPressed: loading ? null : createCameraLink,
+
+              child: loading
+                  ? const CircularProgressIndicator()
+                  : const Text(
+                      "طلب فتح الكاميرا",
+                      style: TextStyle(fontSize: 18),
+                    ),
+            ),
+
+
+            const SizedBox(height: 30),
+
+
+            if (childUrl != null)
+
+              SelectableText(
+                "رابط الطفل:\n\n$childUrl",
+                style: const TextStyle(
+                  fontSize: 16,
                 ),
               ),
 
-              const SizedBox(height: 30),
-
-              if (link != null)
-                SelectableText(
-                  link!,
-                  textAlign: TextAlign.center,
-                ),
-
-            ],
-          ),
+          ],
         ),
       ),
     );
