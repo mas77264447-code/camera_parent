@@ -12,13 +12,20 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
 
+  final TextEditingController nameController = TextEditingController();
+
   bool loading = false;
   String? childUrl;
   String? sessionId;
+  String? dashboardUrl;
   String? errorMessage;
 
 
   Future<void> createSession() async {
+
+    final name = nameController.text.trim().isEmpty
+        ? "كاميرا بدون اسم"
+        : nameController.text.trim();
 
     setState(() {
       loading = true;
@@ -27,7 +34,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
 
-      final result = await CameraService.createCameraSession();
+      final result = await CameraService.createCameraSession(name);
 
       if (!mounted) return;
 
@@ -35,6 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         childUrl = result?["child_url"];
         sessionId = result?["session_id"];
+        dashboardUrl = result?["dashboard_url"];
         loading = false;
 
       });
@@ -55,22 +63,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
 
-  Future<void> copyUrl() async {
-
-    if (childUrl == null) return;
+  Future<void> copyText(String text, String message) async {
 
     await Clipboard.setData(
       ClipboardData(
-        text: childUrl!,
+        text: text,
       ),
     );
 
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
+      SnackBar(
         content: Text(
-          'تم نسخ الرابط',
+          message,
         ),
       ),
     );
@@ -101,13 +107,11 @@ class _HomeScreenState extends State<HomeScreen> {
         centerTitle: true,
       ),
 
-      body: Padding(
+      body: SingleChildScrollView(
 
         padding: const EdgeInsets.all(20),
 
         child: Column(
-
-          mainAxisAlignment: MainAxisAlignment.center,
 
           crossAxisAlignment: CrossAxisAlignment.stretch,
 
@@ -117,6 +121,16 @@ class _HomeScreenState extends State<HomeScreen> {
               Icons.camera_alt,
               size: 80,
               color: Colors.deepPurple,
+            ),
+
+            const SizedBox(height: 20),
+
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: "اسم الكاميرا (مثلاً: المحل، غرفة النوم)",
+                border: OutlineInputBorder(),
+              ),
             ),
 
             const SizedBox(height: 20),
@@ -160,34 +174,51 @@ class _HomeScreenState extends State<HomeScreen> {
 
             if (childUrl != null) ...[
 
-              SelectableText(
+              const Divider(),
 
-                "رابط الطفل:\n\n$childUrl",
+              const SizedBox(height: 10),
 
-                style: const TextStyle(
-                  fontSize: 16,
-                ),
-
+              const Text(
+                "رابط مشاهدة هذه الكاميرا بس:",
+                style: TextStyle(fontWeight: FontWeight.bold),
               ),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 8),
 
+              SelectableText(childUrl!),
+
+              const SizedBox(height: 10),
 
               ElevatedButton.icon(
-
-                onPressed: copyUrl,
-
-                icon: const Icon(
-                  Icons.copy,
-                ),
-
-                label: const Text(
-                  "نسخ الرابط",
-                ),
-
+                onPressed: () => copyText(childUrl!, "تم نسخ رابط الكاميرا"),
+                icon: const Icon(Icons.copy),
+                label: const Text("نسخ رابط الكاميرا"),
               ),
 
-              const SizedBox(height: 12),
+              const SizedBox(height: 24),
+
+              if (dashboardUrl != null) ...[
+
+                const Text(
+                  "لوحة تحكم كل الكاميرات (افتحها مرة واحدة وهتشوف كل الكاميرات فيها):",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+
+                const SizedBox(height: 8),
+
+                SelectableText(dashboardUrl!),
+
+                const SizedBox(height: 10),
+
+                ElevatedButton.icon(
+                  onPressed: () => copyText(dashboardUrl!, "تم نسخ رابط اللوحة"),
+                  icon: const Icon(Icons.dashboard),
+                  label: const Text("نسخ رابط اللوحة"),
+                ),
+
+              ],
+
+              const SizedBox(height: 24),
 
               ElevatedButton.icon(
 
@@ -198,7 +229,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
 
                 label: const Text(
-                  "ابدأ البث",
+                  "ابدأ البث من هذا الموبايل",
                 ),
 
               ),

@@ -7,10 +7,12 @@ class CameraService {
   static const String server =
       "https://camera-parent-server.onrender.com";
 
-  static Future<Map<String, String>?> createCameraSession() async {
+  static Future<Map<String, String>?> createCameraSession(String name) async {
 
     final response = await http.post(
       Uri.parse("$server/camera/create"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"name": name}),
     );
 
     if (response.statusCode == 200) {
@@ -19,10 +21,12 @@ class CameraService {
 
       final childUrl = data["data"]["child_url"];
       final sessionId = data["data"]["session_id"];
+      final dashboardUrl = data["data"]["dashboard_url"];
 
       return {
         "child_url": childUrl,
         "session_id": sessionId,
+        "dashboard_url": dashboardUrl,
       };
     }
 
