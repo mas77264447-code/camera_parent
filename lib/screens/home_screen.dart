@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/camera_service.dart';
+import 'camera_stream_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -13,6 +14,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool loading = false;
   String? childUrl;
+  String? sessionId;
   String? errorMessage;
 
 
@@ -31,7 +33,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       setState(() {
 
-        childUrl = result;
+        childUrl = result?["child_url"];
+        sessionId = result?["session_id"];
         loading = false;
 
       });
@@ -72,6 +75,17 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
 
+  }
+
+  void startStreaming() {
+    if (sessionId == null) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CameraStreamScreen(sessionId: sessionId!),
+      ),
+    );
   }
 
 
@@ -169,6 +183,22 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 label: const Text(
                   "نسخ الرابط",
+                ),
+
+              ),
+
+              const SizedBox(height: 12),
+
+              ElevatedButton.icon(
+
+                onPressed: startStreaming,
+
+                icon: const Icon(
+                  Icons.videocam,
+                ),
+
+                label: const Text(
+                  "ابدأ البث",
                 ),
 
               ),
