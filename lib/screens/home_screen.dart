@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/camera_service.dart';
 import 'camera_stream_screen.dart';
+import 'dashboard_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -94,6 +95,15 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void openDashboard() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const DashboardScreen(),
+      ),
+    );
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -105,6 +115,13 @@ class _HomeScreenState extends State<HomeScreen> {
           "Camera Parent",
         ),
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.dashboard),
+            tooltip: "الكاميرات المتصلة",
+            onPressed: openDashboard,
+          ),
+        ],
       ),
 
       body: SingleChildScrollView(
@@ -194,29 +211,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: const Icon(Icons.copy),
                 label: const Text("نسخ رابط الكاميرا"),
               ),
-
-              const SizedBox(height: 24),
-
-              if (dashboardUrl != null) ...[
-
-                const Text(
-                  "لوحة تحكم كل الكاميرات (افتحها مرة واحدة وهتشوف كل الكاميرات فيها):",
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-
-                const SizedBox(height: 8),
-
-                SelectableText(dashboardUrl!),
-
-                const SizedBox(height: 10),
-
-                ElevatedButton.icon(
-                  onPressed: () => copyText(dashboardUrl!, "تم نسخ رابط اللوحة"),
-                  icon: const Icon(Icons.dashboard),
-                  label: const Text("نسخ رابط اللوحة"),
-                ),
-
-              ],
 
               const SizedBox(height: 24),
 

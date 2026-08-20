@@ -34,10 +34,25 @@ class CameraService {
   }
 
   static Future<void> uploadFrame(String sessionId, Uint8List jpegBytes) async {
-    await http.post(
+    final response = await http.post(
       Uri.parse("$server/camera/frame?session=$sessionId"),
       headers: {"Content-Type": "image/jpeg"},
       body: jpegBytes,
     );
+
+    if (response.statusCode != 200) {
+      throw Exception("فشل الرفع: كود ${response.statusCode}");
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> fetchSessions() async {
+    final response = await http.get(Uri.parse("$server/camera/sessions"));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return List<Map<String, dynamic>>.from(data["data"]);
+    }
+
+    return [];
   }
 }
