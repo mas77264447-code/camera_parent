@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/camera_service.dart';
 
 class CameraStreamScreen extends StatefulWidget {
@@ -38,6 +39,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   @override
   void initState() {
     super.initState();
+    WakelockPlus.enable();
     _init();
   }
 
@@ -190,6 +192,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     for (final pc in _peerConnections.values) {
       pc.close();
     }
