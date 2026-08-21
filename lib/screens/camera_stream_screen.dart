@@ -8,6 +8,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/camera_service.dart';
 
+const MethodChannel _foregroundServiceChannel =
+    MethodChannel('camera_parent/foreground_service');
+
 class CameraStreamScreen extends StatefulWidget {
   final String sessionId;
   final String cameraName;
@@ -59,12 +62,19 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   Future<void> _init() async {
     final camStatus = await Permission.camera.request();
     final micStatus = await Permission.microphone.request();
+    await Permission.notification.request();
 
     if (!camStatus.isGranted || !micStatus.isGranted) {
       setState(() {
         _error = "لازم تسمح بصلاحية الكاميرا والميكروفون من إعدادات الموبايل";
       });
       return;
+    }
+
+    try {
+      await _foregroundServiceChannel.invokeMethod('start');
+    } catch (_) {
+      // لو فشل تشغيل الخدمة، البث هيفضل شغال طول ما التطبيق فاتح
     }
 
     try {
@@ -318,6 +328,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   @override
   void dispose() {
     WakelockPlus.disable();
+    _foregroundServiceChannel.invokeMethod('stop').catchError((_) {});
     for (final pc in _peerConnections.values) {
       pc.close();
     }

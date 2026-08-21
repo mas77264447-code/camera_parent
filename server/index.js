@@ -203,11 +203,11 @@ app.get("/camera/view", (req, res) => {
         </div>
 
         <div id="callScreen">
-          <div id="remoteHalf">
+          <div id="remoteHalf" onclick="unmuteRemote()">
             <span class="label">الكاميرا</span>
             <span id="status">جاري الاتصال...</span>
             <video id="remoteVideo" autoplay playsinline muted></video>
-            <button id="unmuteBtn">تشغيل الصوت 🔊</button>
+            <button id="unmuteBtn" onclick="event.stopPropagation(); unmuteRemote();">تشغيل الصوت 🔊</button>
           </div>
           <div id="localHalf">
             <span class="label">أنا</span>
@@ -282,10 +282,16 @@ app.get("/camera/view", (req, res) => {
           }
 
           document.getElementById("unmuteBtn").addEventListener("click", () => {
+            unmuteRemote();
+          });
+
+          function unmuteRemote() {
             const video = document.getElementById("remoteVideo");
             video.muted = false;
+            video.volume = 1.0;
             video.play().catch(() => {});
-          });
+            document.getElementById("unmuteBtn").style.display = "none";
+          }
         </script>
       </body>
     </html>
@@ -433,7 +439,9 @@ app.get("/dashboard", (req, res) => {
           document.getElementById("unmuteBtn2").addEventListener("click", () => {
             const video = document.getElementById("camView");
             video.muted = false;
+            video.volume = 1.0;
             video.play().catch(() => {});
+            document.getElementById("unmuteBtn2").style.display = "none";
           });
         </script>
       </body>
