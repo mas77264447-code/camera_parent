@@ -17,6 +17,7 @@ class CameraStreamScreen extends StatefulWidget {
 
 class _CameraStreamScreenState extends State<CameraStreamScreen> {
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   MediaStream? _localStream;
   WebSocket? _ws;
   final Map<String, RTCPeerConnection> _peerConnections = {};
@@ -25,6 +26,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   String? _error;
   String _status = "جاري التجهيز...";
   bool _usingFrontCamera = false;
+  bool _hasRemoteVideo = false;
 
   static const List<Map<String, dynamic>> _iceServers = [
     {"urls": "stun:stun.l.google.com:19302"},
@@ -52,6 +54,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     try {
       await _localRenderer.initialize();
+      await _remoteRenderer.initialize();
 
       final stream = await navigator.mediaDevices.getUserMedia({
         "video": {"facingMode": "environment"},
@@ -139,6 +142,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       pc.addTrack(track, _localStream!);
     });
 
+    pc.onTrack = (event) {
+      if (event.streams.isNotEmpty) {
+        _remoteRenderer.srcObject = event.streams[0];
+        if (mounted) setState(() => _hasRemoteVideo = true);
+      }
+    };
+
     pc.onIceCandidate = (candidate) {
       _ws?.add(jsonEncode({
         "type": "ice",
@@ -186,6 +196,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     _localStream?.getTracks().forEach((t) => t.stop());
     _localStream?.dispose();
     _localRenderer.dispose();
+    _remoteRenderer.dispose();
     _ws?.close();
     super.dispose();
   }
@@ -220,7 +231,30 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
                   )
                 : !_ready
                     ? const Center(child: CircularProgressIndicator())
-                    : RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
+                    : Stack(
+                        children: [
+                          Positioned.fill(
+                            child: RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
+                          ),
+                          if (_hasRemoteVideo)
+                            Positioned(
+                              bottom: 12,
+                              left: 12,
+                              width: 110,
+                              height: 150,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.white, width: 2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: RTCVideoView(_remoteRenderer),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
           ),
           Container(
             width: double.infinity,

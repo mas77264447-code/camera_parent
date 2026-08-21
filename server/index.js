@@ -164,7 +164,10 @@ app.get("/camera/view", (req, res) => {
         </style>
       </head>
       <body>
-        <video id="remoteVideo" autoplay playsinline muted></video>
+        <div style="position:relative;">
+          <video id="remoteVideo" autoplay playsinline muted></video>
+          <video id="localVideo" autoplay playsinline muted style="position:absolute; bottom:10px; left:10px; width:110px; border-radius:8px; border:2px solid #fff; background:#000;"></video>
+        </div>
         <button id="unmuteBtn" style="display:none; margin-top:12px; padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px;">تشغيل الصوت 🔊</button>
         <p id="status">جاري الاتصال...</p>
         <script>
@@ -199,6 +202,14 @@ app.get("/camera/view", (req, res) => {
                   ws.send(JSON.stringify({ type: "ice", candidate: e.candidate, target: broadcasterId }));
                 }
               };
+
+              try {
+                const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById("localVideo").srcObject = localStream;
+                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+              } catch (e) {
+                document.getElementById("localVideo").style.display = "none";
+              }
 
               await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
               const answer = await pc.createAnswer();
@@ -258,6 +269,7 @@ app.get("/dashboard", (req, res) => {
         <div id="main">
           <div id="camTitle" style="display:none;"></div>
           <video id="camView" autoplay playsinline muted style="display:none;"></video>
+          <video id="localVideo2" autoplay playsinline muted style="display:none; position:absolute; bottom:60px; left:16px; width:110px; border-radius:8px; border:2px solid #fff; background:#000;"></video>
           <button id="unmuteBtn2" style="display:none; margin-top:12px; padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px;">تشغيل الصوت 🔊</button>
           <div id="placeholder">اختار كاميرا من القائمة للمشاهدة</div>
         </div>
@@ -295,6 +307,11 @@ app.get("/dashboard", (req, res) => {
           function cleanupConnection() {
             if (pc) { pc.close(); pc = null; }
             if (ws) { ws.close(); ws = null; }
+            const lv = document.getElementById("localVideo2");
+            if (lv.srcObject) {
+              lv.srcObject.getTracks().forEach(t => t.stop());
+              lv.srcObject = null;
+            }
             broadcasterId = null;
           }
 
@@ -333,6 +350,14 @@ app.get("/dashboard", (req, res) => {
                     ws.send(JSON.stringify({ type: "ice", candidate: e.candidate, target: broadcasterId }));
                   }
                 };
+
+                try {
+                  const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                  const lv = document.getElementById("localVideo2");
+                  lv.srcObject = localStream;
+                  lv.style.display = "block";
+                  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+                } catch (e) {}
 
                 await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
                 const answer = await pc.createAnswer();

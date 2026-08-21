@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../services/camera_service.dart';
 
 class CameraViewerScreen extends StatefulWidget {
@@ -21,10 +22,13 @@ class CameraViewerScreen extends StatefulWidget {
 
 class _CameraViewerScreenState extends State<CameraViewerScreen> {
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
+  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  MediaStream? _localStream;
   RTCPeerConnection? _pc;
   WebSocket? _ws;
   String? _broadcasterId;
   String _status = "جاري الاتصال...";
+  bool _hasLocalVideo = false;
 
   static const List<Map<String, dynamic>> _iceServers = [
     {"urls": "stun:stun.l.google.com:19302"},
@@ -41,6 +45,24 @@ class _CameraViewerScreenState extends State<CameraViewerScreen> {
 
   Future<void> _init() async {
     await _remoteRenderer.initialize();
+    await _localRenderer.initialize();
+
+    final camStatus = await Permission.camera.request();
+    final micStatus = await Permission.microphone.request();
+
+    if (camStatus.isGranted && micStatus.isGranted) {
+      try {
+        final stream = await navigator.mediaDevices.getUserMedia({
+          "video": true,
+          "audio": true,
+        });
+        _localStream = stream;
+        _localRenderer.srcObject = stream;
+        if (mounted) setState(() => _hasLocalVideo = true);
+      } catch (_) {
+        // هيفضل البث شغال باتجاه واحد لو رفض الصلاحية
+      }
+    }
 
     final wsUrl = CameraService.server
             .replaceFirst("https://", "wss://")
@@ -98,6 +120,10 @@ class _CameraViewerScreenState extends State<CameraViewerScreen> {
         }));
       };
 
+      _localStream?.getTracks().forEach((track) {
+        _pc!.addTrack(track, _localStream!);
+      });
+
       await _pc!.setRemoteDescription(
         RTCSessionDescription(msg["sdp"]["sdp"], msg["sdp"]["type"]),
       );
@@ -124,6 +150,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen> {
   @override
   void dispose() {
     _pc?.close();
+    _localStream?.getTracks().forEach((t) => t.stop());
+    _localStream?.dispose();
+    _localRenderer.dispose();
     _ws?.close();
     _remoteRenderer.dispose();
     super.dispose();
@@ -139,7 +168,30 @@ class _CameraViewerScreenState extends State<CameraViewerScreen> {
       ),
       body: Column(
         children: [
-          Expanded(child: RTCVideoView(_remoteRenderer)),
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned.fill(child: RTCVideoView(_remoteRenderer)),
+                if (_hasLocalVideo)
+                  Positioned(
+                    bottom: 12,
+                    left: 12,
+                    width: 100,
+                    height: 140,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.white, width: 2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: RTCVideoView(_localRenderer, mirror: true),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(10),
