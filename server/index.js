@@ -164,7 +164,8 @@ app.get("/camera/view", (req, res) => {
         </style>
       </head>
       <body>
-        <video id="remoteVideo" autoplay playsinline></video>
+        <video id="remoteVideo" autoplay playsinline muted></video>
+        <button id="unmuteBtn" style="display:none; margin-top:12px; padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px;">تشغيل الصوت 🔊</button>
         <p id="status">جاري الاتصال...</p>
         <script>
           const sessionId = "${sessionId}";
@@ -186,8 +187,11 @@ app.get("/camera/view", (req, res) => {
               pc = new RTCPeerConnection({ iceServers });
 
               pc.ontrack = (e) => {
-                document.getElementById("remoteVideo").srcObject = e.streams[0];
+                const video = document.getElementById("remoteVideo");
+                video.srcObject = e.streams[0];
+                video.play().catch(() => {});
                 document.getElementById("status").innerText = "متصل";
+                document.getElementById("unmuteBtn").style.display = "inline-block";
               };
 
               pc.onicecandidate = (e) => {
@@ -211,6 +215,12 @@ app.get("/camera/view", (req, res) => {
           ws.onclose = () => {
             document.getElementById("status").innerText = "انقطع الاتصال";
           };
+
+          document.getElementById("unmuteBtn").addEventListener("click", () => {
+            const video = document.getElementById("remoteVideo");
+            video.muted = false;
+            video.play().catch(() => {});
+          });
         </script>
       </body>
     </html>
@@ -247,7 +257,8 @@ app.get("/dashboard", (req, res) => {
         </div>
         <div id="main">
           <div id="camTitle" style="display:none;"></div>
-          <video id="camView" autoplay playsinline style="display:none;"></video>
+          <video id="camView" autoplay playsinline muted style="display:none;"></video>
+          <button id="unmuteBtn2" style="display:none; margin-top:12px; padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px;">تشغيل الصوت 🔊</button>
           <div id="placeholder">اختار كاميرا من القائمة للمشاهدة</div>
         </div>
 
@@ -311,7 +322,10 @@ app.get("/dashboard", (req, res) => {
                 pc = new RTCPeerConnection({ iceServers });
 
                 pc.ontrack = (e) => {
-                  document.getElementById("camView").srcObject = e.streams[0];
+                  const video = document.getElementById("camView");
+                  video.srcObject = e.streams[0];
+                  video.play().catch(() => {});
+                  document.getElementById("unmuteBtn2").style.display = "inline-block";
                 };
 
                 pc.onicecandidate = (e) => {
@@ -336,6 +350,12 @@ app.get("/dashboard", (req, res) => {
 
           setInterval(loadSessions, 3000);
           loadSessions();
+
+          document.getElementById("unmuteBtn2").addEventListener("click", () => {
+            const video = document.getElementById("camView");
+            video.muted = false;
+            video.play().catch(() => {});
+          });
         </script>
       </body>
     </html>
