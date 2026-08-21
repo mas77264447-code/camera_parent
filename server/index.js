@@ -39,7 +39,7 @@ app.post("/camera/create", (req, res) => {
     name,
     createdAt: Date.now(),
     broadcaster: null,
-    viewers: new Set(),
+    viewers: new Map(),
   };
 
   res.json({
@@ -92,7 +92,7 @@ wss.on("connection", (ws) => {
             name: msg.name || `كاميرا ${Object.keys(sessions).length + 1}`,
             createdAt: Date.now(),
             broadcaster: null,
-            viewers: new Set(),
+            viewers: new Map(),
           };
         }
 
@@ -100,8 +100,8 @@ wss.on("connection", (ws) => {
         client.role = role;
         sessions[session].broadcaster = clientId;
 
-        sessions[session].viewers.forEach((viewerId) => {
-          send(clientId, { type: "viewer-joined", viewerId });
+        sessions[session].viewers.forEach((info, viewerId) => {
+          send(clientId, { type: "viewer-joined", viewerId, name: info.name });
         });
         return;
       }
@@ -111,11 +111,12 @@ wss.on("connection", (ws) => {
 
         client.sessionId = session;
         client.role = role;
-        sessions[session].viewers.add(clientId);
+        client.callerName = msg.name || "زائر";
+        sessions[session].viewers.set(clientId, { name: client.callerName });
 
         const bId = sessions[session].broadcaster;
         if (bId) {
-          send(bId, { type: "viewer-joined", viewerId: clientId });
+          send(bId, { type: "viewer-joined", viewerId: clientId, name: client.callerName });
         }
         return;
       }
@@ -151,6 +152,10 @@ wss.on("connection", (ws) => {
       }
       if (client.role === "viewer") {
         session.viewers.delete(clientId);
+
+        if (session.broadcaster) {
+          send(session.broadcaster, { type: "viewer-left", viewerId: clientId });
+        }
       }
     }
     delete clients[clientId];
@@ -171,76 +176,110 @@ app.get("/camera/view", (req, res) => {
     <html>
       <head>
         <meta charset="utf-8">
-        <title>Camera - Child</title>
+        <title>Camera - Call</title>
         <style>
-          body { margin:0; background:#111; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family: sans-serif; }
-          video { max-width:100%; max-height:85vh; border-radius:8px; background:#000; }
-          p { color:#ccc; }
+          * { box-sizing: border-box; }
+          body { margin:0; background:#111; height:100vh; font-family: sans-serif; direction: rtl; overflow:hidden; }
+
+          #landing { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; padding:20px; }
+          #landing input { width:100%; max-width:280px; padding:12px; border-radius:8px; border:none; font-size:16px; margin-bottom:16px; text-align:center; }
+          #callBtn { padding:14px 30px; border-radius:24px; border:none; background:#2ecc71; color:#fff; font-size:16px; font-weight:bold; }
+          #landing p { color:#aaa; margin-bottom:24px; text-align:center; }
+
+          #callScreen { display:none; flex-direction:column; height:100vh; }
+          #remoteHalf, #localHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+          #remoteHalf { border-bottom: 2px solid #333; }
+          video { width:100%; height:100%; object-fit:cover; }
+          .label { position:absolute; top:8px; right:12px; background:rgba(0,0,0,0.5); color:#fff; padding:4px 12px; border-radius:14px; font-size:12px; }
+          #unmuteBtn { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px; display:none; z-index:5; }
+          #status { position:absolute; top:8px; left:12px; background:rgba(0,0,0,0.5); color:#ccc; padding:4px 12px; border-radius:14px; font-size:12px; }
         </style>
       </head>
       <body>
-        <div style="position:relative;">
-          <video id="remoteVideo" autoplay playsinline muted></video>
-          <video id="localVideo" autoplay playsinline muted style="position:absolute; bottom:10px; left:10px; width:110px; border-radius:8px; border:2px solid #fff; background:#000;"></video>
+        <div id="landing">
+          <p>اضغط "ابدأ مكالمة" للاتصال بالكاميرا</p>
+          <input id="nameInput" type="text" placeholder="اكتب اسمك" />
+          <button id="callBtn">📞 ابدأ مكالمة</button>
         </div>
-        <button id="unmuteBtn" style="display:none; margin-top:12px; padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px;">تشغيل الصوت 🔊</button>
-        <p id="status">جاري الاتصال...</p>
+
+        <div id="callScreen">
+          <div id="remoteHalf">
+            <span class="label">الكاميرا</span>
+            <span id="status">جاري الاتصال...</span>
+            <video id="remoteVideo" autoplay playsinline muted></video>
+            <button id="unmuteBtn">تشغيل الصوت 🔊</button>
+          </div>
+          <div id="localHalf">
+            <span class="label">أنا</span>
+            <video id="localVideo" autoplay playsinline muted></video>
+          </div>
+        </div>
+
         <script>
           const sessionId = "${sessionId}";
-          const wsProto = location.protocol === "https:" ? "wss" : "ws";
-          const ws = new WebSocket(wsProto + "://" + location.host + "/signal");
           const iceServers = ${ICE_SERVERS_JS};
           let pc = null;
+          let ws = null;
           let broadcasterId = null;
 
-          ws.onopen = () => {
-            ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId }));
-          };
+          document.getElementById("callBtn").addEventListener("click", startCall);
 
-          ws.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
+          async function startCall() {
+            const name = document.getElementById("nameInput").value.trim() || "زائر";
 
-            if (msg.type === "offer") {
-              broadcasterId = msg.from;
-              pc = new RTCPeerConnection({ iceServers });
+            document.getElementById("landing").style.display = "none";
+            document.getElementById("callScreen").style.display = "flex";
 
-              pc.ontrack = (e) => {
-                const video = document.getElementById("remoteVideo");
-                video.srcObject = e.streams[0];
-                video.play().catch(() => {});
-                document.getElementById("status").innerText = "متصل";
-                document.getElementById("unmuteBtn").style.display = "inline-block";
-              };
+            const wsProto = location.protocol === "https:" ? "wss" : "ws";
+            ws = new WebSocket(wsProto + "://" + location.host + "/signal");
 
-              pc.onicecandidate = (e) => {
-                if (e.candidate) {
-                  ws.send(JSON.stringify({ type: "ice", candidate: e.candidate, target: broadcasterId }));
-                }
-              };
+            ws.onopen = () => {
+              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, name }));
+            };
 
-              try {
-                const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                document.getElementById("localVideo").srcObject = localStream;
-                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-              } catch (e) {
-                document.getElementById("localVideo").style.display = "none";
+            ws.onmessage = async (event) => {
+              const msg = JSON.parse(event.data);
+
+              if (msg.type === "offer") {
+                broadcasterId = msg.from;
+                pc = new RTCPeerConnection({ iceServers });
+
+                pc.ontrack = (e) => {
+                  const video = document.getElementById("remoteVideo");
+                  video.srcObject = e.streams[0];
+                  video.play().catch(() => {});
+                  document.getElementById("status").innerText = "متصل";
+                  document.getElementById("unmuteBtn").style.display = "inline-block";
+                };
+
+                pc.onicecandidate = (e) => {
+                  if (e.candidate) {
+                    ws.send(JSON.stringify({ type: "ice", candidate: e.candidate, target: broadcasterId }));
+                  }
+                };
+
+                try {
+                  const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                  document.getElementById("localVideo").srcObject = localStream;
+                  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+                } catch (e) {}
+
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+
+                ws.send(JSON.stringify({ type: "answer", sdp: answer }));
               }
 
-              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
+              if (msg.type === "ice" && pc) {
+                try { await pc.addIceCandidate(msg.candidate); } catch (e) {}
+              }
+            };
 
-              ws.send(JSON.stringify({ type: "answer", sdp: answer }));
-            }
-
-            if (msg.type === "ice" && pc) {
-              try { await pc.addIceCandidate(msg.candidate); } catch (e) {}
-            }
-          };
-
-          ws.onclose = () => {
-            document.getElementById("status").innerText = "انقطع الاتصال";
-          };
+            ws.onclose = () => {
+              document.getElementById("status").innerText = "انقطع الاتصال";
+            };
+          }
 
           document.getElementById("unmuteBtn").addEventListener("click", () => {
             const video = document.getElementById("remoteVideo");

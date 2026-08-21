@@ -33,6 +33,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   WebSocket? _ws;
   final Map<String, RTCPeerConnection> _peerConnections = {};
 
+  final Map<String, String> _callerNames = {};
+  String? _activeViewerId;
+
   bool _ready = false;
   String? _error;
   String _status = "جاري التجهيز...";
@@ -78,7 +81,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
       setState(() {
         _ready = true;
-        _status = "جاهز - في انتظار مشاهدين";
+        _status = "جاهز - في انتظار مكالمات";
       });
 
       _connectSignaling();
@@ -124,7 +127,30 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     if (msg["type"] == "viewer-joined") {
       final viewerId = msg["viewerId"].toString();
+      final name = (msg["name"] ?? "زائر").toString();
+
+      if (mounted) {
+        setState(() {
+          _callerNames[viewerId] = name;
+        });
+      }
+
       await _createOfferForViewer(viewerId);
+    } else if (msg["type"] == "viewer-left") {
+      final viewerId = msg["viewerId"].toString();
+      _peerConnections[viewerId]?.close();
+      _peerConnections.remove(viewerId);
+
+      if (mounted) {
+        setState(() {
+          _callerNames.remove(viewerId);
+          if (_activeViewerId == viewerId) {
+            _activeViewerId = null;
+            _hasRemoteVideo = false;
+          }
+          _status = "جاهز - في انتظار مكالمات";
+        });
+      }
     } else if (msg["type"] == "answer") {
       final viewerId = msg["viewerId"].toString();
       final pc = _peerConnections[viewerId];
@@ -158,7 +184,12 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     pc.onTrack = (event) {
       if (event.streams.isNotEmpty) {
         _remoteRenderer.srcObject = event.streams[0];
-        if (mounted) setState(() => _hasRemoteVideo = true);
+        if (mounted) {
+          setState(() {
+            _hasRemoteVideo = true;
+            _activeViewerId = viewerId;
+          });
+        }
       }
     };
 
@@ -185,9 +216,46 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     if (mounted) {
       setState(() {
-        _status = "شغال - عدد المشاهدين: ${_peerConnections.length}";
+        _status = "شغال - عدد المتصلين: ${_peerConnections.length}";
       });
     }
+  }
+
+  void _showCallersSheet() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text("الأجهزة المتصلة", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            if (_callerNames.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text("محدش متصل دلوقتي"),
+              )
+            else
+              ..._callerNames.entries.map((entry) {
+                final isActive = entry.key == _activeViewerId && _hasRemoteVideo;
+                return ListTile(
+                  leading: Icon(
+                    Icons.circle,
+                    size: 12,
+                    color: isActive ? Colors.green : Colors.orange,
+                  ),
+                  title: Text(entry.value),
+                  subtitle: Text(isActive ? "متصل - الفيديو شغال" : "بيتصل..."),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showLinksSheet() {
@@ -236,7 +304,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     );
   }
 
-  Future<void> _switchCamera() async {    if (_localStream == null) return;
+  Future<void> _switchCamera() async {
+    if (_localStream == null) return;
 
     final videoTrack = _localStream!.getVideoTracks().first;
     await Helper.switchCamera(videoTrack);
@@ -267,6 +336,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
         title: Text(widget.cameraName),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: Badge(
+              label: Text("${_callerNames.length}"),
+              isLabelVisible: _callerNames.isNotEmpty,
+              child: const Icon(Icons.people),
+            ),
+            onPressed: _showCallersSheet,
+            tooltip: "الأجهزة المتصلة",
+          ),
           if (widget.childUrl != null)
             IconButton(
               icon: const Icon(Icons.link),
@@ -296,30 +374,45 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
                   )
                 : !_ready
                     ? const Center(child: CircularProgressIndicator())
-                    : Stack(
-                        children: [
-                          Positioned.fill(
-                            child: RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
-                          ),
-                          if (_hasRemoteVideo)
-                            Positioned(
-                              bottom: 12,
-                              left: 12,
-                              width: 110,
-                              height: 150,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  border: Border.all(color: Colors.white, width: 2),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: RTCVideoView(_remoteRenderer),
+                    : _hasRemoteVideo
+                        ? Column(
+                            children: [
+                              Expanded(
+                                child: Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: RTCVideoView(_remoteRenderer),
+                                    ),
+                                    Positioned(
+                                      top: 8,
+                                      right: 12,
+                                      child: _pill(
+                                        _activeViewerId != null
+                                            ? (_callerNames[_activeViewerId] ?? "متصل")
+                                            : "متصل",
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                            ),
-                        ],
-                      ),
+                              Container(height: 2, color: Colors.white24),
+                              Expanded(
+                                child: Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
+                                    ),
+                                    Positioned(
+                                      top: 8,
+                                      right: 12,
+                                      child: _pill("أنا"),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          )
+                        : RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
           ),
           Container(
             width: double.infinity,
@@ -332,6 +425,17 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _pill(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 12)),
     );
   }
 }
