@@ -85,24 +85,39 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "register") {
       const { role, session } = msg;
-      if (!sessions[session]) return;
-
-      client.sessionId = session;
-      client.role = role;
 
       if (role === "broadcaster") {
+        if (!sessions[session]) {
+          sessions[session] = {
+            name: msg.name || `كاميرا ${Object.keys(sessions).length + 1}`,
+            createdAt: Date.now(),
+            broadcaster: null,
+            viewers: new Set(),
+          };
+        }
+
+        client.sessionId = session;
+        client.role = role;
         sessions[session].broadcaster = clientId;
 
         sessions[session].viewers.forEach((viewerId) => {
           send(clientId, { type: "viewer-joined", viewerId });
         });
-      } else if (role === "viewer") {
+        return;
+      }
+
+      if (role === "viewer") {
+        if (!sessions[session]) return;
+
+        client.sessionId = session;
+        client.role = role;
         sessions[session].viewers.add(clientId);
 
         const bId = sessions[session].broadcaster;
         if (bId) {
           send(bId, { type: "viewer-joined", viewerId: clientId });
         }
+        return;
       }
       return;
     }

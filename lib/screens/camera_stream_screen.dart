@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -9,8 +10,17 @@ import '../services/camera_service.dart';
 
 class CameraStreamScreen extends StatefulWidget {
   final String sessionId;
+  final String cameraName;
+  final String? childUrl;
+  final String? dashboardUrl;
 
-  const CameraStreamScreen({super.key, required this.sessionId});
+  const CameraStreamScreen({
+    super.key,
+    required this.sessionId,
+    required this.cameraName,
+    this.childUrl,
+    this.dashboardUrl,
+  });
 
   @override
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
@@ -92,6 +102,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
         "type": "register",
         "role": "broadcaster",
         "session": widget.sessionId,
+        "name": widget.cameraName,
       }));
 
       socket.listen(
@@ -179,8 +190,53 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     }
   }
 
-  Future<void> _switchCamera() async {
-    if (_localStream == null) return;
+  void _showLinksSheet() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text("رابط الكاميرا دي بس:", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            SelectableText(widget.childUrl ?? ""),
+            const SizedBox(height: 10),
+            ElevatedButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: widget.childUrl ?? ""));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("تم نسخ الرابط")),
+                );
+              },
+              icon: const Icon(Icons.copy),
+              label: const Text("نسخ رابط الكاميرا"),
+            ),
+            if (widget.dashboardUrl != null) ...[
+              const SizedBox(height: 20),
+              const Text("رابط لوحة كل الكاميرات:", style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              SelectableText(widget.dashboardUrl!),
+              const SizedBox(height: 10),
+              ElevatedButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: widget.dashboardUrl!));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("تم نسخ رابط اللوحة")),
+                  );
+                },
+                icon: const Icon(Icons.dashboard),
+                label: const Text("نسخ رابط اللوحة"),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _switchCamera() async {    if (_localStream == null) return;
 
     final videoTrack = _localStream!.getVideoTracks().first;
     await Helper.switchCamera(videoTrack);
@@ -208,9 +264,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("البث شغال"),
+        title: Text(widget.cameraName),
         centerTitle: true,
         actions: [
+          if (widget.childUrl != null)
+            IconButton(
+              icon: const Icon(Icons.link),
+              onPressed: _showLinksSheet,
+              tooltip: "الروابط",
+            ),
           IconButton(
             icon: const Icon(Icons.cameraswitch),
             onPressed: _ready ? _switchCamera : null,

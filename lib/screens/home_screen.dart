@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/camera_service.dart';
 import 'camera_stream_screen.dart';
-import 'dashboard_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -12,232 +11,99 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  String? _error;
 
-  final TextEditingController nameController = TextEditingController();
+  @override
+  void initState() {
+    super.initState();
+    _prepareAndGo();
+  }
 
-  bool loading = false;
-  String? childUrl;
-  String? sessionId;
-  String? dashboardUrl;
-  String? errorMessage;
-
-
-  Future<void> createSession() async {
-
-    final name = nameController.text.trim().isEmpty
-        ? "كاميرا بدون اسم"
-        : nameController.text.trim();
-
-    setState(() {
-      loading = true;
-      errorMessage = null;
-    });
-
+  Future<void> _prepareAndGo() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
 
-      final result = await CameraService.createCameraSession(name);
+      String? sessionId = prefs.getString("session_id");
+      String? cameraName = prefs.getString("camera_name");
+      String? childUrl = prefs.getString("child_url");
+      String? dashboardUrl = prefs.getString("dashboard_url");
+
+      if (sessionId == null) {
+        // أول مرة يفتح فيها التطبيق - ننشئ الكاميرا مرة واحدة وتفضل ثابتة بعد كده
+        cameraName = "الكاميرا الرئيسية";
+
+        final result = await CameraService.createCameraSession(cameraName);
+
+        if (result == null) {
+          throw Exception("تعذر الاتصال بالسيرفر");
+        }
+
+        sessionId = result["session_id"];
+        childUrl = result["child_url"];
+        dashboardUrl = result["dashboard_url"];
+
+        await prefs.setString("session_id", sessionId!);
+        await prefs.setString("camera_name", cameraName);
+        await prefs.setString("child_url", childUrl!);
+        await prefs.setString("dashboard_url", dashboardUrl!);
+      }
 
       if (!mounted) return;
 
-      setState(() {
-
-        childUrl = result?["child_url"];
-        sessionId = result?["session_id"];
-        dashboardUrl = result?["dashboard_url"];
-        loading = false;
-
-      });
-
-    } catch (e) {
-
-      if (!mounted) return;
-
-      setState(() {
-
-        loading = false;
-        errorMessage = e.toString();
-
-      });
-
-    }
-
-  }
-
-
-  Future<void> copyText(String text, String message) async {
-
-    await Clipboard.setData(
-      ClipboardData(
-        text: text,
-      ),
-    );
-
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          message,
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CameraStreamScreen(
+            sessionId: sessionId!,
+            cameraName: cameraName!,
+            childUrl: childUrl,
+            dashboardUrl: dashboardUrl,
+          ),
         ),
-      ),
-    );
-
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = "حصل خطأ: $e\n\nتأكد إن الموبايل متصل بالإنترنت.";
+      });
+    }
   }
-
-  void startStreaming() {
-    if (sessionId == null) return;
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => CameraStreamScreen(sessionId: sessionId!),
-      ),
-    );
-  }
-
-  void openDashboard() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => const DashboardScreen(),
-      ),
-    );
-  }
-
 
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
-
-      appBar: AppBar(
-        title: const Text(
-          "Camera Parent",
-        ),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.dashboard),
-            tooltip: "الكاميرات المتصلة",
-            onPressed: openDashboard,
-          ),
-        ],
+      body: Center(
+        child: _error != null
+            ? Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _error!,
+                      style: const TextStyle(color: Colors.red),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() => _error = null);
+                        _prepareAndGo();
+                      },
+                      child: const Text("إعادة المحاولة"),
+                    ),
+                  ],
+                ),
+              )
+            : const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text("جاري تجهيز الكاميرا..."),
+                ],
+              ),
       ),
-
-      body: SingleChildScrollView(
-
-        padding: const EdgeInsets.all(20),
-
-        child: Column(
-
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-
-          children: [
-
-            const Icon(
-              Icons.camera_alt,
-              size: 80,
-              color: Colors.deepPurple,
-            ),
-
-            const SizedBox(height: 20),
-
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: "اسم الكاميرا (مثلاً: المحل، غرفة النوم)",
-                border: OutlineInputBorder(),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            ElevatedButton.icon(
-
-              onPressed: loading ? null : createSession,
-
-              icon: loading
-
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
-                    )
-
-                  : const Icon(Icons.add_link),
-
-              label: Text(
-                loading
-                    ? "جاري إنشاء الرابط..."
-                    : "إنشاء رابط للطفل",
-              ),
-
-            ),
-
-            const SizedBox(height: 30),
-
-            if (errorMessage != null)
-
-              Text(
-                errorMessage!,
-                style: const TextStyle(
-                  color: Colors.red,
-                ),
-              ),
-
-
-            if (childUrl != null) ...[
-
-              const Divider(),
-
-              const SizedBox(height: 10),
-
-              const Text(
-                "رابط مشاهدة هذه الكاميرا بس:",
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-
-              const SizedBox(height: 8),
-
-              SelectableText(childUrl!),
-
-              const SizedBox(height: 10),
-
-              ElevatedButton.icon(
-                onPressed: () => copyText(childUrl!, "تم نسخ رابط الكاميرا"),
-                icon: const Icon(Icons.copy),
-                label: const Text("نسخ رابط الكاميرا"),
-              ),
-
-              const SizedBox(height: 24),
-
-              ElevatedButton.icon(
-
-                onPressed: startStreaming,
-
-                icon: const Icon(
-                  Icons.videocam,
-                ),
-
-                label: const Text(
-                  "ابدأ البث من هذا الموبايل",
-                ),
-
-              ),
-
-            ],
-
-          ],
-
-        ),
-
-      ),
-
     );
-
   }
-
 }
