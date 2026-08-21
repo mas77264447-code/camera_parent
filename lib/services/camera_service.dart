@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 class CameraService {
@@ -19,30 +18,14 @@ class CameraService {
 
       final data = jsonDecode(response.body);
 
-      final childUrl = data["data"]["child_url"];
-      final sessionId = data["data"]["session_id"];
-      final dashboardUrl = data["data"]["dashboard_url"];
-
       return {
-        "child_url": childUrl,
-        "session_id": sessionId,
-        "dashboard_url": dashboardUrl,
+        "child_url": data["data"]["child_url"],
+        "session_id": data["data"]["session_id"],
+        "dashboard_url": data["data"]["dashboard_url"],
       };
     }
 
     return null;
-  }
-
-  static Future<void> uploadFrame(String sessionId, Uint8List jpegBytes) async {
-    final response = await http.post(
-      Uri.parse("$server/camera/frame?session=$sessionId"),
-      headers: {"Content-Type": "image/jpeg"},
-      body: jpegBytes,
-    );
-
-    if (response.statusCode != 200) {
-      throw Exception("فشل الرفع: كود ${response.statusCode}");
-    }
   }
 
   static Future<List<Map<String, dynamic>>> fetchSessions() async {

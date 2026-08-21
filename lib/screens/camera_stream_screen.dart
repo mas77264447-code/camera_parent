@@ -1,6 +1,8 @@
 import 'dart:async';
-import 'package:camera/camera.dart';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/camera_service.dart';
 
@@ -14,22 +16,22 @@ class CameraStreamScreen extends StatefulWidget {
 }
 
 class _CameraStreamScreenState extends State<CameraStreamScreen> {
-  CameraController? _controller;
-  Timer? _timer;
-  List<CameraDescription> _cameras = [];
-  int _cameraIndex = 0;
+  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  MediaStream? _localStream;
+  WebSocket? _ws;
+  final Map<String, RTCPeerConnection> _peerConnections = {};
 
   bool _ready = false;
-  bool _uploading = false;
   String? _error;
+  String _status = "جاري التجهيز...";
+  bool _usingFrontCamera = false;
 
-  // Debug/diagnostics
-  String _permissionStatus = "لسه ما اتفحصتش";
-  String _cameraStatus = "لسه ما بدأتش";
-  int _sentCount = 0;
-  int _failCount = 0;
-  String _lastResult = "-";
-  String _lastTime = "-";
+  static const List<Map<String, dynamic>> _iceServers = [
+    {"urls": "stun:stun.l.google.com:19302"},
+    {"urls": "turn:openrelay.metered.ca:80", "username": "openrelayproject", "credential": "openrelayproject"},
+    {"urls": "turn:openrelay.metered.ca:443", "username": "openrelayproject", "credential": "openrelayproject"},
+    {"urls": "turn:openrelay.metered.ca:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
+  ];
 
   @override
   void initState() {
@@ -38,126 +40,153 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   }
 
   Future<void> _init() async {
-    final status = await Permission.camera.request();
+    final camStatus = await Permission.camera.request();
+    final micStatus = await Permission.microphone.request();
 
-    setState(() {
-      _permissionStatus = status.toString();
-    });
-
-    if (!status.isGranted) {
+    if (!camStatus.isGranted || !micStatus.isGranted) {
       setState(() {
-        _error = "لازم تسمح للتطبيق بالوصول للكاميرا من إعدادات الموبايل";
+        _error = "لازم تسمح بصلاحية الكاميرا والميكروفون من إعدادات الموبايل";
       });
       return;
     }
 
     try {
-      _cameras = await availableCameras();
+      await _localRenderer.initialize();
 
-      setState(() {
-        _cameraStatus = "عدد الكاميرات المتاحة: ${_cameras.length}";
+      final stream = await navigator.mediaDevices.getUserMedia({
+        "video": {"facingMode": "environment"},
+        "audio": true,
       });
 
-      if (_cameras.isEmpty) {
-        setState(() {
-          _error = "مفيش كاميرا متاحة على الجهاز";
-        });
-        return;
-      }
+      _localStream = stream;
+      _localRenderer.srcObject = stream;
 
-      await _startCamera(_cameras[_cameraIndex]);
+      setState(() {
+        _ready = true;
+        _status = "جاهز - في انتظار مشاهدين";
+      });
 
-      _timer = Timer.periodic(
-        const Duration(seconds: 2),
-        (_) => _captureAndUpload(),
-      );
+      _connectSignaling();
     } catch (e) {
       setState(() {
-        _error = "خطأ في تشغيل الكاميرا: $e";
-        _cameraStatus = "فشل: $e";
+        _error = "فشل تشغيل الكاميرا/الميكروفون: $e";
       });
     }
   }
 
-  Future<void> _startCamera(CameraDescription description) async {
-    final oldController = _controller;
+  void _connectSignaling() {
+    final wsUrl = CameraService.server
+            .replaceFirst("https://", "wss://")
+            .replaceFirst("http://", "ws://") +
+        "/signal";
 
-    final newController = CameraController(
-      description,
-      ResolutionPreset.medium,
-      enableAudio: false,
-    );
+    WebSocket.connect(wsUrl).then((socket) {
+      _ws = socket;
 
-    try {
-      await newController.initialize();
+      socket.add(jsonEncode({
+        "type": "register",
+        "role": "broadcaster",
+        "session": widget.sessionId,
+      }));
 
-      await oldController?.dispose();
+      socket.listen(
+        _onSignalMessage,
+        onDone: () {
+          if (mounted) setState(() => _status = "انقطع الاتصال بالسيرفر");
+        },
+        onError: (e) {
+          if (mounted) setState(() => _status = "خطأ في الاتصال: $e");
+        },
+      );
+    }).catchError((e) {
+      if (mounted) setState(() => _status = "فشل الاتصال بالسيرفر: $e");
+    });
+  }
 
-      if (!mounted) return;
+  Future<void> _onSignalMessage(dynamic raw) async {
+    final msg = jsonDecode(raw);
 
+    if (msg["type"] == "viewer-joined") {
+      final viewerId = msg["viewerId"].toString();
+      await _createOfferForViewer(viewerId);
+    } else if (msg["type"] == "answer") {
+      final viewerId = msg["viewerId"].toString();
+      final pc = _peerConnections[viewerId];
+      if (pc != null) {
+        await pc.setRemoteDescription(
+          RTCSessionDescription(msg["sdp"]["sdp"], msg["sdp"]["type"]),
+        );
+      }
+    } else if (msg["type"] == "ice") {
+      final fromId = msg["from"].toString();
+      final pc = _peerConnections[fromId];
+      if (pc != null && msg["candidate"] != null) {
+        final c = msg["candidate"];
+        await pc.addCandidate(RTCIceCandidate(
+          c["candidate"],
+          c["sdpMid"],
+          c["sdpMLineIndex"],
+        ));
+      }
+    }
+  }
+
+  Future<void> _createOfferForViewer(String viewerId) async {
+    final pc = await createPeerConnection({"iceServers": _iceServers});
+    _peerConnections[viewerId] = pc;
+
+    _localStream?.getTracks().forEach((track) {
+      pc.addTrack(track, _localStream!);
+    });
+
+    pc.onIceCandidate = (candidate) {
+      _ws?.add(jsonEncode({
+        "type": "ice",
+        "target": viewerId,
+        "candidate": {
+          "candidate": candidate.candidate,
+          "sdpMid": candidate.sdpMid,
+          "sdpMLineIndex": candidate.sdpMLineIndex,
+        },
+      }));
+    };
+
+    final offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    _ws?.add(jsonEncode({
+      "type": "offer",
+      "viewerId": viewerId,
+      "sdp": {"sdp": offer.sdp, "type": offer.type},
+    }));
+
+    if (mounted) {
       setState(() {
-        _controller = newController;
-        _ready = true;
-        _error = null;
-        _cameraStatus = "الكاميرا شغالة (${description.lensDirection})";
-      });
-    } catch (e) {
-      setState(() {
-        _error = "فشل تشغيل الكاميرا: $e";
-        _cameraStatus = "فشل: $e";
+        _status = "شغال - عدد المشاهدين: ${_peerConnections.length}";
       });
     }
   }
 
   Future<void> _switchCamera() async {
-    if (_cameras.length < 2) return;
+    if (_localStream == null) return;
+
+    final videoTrack = _localStream!.getVideoTracks().first;
+    await Helper.switchCamera(videoTrack);
 
     setState(() {
-      _ready = false;
+      _usingFrontCamera = !_usingFrontCamera;
     });
-
-    _cameraIndex = (_cameraIndex + 1) % _cameras.length;
-    await _startCamera(_cameras[_cameraIndex]);
-  }
-
-  Future<void> _captureAndUpload() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    if (_uploading) return;
-
-    _uploading = true;
-
-    try {
-      final file = await _controller!.takePicture();
-      final bytes = await file.readAsBytes();
-
-      await CameraService.uploadFrame(widget.sessionId, bytes);
-
-      _sentCount++;
-
-      if (mounted) {
-        setState(() {
-          _lastResult = "نجح ✓ (${bytes.length} بايت)";
-          _lastTime = DateTime.now().toString().substring(11, 19);
-        });
-      }
-    } catch (e) {
-      _failCount++;
-
-      if (mounted) {
-        setState(() {
-          _lastResult = "فشل ✗ : $e";
-          _lastTime = DateTime.now().toString().substring(11, 19);
-        });
-      }
-    } finally {
-      _uploading = false;
-    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
-    _controller?.dispose();
+    for (final pc in _peerConnections.values) {
+      pc.close();
+    }
+    _localStream?.getTracks().forEach((t) => t.stop());
+    _localStream?.dispose();
+    _localRenderer.dispose();
+    _ws?.close();
     super.dispose();
   }
 
@@ -168,12 +197,11 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
         title: const Text("البث شغال"),
         centerTitle: true,
         actions: [
-          if (_cameras.length > 1)
-            IconButton(
-              icon: const Icon(Icons.cameraswitch),
-              onPressed: _switchCamera,
-              tooltip: "تبديل الكاميرا",
-            ),
+          IconButton(
+            icon: const Icon(Icons.cameraswitch),
+            onPressed: _ready ? _switchCamera : null,
+            tooltip: "تبديل الكاميرا",
+          ),
         ],
       ),
       body: Column(
@@ -190,23 +218,17 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
                       ),
                     ),
                   )
-                : !_ready || _controller == null
+                : !_ready
                     ? const Center(child: CircularProgressIndicator())
-                    : CameraPreview(_controller!),
+                    : RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
           ),
-
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(12),
             color: Colors.black,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("الصلاحية: $_permissionStatus", style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                Text("الكاميرا: $_cameraStatus", style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                Text("عدد الصور المرسلة بنجاح: $_sentCount | فشل: $_failCount", style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                Text("آخر محاولة ($_lastTime): $_lastResult", style: const TextStyle(color: Colors.amber, fontSize: 12)),
-              ],
+            child: Text(
+              _status,
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
             ),
           ),
         ],
