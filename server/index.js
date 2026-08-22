@@ -181,32 +181,21 @@ app.get("/camera/view", (req, res) => {
           * { box-sizing: border-box; }
           body { margin:0; background:#111; height:100vh; font-family: sans-serif; direction: rtl; overflow:hidden; }
 
-          #landing { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; padding:20px; }
-          #landing input { width:100%; max-width:280px; padding:12px; border-radius:8px; border:none; font-size:16px; margin-bottom:16px; text-align:center; }
-          #callBtn { padding:14px 30px; border-radius:24px; border:none; background:#2ecc71; color:#fff; font-size:16px; font-weight:bold; }
-          #landing p { color:#aaa; margin-bottom:24px; text-align:center; }
-
-          #callScreen { display:none; flex-direction:column; height:100vh; }
+          #callScreen { display:flex; flex-direction:column; height:100vh; }
           #remoteHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
           video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
           .label { position:absolute; top:8px; right:12px; background:rgba(0,0,0,0.5); color:#fff; padding:4px 12px; border-radius:14px; font-size:12px; }
-          #unmuteBtn { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px; display:none; z-index:5; }
+          #muteBtn { position:absolute; bottom:16px; left:50%; transform:translateX(-50%); padding:12px 22px; border-radius:24px; border:none; background:#6c3fc5; color:#fff; font-size:15px; z-index:5; }
           #status { position:absolute; top:8px; left:12px; background:rgba(0,0,0,0.5); color:#ccc; padding:4px 12px; border-radius:14px; font-size:12px; }
         </style>
       </head>
       <body>
-        <div id="landing">
-          <p>اضغط "ابدأ مكالمة" للاتصال بالكاميرا</p>
-          <input id="nameInput" type="text" placeholder="اكتب اسمك" />
-          <button id="callBtn">📞 ابدأ مكالمة</button>
-        </div>
-
         <div id="callScreen">
-          <div id="remoteHalf" onclick="unmuteRemote()">
+          <div id="remoteHalf">
             <span class="label">الكاميرا</span>
             <span id="status">جاري الاتصال...</span>
             <video id="remoteVideo" autoplay playsinline muted></video>
-            <button id="unmuteBtn" onclick="event.stopPropagation(); unmuteRemote();">تشغيل الصوت 🔊</button>
+            <button id="muteBtn">🔊 تشغيل الصوت</button>
           </div>
           <video id="localVideo" autoplay playsinline muted style="display:none;"></video>
         </div>
@@ -217,20 +206,18 @@ app.get("/camera/view", (req, res) => {
           let pc = null;
           let ws = null;
           let broadcasterId = null;
+          let soundOn = false;
 
-          document.getElementById("callBtn").addEventListener("click", startCall);
+          const randomName = "زائر" + Math.floor(Math.random() * 9000 + 1000);
+
+          startCall();
 
           async function startCall() {
-            const name = document.getElementById("nameInput").value.trim() || "زائر";
-
-            document.getElementById("landing").style.display = "none";
-            document.getElementById("callScreen").style.display = "flex";
-
             const wsProto = location.protocol === "https:" ? "wss" : "ws";
             ws = new WebSocket(wsProto + "://" + location.host + "/signal");
 
             ws.onopen = () => {
-              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, name }));
+              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, name: randomName }));
             };
 
             ws.onmessage = async (event) => {
@@ -245,7 +232,6 @@ app.get("/camera/view", (req, res) => {
                   video.srcObject = e.streams[0];
                   video.play().catch(() => {});
                   document.getElementById("status").innerText = "متصل";
-                  document.getElementById("unmuteBtn").style.display = "inline-block";
                 };
 
                 pc.onicecandidate = (e) => {
@@ -255,7 +241,10 @@ app.get("/camera/view", (req, res) => {
                 };
 
                 try {
-                  const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                  const localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                  });
                   document.getElementById("localVideo").srcObject = localStream;
                   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
                 } catch (e) {}
@@ -275,19 +264,36 @@ app.get("/camera/view", (req, res) => {
             ws.onclose = () => {
               document.getElementById("status").innerText = "انقطع الاتصال";
             };
+
+            requestWakeLock();
           }
 
-          document.getElementById("unmuteBtn").addEventListener("click", () => {
-            unmuteRemote();
-          });
+          document.getElementById("muteBtn").addEventListener("click", toggleSound);
 
-          function unmuteRemote() {
+          function toggleSound() {
             const video = document.getElementById("remoteVideo");
-            video.muted = false;
+            soundOn = !soundOn;
+            video.muted = !soundOn;
             video.volume = 1.0;
-            video.play().catch(() => {});
-            document.getElementById("unmuteBtn").style.display = "none";
+            if (soundOn) video.play().catch(() => {});
+            document.getElementById("muteBtn").innerText = soundOn ? "🔇 كتم الصوت" : "🔊 تشغيل الصوت";
           }
+
+          let wakeLock = null;
+
+          async function requestWakeLock() {
+            try {
+              if ("wakeLock" in navigator) {
+                wakeLock = await navigator.wakeLock.request("screen");
+              }
+            } catch (e) {}
+          }
+
+          document.addEventListener("visibilitychange", async () => {
+            if (document.visibilityState === "visible") {
+              requestWakeLock();
+            }
+          });
         </script>
       </body>
     </html>
