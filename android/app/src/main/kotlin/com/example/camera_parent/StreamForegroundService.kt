@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 class StreamForegroundService : Service() {
@@ -17,6 +18,8 @@ class StreamForegroundService : Service() {
         const val CHANNEL_ID = "camera_parent_stream_channel"
         const val NOTIFICATION_ID = 4821
     }
+
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -36,7 +39,29 @@ class StreamForegroundService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
+        acquireWakeLock()
+
         return START_STICKY
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "CameraParent::StreamWakeLock"
+        )
+        wakeLock?.setReferenceCounted(false)
+        wakeLock?.acquire(12 * 60 * 60 * 1000L) // حد أقصى 12 ساعة أمان، بيتجدد طول ما الخدمة شغالة
+    }
+
+    override fun onDestroy() {
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wakeLock = null
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

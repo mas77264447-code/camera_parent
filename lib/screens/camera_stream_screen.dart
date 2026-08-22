@@ -73,6 +73,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     try {
       await _foregroundServiceChannel.invokeMethod('start');
+      await _foregroundServiceChannel.invokeMethod('requestBatteryOptimizationExemption');
     } catch (_) {
       // لو فشل تشغيل الخدمة، البث هيفضل شغال طول ما التطبيق فاتح
     }
@@ -308,6 +309,21 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
                 label: const Text("نسخ رابط اللوحة"),
               ),
             ],
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 10),
+            const Text(
+              "لو البث بيقف لما تخرج من التطبيق (خصوصًا في أجهزة Xiaomi/Redmi):",
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton.icon(
+              onPressed: () {
+                _foregroundServiceChannel.invokeMethod('openAutoStartSettings');
+              },
+              icon: const Icon(Icons.settings),
+              label: const Text("فتح إعدادات التشغيل التلقائي"),
+            ),
           ],
         ),
       ),
