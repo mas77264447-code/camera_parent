@@ -199,6 +199,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
           setState(() {
             _hasRemoteVideo = true;
             _activeViewerId = viewerId;
+            _status = "شغال - عدد المتصلين: ${_peerConnections.length}";
           });
         }
       }
@@ -402,39 +403,18 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
                 : !_ready
                     ? const Center(child: CircularProgressIndicator())
                     : _hasRemoteVideo
-                        ? Column(
+                        ? Stack(
                             children: [
-                              Expanded(
-                                child: Stack(
-                                  children: [
-                                    Positioned.fill(
-                                      child: RTCVideoView(_remoteRenderer),
-                                    ),
-                                    Positioned(
-                                      top: 8,
-                                      right: 12,
-                                      child: _pill(
-                                        _activeViewerId != null
-                                            ? (_callerNames[_activeViewerId] ?? "متصل")
-                                            : "متصل",
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                              Positioned.fill(
+                                child: RTCVideoView(_remoteRenderer),
                               ),
-                              Container(height: 2, color: Colors.white24),
-                              Expanded(
-                                child: Stack(
-                                  children: [
-                                    Positioned.fill(
-                                      child: RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
-                                    ),
-                                    Positioned(
-                                      top: 8,
-                                      right: 12,
-                                      child: _pill("أنا"),
-                                    ),
-                                  ],
+                              Positioned(
+                                top: 8,
+                                right: 12,
+                                child: _pill(
+                                  _activeViewerId != null
+                                      ? (_callerNames[_activeViewerId] ?? "متصل")
+                                      : "متصل",
                                 ),
                               ),
                             ],

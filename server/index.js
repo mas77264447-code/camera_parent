@@ -187,9 +187,8 @@ app.get("/camera/view", (req, res) => {
           #landing p { color:#aaa; margin-bottom:24px; text-align:center; }
 
           #callScreen { display:none; flex-direction:column; height:100vh; }
-          #remoteHalf, #localHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
-          #remoteHalf { border-bottom: 2px solid #333; }
-          video { width:100%; height:100%; object-fit:cover; }
+          #remoteHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+          video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
           .label { position:absolute; top:8px; right:12px; background:rgba(0,0,0,0.5); color:#fff; padding:4px 12px; border-radius:14px; font-size:12px; }
           #unmuteBtn { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px; display:none; z-index:5; }
           #status { position:absolute; top:8px; left:12px; background:rgba(0,0,0,0.5); color:#ccc; padding:4px 12px; border-radius:14px; font-size:12px; }
@@ -209,10 +208,7 @@ app.get("/camera/view", (req, res) => {
             <video id="remoteVideo" autoplay playsinline muted></video>
             <button id="unmuteBtn" onclick="event.stopPropagation(); unmuteRemote();">تشغيل الصوت 🔊</button>
           </div>
-          <div id="localHalf">
-            <span class="label">أنا</span>
-            <video id="localVideo" autoplay playsinline muted></video>
-          </div>
+          <video id="localVideo" autoplay playsinline muted style="display:none;"></video>
         </div>
 
         <script>
