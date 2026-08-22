@@ -240,6 +240,8 @@ app.get("/camera/view", (req, res) => {
                   }
                 };
 
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+
                 try {
                   const localStream = await navigator.mediaDevices.getUserMedia({
                     video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
@@ -249,7 +251,6 @@ app.get("/camera/view", (req, res) => {
                   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
                 } catch (e) {}
 
-                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
 
@@ -413,6 +414,8 @@ app.get("/dashboard", (req, res) => {
                   }
                 };
 
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+
                 try {
                   const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                   const lv = document.getElementById("localVideo2");
@@ -421,7 +424,6 @@ app.get("/dashboard", (req, res) => {
                   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
                 } catch (e) {}
 
-                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 ws.send(JSON.stringify({ type: "answer", sdp: answer }));
