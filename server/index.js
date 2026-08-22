@@ -181,27 +181,20 @@ app.get("/camera/view", (req, res) => {
           * { box-sizing: border-box; }
           body { margin:0; background:#111; height:100vh; font-family: sans-serif; direction: rtl; overflow:hidden; }
 
-          #landing { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; padding:20px; }
-          #landing input { width:100%; max-width:280px; padding:12px; border-radius:8px; border:none; font-size:16px; margin-bottom:16px; text-align:center; }
-          #callBtn { padding:14px 30px; border-radius:24px; border:none; background:#2ecc71; color:#fff; font-size:16px; font-weight:bold; }
-          #landing p { color:#aaa; margin-bottom:24px; text-align:center; }
-
-          #callScreen { display:none; flex-direction:column; height:100vh; }
+          #callScreen { display:flex; flex-direction:column; height:100vh; }
           #remoteHalf, #localHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
           #remoteHalf { border-bottom: 2px solid #333; }
           video { width:100%; height:100%; object-fit:cover; }
           .label { position:absolute; top:8px; right:12px; background:rgba(0,0,0,0.5); color:#fff; padding:4px 12px; border-radius:14px; font-size:12px; }
           #unmuteBtn { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px; display:none; z-index:5; }
           #status { position:absolute; top:8px; left:12px; background:rgba(0,0,0,0.5); color:#ccc; padding:4px 12px; border-radius:14px; font-size:12px; }
+
+          #controls { position:absolute; bottom:12px; right:12px; display:flex; gap:10px; z-index:5; }
+          #controls button { width:46px; height:46px; border-radius:50%; border:none; background:rgba(0,0,0,0.6); color:#fff; font-size:20px; display:flex; align-items:center; justify-content:center; }
+          #controls button.muted { background:#c0392b; }
         </style>
       </head>
       <body>
-        <div id="landing">
-          <p>اضغط "ابدأ مكالمة" للاتصال بالكاميرا</p>
-          <input id="nameInput" type="text" placeholder="اكتب اسمك" />
-          <button id="callBtn">📞 ابدأ مكالمة</button>
-        </div>
-
         <div id="callScreen">
           <div id="remoteHalf" onclick="unmuteRemote()">
             <span class="label">الكاميرا</span>
@@ -212,6 +205,10 @@ app.get("/camera/view", (req, res) => {
           <div id="localHalf">
             <span class="label">أنا</span>
             <video id="localVideo" autoplay playsinline muted></video>
+            <div id="controls">
+              <button id="switchCamBtn" title="تبديل الكاميرا">🔄</button>
+              <button id="micBtn" title="كتم/تشغيل الصوت">🎤</button>
+            </div>
           </div>
         </div>
 
@@ -221,20 +218,18 @@ app.get("/camera/view", (req, res) => {
           let pc = null;
           let ws = null;
           let broadcasterId = null;
+          let localStream = null;
+          let facingMode = "user";
+          let micEnabled = true;
 
-          document.getElementById("callBtn").addEventListener("click", startCall);
+          window.addEventListener("load", startCall);
 
           async function startCall() {
-            const name = document.getElementById("nameInput").value.trim() || "زائر";
-
-            document.getElementById("landing").style.display = "none";
-            document.getElementById("callScreen").style.display = "flex";
-
             const wsProto = location.protocol === "https:" ? "wss" : "ws";
             ws = new WebSocket(wsProto + "://" + location.host + "/signal");
 
             ws.onopen = () => {
-              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, name }));
+              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, name: "زائر" }));
             };
 
             ws.onmessage = async (event) => {
@@ -259,7 +254,7 @@ app.get("/camera/view", (req, res) => {
                 };
 
                 try {
-                  const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                  localStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: true });
                   document.getElementById("localVideo").srcObject = localStream;
                   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
                 } catch (e) {}
@@ -292,6 +287,35 @@ app.get("/camera/view", (req, res) => {
             video.play().catch(() => {});
             document.getElementById("unmuteBtn").style.display = "none";
           }
+
+          document.getElementById("switchCamBtn").addEventListener("click", async () => {
+            if (!localStream) return;
+            facingMode = facingMode === "user" ? "environment" : "user";
+
+            try {
+              const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: false });
+              const newVideoTrack = newStream.getVideoTracks()[0];
+
+              if (pc) {
+                const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+                if (sender) await sender.replaceTrack(newVideoTrack);
+              }
+
+              const oldVideoTrack = localStream.getVideoTracks()[0];
+              if (oldVideoTrack) oldVideoTrack.stop();
+              localStream.removeTrack(oldVideoTrack);
+              localStream.addTrack(newVideoTrack);
+              document.getElementById("localVideo").srcObject = localStream;
+            } catch (e) {}
+          });
+
+          document.getElementById("micBtn").addEventListener("click", () => {
+            if (!localStream) return;
+            micEnabled = !micEnabled;
+            localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
+            document.getElementById("micBtn").classList.toggle("muted", !micEnabled);
+            document.getElementById("micBtn").innerText = micEnabled ? "🎤" : "🔇";
+          });
         </script>
       </body>
     </html>
