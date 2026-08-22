@@ -38,6 +38,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
   final Map<String, String> _callerNames = {};
   String? _activeViewerId;
+  String _localStreamId = "-";
+  String _remoteStreamId = "-";
 
   bool _ready = false;
   String? _error;
@@ -97,6 +99,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       });
 
       _localStream = stream;
+      _localStreamId = stream.id;
       _localRenderer.srcObject = stream;
 
       setState(() {
@@ -208,6 +211,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
           setState(() {
             _hasRemoteVideo = true;
             _activeViewerId = viewerId;
+            _remoteStreamId = event.streams[0].id;
             _status = "شغال - عدد المتصلين: ${_peerConnections.length}";
           });
         }
@@ -435,8 +439,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
             padding: const EdgeInsets.all(12),
             color: Colors.black,
             child: Text(
-              _status,
-              style: const TextStyle(color: Colors.white70, fontSize: 13),
+              "$_status\nLocal ID: $_localStreamId\nRemote ID: $_remoteStreamId",
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
             ),
           ),
         ],
