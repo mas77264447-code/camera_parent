@@ -186,30 +186,53 @@ app.get("/camera/view", (req, res) => {
           #remoteHalf { border-bottom: 2px solid #333; }
           video { width:100%; height:100%; object-fit:cover; }
           .label { position:absolute; top:8px; right:12px; background:rgba(0,0,0,0.5); color:#fff; padding:4px 12px; border-radius:14px; font-size:12px; }
-          #unmuteBtn { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px; display:none; z-index:5; }
           #status { position:absolute; top:8px; left:12px; background:rgba(0,0,0,0.5); color:#ccc; padding:4px 12px; border-radius:14px; font-size:12px; }
 
-          #controls { position:absolute; bottom:12px; right:12px; display:flex; gap:10px; z-index:5; }
-          #controls button { width:46px; height:46px; border-radius:50%; border:none; background:rgba(0,0,0,0.6); color:#fff; font-size:20px; display:flex; align-items:center; justify-content:center; }
-          #controls button.muted { background:#c0392b; }
+          #controls {
+            position: fixed;
+            left: 0; right: 0;
+            bottom: 0;
+            padding-bottom: max(14px, env(safe-area-inset-bottom));
+            padding-top: 10px;
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            z-index: 999;
+            background: linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0));
+            pointer-events: none;
+          }
+          #controls button {
+            pointer-events: auto;
+            width: 52px; height: 52px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(30,30,30,0.85);
+            color: #fff;
+            font-size: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          #controls button.off { background:#c0392b; }
         </style>
       </head>
       <body>
         <div id="callScreen">
-          <div id="remoteHalf" onclick="unmuteRemote()">
+          <div id="remoteHalf">
             <span class="label">الكاميرا</span>
             <span id="status">جاري الاتصال...</span>
             <video id="remoteVideo" autoplay playsinline muted></video>
-            <button id="unmuteBtn" onclick="event.stopPropagation(); unmuteRemote();">تشغيل الصوت 🔊</button>
           </div>
           <div id="localHalf">
             <span class="label">أنا</span>
             <video id="localVideo" autoplay playsinline muted></video>
-            <div id="controls">
-              <button id="switchCamBtn" title="تبديل الكاميرا">🔄</button>
-              <button id="micBtn" title="كتم/تشغيل الصوت">🎤</button>
-            </div>
           </div>
+        </div>
+
+        <div id="controls">
+          <button id="speakerBtn" title="تشغيل/كتم صوت الكاميرا" class="off">🔇</button>
+          <button id="switchCamBtn" title="تبديل الكاميرا">🔄</button>
+          <button id="micBtn" title="كتم/تشغيل المايك">🎤</button>
         </div>
 
         <script>
@@ -221,6 +244,7 @@ app.get("/camera/view", (req, res) => {
           let localStream = null;
           let facingMode = "user";
           let micEnabled = true;
+          let speakerEnabled = false;
 
           window.addEventListener("load", startCall);
 
@@ -242,9 +266,9 @@ app.get("/camera/view", (req, res) => {
                 pc.ontrack = (e) => {
                   const video = document.getElementById("remoteVideo");
                   video.srcObject = e.streams[0];
+                  video.muted = !speakerEnabled;
                   video.play().catch(() => {});
                   document.getElementById("status").innerText = "متصل";
-                  document.getElementById("unmuteBtn").style.display = "inline-block";
                 };
 
                 pc.onicecandidate = (e) => {
@@ -276,17 +300,16 @@ app.get("/camera/view", (req, res) => {
             };
           }
 
-          document.getElementById("unmuteBtn").addEventListener("click", () => {
-            unmuteRemote();
-          });
-
-          function unmuteRemote() {
+          document.getElementById("speakerBtn").addEventListener("click", () => {
+            speakerEnabled = !speakerEnabled;
             const video = document.getElementById("remoteVideo");
-            video.muted = false;
+            video.muted = !speakerEnabled;
             video.volume = 1.0;
-            video.play().catch(() => {});
-            document.getElementById("unmuteBtn").style.display = "none";
-          }
+            if (speakerEnabled) video.play().catch(() => {});
+            const btn = document.getElementById("speakerBtn");
+            btn.classList.toggle("off", !speakerEnabled);
+            btn.innerText = speakerEnabled ? "🔊" : "🔇";
+          });
 
           document.getElementById("switchCamBtn").addEventListener("click", async () => {
             if (!localStream) return;
@@ -298,6 +321,7 @@ app.get("/camera/view", (req, res) => {
 
               if (pc) {
                 const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+
                 if (sender) await sender.replaceTrack(newVideoTrack);
               }
 
@@ -313,7 +337,7 @@ app.get("/camera/view", (req, res) => {
             if (!localStream) return;
             micEnabled = !micEnabled;
             localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
-            document.getElementById("micBtn").classList.toggle("muted", !micEnabled);
+            document.getElementById("micBtn").classList.toggle("off", !micEnabled);
             document.getElementById("micBtn").innerText = micEnabled ? "🎤" : "🔇";
           });
         </script>
