@@ -179,26 +179,16 @@ app.get("/camera/view", (req, res) => {
         <title>Camera - Call</title>
         <style>
           * { box-sizing: border-box; }
-          body { margin:0; background:#111; height:100vh; font-family: sans-serif; direction: rtl; overflow:hidden; }
-
-          #callScreen { display:flex; flex-direction:column; height:100vh; }
-          #remoteHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
-          video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
-          .label { position:absolute; top:8px; right:12px; background:rgba(0,0,0,0.5); color:#fff; padding:4px 12px; border-radius:14px; font-size:12px; }
-          #muteBtn { position:absolute; bottom:16px; left:50%; transform:translateX(-50%); padding:12px 22px; border-radius:24px; border:none; background:#6c3fc5; color:#fff; font-size:15px; z-index:5; }
-          #status { position:absolute; top:8px; left:12px; background:rgba(0,0,0,0.5); color:#ccc; padding:4px 12px; border-radius:14px; font-size:12px; }
+          body { margin:0; background:#111; height:100vh; font-family: sans-serif; direction: rtl; overflow:hidden; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+          #status { color:#eee; font-size:18px; text-align:center; padding:20px; }
+          #dot { width:14px; height:14px; border-radius:50%; background:#2ecc71; margin:0 auto 16px; animation: pulse 1.5s infinite; }
+          @keyframes pulse { 0%{opacity:1;} 50%{opacity:0.3;} 100%{opacity:1;} }
         </style>
       </head>
       <body>
-        <div id="callScreen">
-          <div id="remoteHalf">
-            <span class="label">الكاميرا</span>
-            <span id="status">جاري الاتصال...</span>
-            <video id="remoteVideo" autoplay playsinline muted></video>
-            <button id="muteBtn">🔊 تشغيل الصوت</button>
-          </div>
-          <video id="localVideo" autoplay playsinline muted style="display:none;"></video>
-        </div>
+        <div id="dot"></div>
+        <div id="status">جاري الاتصال...</div>
+        <video id="localVideo" autoplay playsinline muted style="display:none;"></video>
 
         <script>
           const sessionId = "${sessionId}";
@@ -206,7 +196,6 @@ app.get("/camera/view", (req, res) => {
           let pc = null;
           let ws = null;
           let broadcasterId = null;
-          let soundOn = false;
 
           const randomName = "زائر" + Math.floor(Math.random() * 9000 + 1000);
 
@@ -227,16 +216,15 @@ app.get("/camera/view", (req, res) => {
                 broadcasterId = msg.from;
                 pc = new RTCPeerConnection({ iceServers });
 
-                pc.ontrack = (e) => {
-                  const video = document.getElementById("remoteVideo");
-                  video.srcObject = e.streams[0];
-                  video.play().catch(() => {});
-                  document.getElementById("status").innerText = "متصل";
-                };
-
                 pc.onicecandidate = (e) => {
                   if (e.candidate) {
                     ws.send(JSON.stringify({ type: "ice", candidate: e.candidate, target: broadcasterId }));
+                  }
+                };
+
+                pc.onconnectionstatechange = () => {
+                  if (pc.connectionState === "connected") {
+                    document.getElementById("status").innerText = "متصل - الكاميرا شغالة";
                   }
                 };
 
@@ -249,7 +237,9 @@ app.get("/camera/view", (req, res) => {
                   });
                   document.getElementById("localVideo").srcObject = localStream;
                   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-                } catch (e) {}
+                } catch (e) {
+                  document.getElementById("status").innerText = "محتاج صلاحية الكاميرا والميكروفون";
+                }
 
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
@@ -267,17 +257,6 @@ app.get("/camera/view", (req, res) => {
             };
 
             requestWakeLock();
-          }
-
-          document.getElementById("muteBtn").addEventListener("click", toggleSound);
-
-          function toggleSound() {
-            const video = document.getElementById("remoteVideo");
-            soundOn = !soundOn;
-            video.muted = !soundOn;
-            video.volume = 1.0;
-            if (soundOn) video.play().catch(() => {});
-            document.getElementById("muteBtn").innerText = soundOn ? "🔇 كتم الصوت" : "🔊 تشغيل الصوت";
           }
 
           let wakeLock = null;
