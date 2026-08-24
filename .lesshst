@@ -1,0 +1,5 @@
+.less-history-file:
+.shell
+"remoteHalf, #localHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+"callScreen { display:flex; flex-direction:column; height:100vh; }
+.mark
