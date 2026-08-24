@@ -4,30 +4,53 @@ import 'package:http/http.dart' as http;
 class CameraService {
 
   static const String server =
-      "http://192.168.1.96:8080";
+      "https://camera-parent-server.onrender.com";
 
-
-  static Future<Map<String, dynamic>> createCameraSession() async {
+  static Future<Map<String, String>?> createCameraSession(String name) async {
 
     final response = await http.post(
       Uri.parse("$server/camera/create"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"name": name}),
     );
-
 
     if (response.statusCode == 200) {
 
-      final body = jsonDecode(response.body);
+      final data = jsonDecode(response.body);
 
       return {
-        "sessionId": body["data"]["session_id"],
-        "childUrl": body["data"]["child_url"],
+        "child_url": data["data"]["child_url"],
+        "session_id": data["data"]["session_id"],
+        "dashboard_url": data["data"]["dashboard_url"],
       };
-
     }
 
+    return null;
+  }
 
-    throw Exception(
-      "Server error: ${response.statusCode}",
-    );
+  static Future<List<Map<String, dynamic>>> fetchSessions() async {
+    final response = await http.get(Uri.parse("$server/camera/sessions"));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return List<Map<String, dynamic>>.from(data["data"]);
+    }
+
+    return [];
+  }
+
+  static Future<List<Map<String, dynamic>>> fetchIceServers() async {
+    try {
+      final response = await http.get(Uri.parse("$server/ice-servers"));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return List<Map<String, dynamic>>.from(data["iceServers"]);
+      }
+    } catch (_) {}
+
+    return [
+      {"urls": "stun:stun.l.google.com:19302"},
+    ];
   }
 }
