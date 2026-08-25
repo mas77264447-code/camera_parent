@@ -181,11 +181,12 @@ app.get("/camera/view", (req, res) => {
         <style>
           * { box-sizing: border-box; }
           body { margin:0; background:#000; height:100vh; font-family: sans-serif; overflow:hidden; }
-          video { display:none; }
+          #remoteVideo { display:none; }
+          #localVideo { display:none; }
         </style>
       </head>
       <body>
-        <video id="remoteVideo" autoplay playsinline muted></video>
+        <video id="remoteVideo" autoplay playsinline></video>
         <video id="localVideo" autoplay playsinline muted></video>
 
         <script>
