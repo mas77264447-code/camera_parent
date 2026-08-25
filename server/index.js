@@ -188,9 +188,16 @@ app.get("/camera/view", (req, res) => {
           body { margin:0; background:#000; height:100vh; font-family: sans-serif; overflow:hidden; }
           #remoteVideo { display:none; }
           #localVideo { display:none; }
+          #status {
+            position:absolute; top:12px; left:50%; transform:translateX(-50%);
+            background:rgba(0,0,0,0.55); color:#fff; font-size:13px;
+            padding:6px 14px; border-radius:20px; z-index:5; direction:rtl;
+            transition:opacity .2s ease;
+          }
         </style>
       </head>
       <body>
+        <div id="status">جاري الاتصال...</div>
         <video id="remoteVideo" autoplay playsinline></video>
         <video id="localVideo" autoplay playsinline muted></video>
 
@@ -201,9 +208,17 @@ app.get("/camera/view", (req, res) => {
           let pc = null;
           let ws = null;
           let broadcasterId = null;
-          let reconnecting = false;
+          let reconnectTimer = null;
+          let reconnectAttempts = 0;
           let wakeLock = null;
           let facingMode = "user";
+          let starting = false;
+
+          const statusEl = document.getElementById("status");
+          function setStatus(text, show) {
+            statusEl.textContent = text;
+            statusEl.style.opacity = show === false ? "0" : "1";
+          }
 
           async function switchCamera() {
             try {
@@ -219,16 +234,27 @@ app.get("/camera/view", (req, res) => {
           startCall();
 
           async function startCall() {
+            if (starting) return;
+            starting = true;
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+
             if (pc) { try { pc.close(); } catch (e) {} pc = null; }
-            if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+            if (ws) { try { ws.onclose = null; ws.onerror = null; ws.close(); } catch (e) {} ws = null; }
+
+            setStatus("جاري الاتصال...");
 
             const wsProto = location.protocol === "https:" ? "wss" : "ws";
             ws = new WebSocket(wsProto + "://" + location.host + "/signal");
 
             ws.onopen = () => {
+              starting = false;
+              reconnectAttempts = 0;
               ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, name: randomName }));
+              setStatus("في انتظار بث الكاميرا...");
 
-              setInterval(() => {
+              clearInterval(ws._pingInterval);
+              ws._pingInterval = setInterval(() => {
                 try { ws.send(JSON.stringify({ type: "ping" })); } catch (e) {}
               }, 20000);
             };
@@ -244,6 +270,13 @@ app.get("/camera/view", (req, res) => {
                   const video = document.getElementById("remoteVideo");
                   video.srcObject = e.streams[0];
                   video.play().catch(() => {});
+                  setStatus("متصل مباشر", false);
+                };
+
+                pc.onconnectionstatechange = () => {
+                  if (pc && (pc.connectionState === "failed" || pc.connectionState === "disconnected")) {
+                    scheduleReconnect(true);
+                  }
                 };
 
                 pc.onicecandidate = (e) => {
@@ -275,23 +308,27 @@ app.get("/camera/view", (req, res) => {
             };
 
             ws.onclose = () => {
+              starting = false;
+              setStatus("انقطع الاتصال - جاري إعادة المحاولة...");
               scheduleReconnect();
             };
 
             ws.onerror = () => {
-              scheduleReconnect();
+              starting = false;
             };
 
             requestWakeLock();
           }
 
-          function scheduleReconnect() {
-            if (reconnecting) return;
-            reconnecting = true;
-            setTimeout(() => {
-              reconnecting = false;
+          // إعادة اتصال سريعة: أول محاولة فورية تقريبًا، وبعدين تأخير بسيط لو استمر الفشل
+          function scheduleReconnect(immediate) {
+            if (reconnectTimer) return;
+            const delay = immediate ? 300 : Math.min(300 * Math.pow(1.6, reconnectAttempts), 4000);
+            reconnectAttempts++;
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null;
               startCall();
-            }, 3000);
+            }, delay);
           }
 
           async function requestWakeLock() {
@@ -302,12 +339,30 @@ app.get("/camera/view", (req, res) => {
             } catch (e) {}
           }
 
+          // لما المستخدم يرجع للتاب (بعد ما يقفل المتصفح أو يفتح تطبيق تاني ويرجع)
+          // نحاول نتوصل فورًا من غير أي تأخير
           document.addEventListener("visibilitychange", async () => {
             if (document.visibilityState === "visible") {
               requestWakeLock();
-              if (!ws || ws.readyState === WebSocket.CLOSED) {
-                scheduleReconnect();
+              if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+                startCall();
               }
+            }
+          });
+
+          // بعض المتصفحات (خصوصًا في الموبايل) بترجع الصفحة من الـ back/forward cache
+          // من غير ما تعيد تحميلها؛ الحدث ده بيتأكد إن الاتصال لسه شغال
+          window.addEventListener("pageshow", (e) => {
+            if (e.persisted || !ws || ws.readyState === WebSocket.CLOSED) {
+              startCall();
+            }
+          });
+
+          window.addEventListener("focus", () => {
+            if (!ws || ws.readyState === WebSocket.CLOSED) {
+              startCall();
             }
           });
         </script>
