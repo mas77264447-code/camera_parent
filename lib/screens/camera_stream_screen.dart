@@ -37,6 +37,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   final Map<String, RTCPeerConnection> _peerConnections = {};
 
   final Map<String, String> _callerNames = {};
+  final Map<String, MediaStream> _remoteStreams = {};
   String? _activeViewerId;
 
   bool _ready = false;
@@ -44,6 +45,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   String _status = "جاري التجهيز...";
   bool _usingFrontCamera = false;
   bool _hasRemoteVideo = false;
+
+  // الكاميرا المحلية (معاينة الجهاز ده) مقفولة/مخفية بشكل افتراضي
+  // على الشاشة الرئيسية لحد ما حد يطلب يشوفها بنفسه
+  bool _showLocalPreview = false;
+
+  // كتم صوت الطرف المتصل حاليًا
+  bool _remoteAudioMuted = false;
 
   static const List<Map<String, dynamic>> _iceServers = [
     {"urls": "stun:stun.l.google.com:19302"},
@@ -148,31 +156,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
       await _createOfferForViewer(viewerId);
     } else if (msg["type"] == "viewer-left") {
-      final viewerId = msg["viewerId"].toString();
-
-      // لازم نفصل الفيديو عن الشاشة قبل ما نقفل الاتصال
-      // عشان نتجنب تجمد التطبيق (deadlock معروف بمكتبة flutter_webrtc)
-      if (_activeViewerId == viewerId) {
-        try {
-          _remoteRenderer.srcObject = null;
-        } catch (_) {}
-      }
-
-      try {
-        await _peerConnections[viewerId]?.close();
-      } catch (_) {}
-      _peerConnections.remove(viewerId);
-
-      if (mounted) {
-        setState(() {
-          _callerNames.remove(viewerId);
-          if (_activeViewerId == viewerId) {
-            _activeViewerId = null;
-            _hasRemoteVideo = false;
-          }
-          _status = "جاهز - في انتظار مكالمات";
-        });
-      }
+      _cleanupViewer(msg["viewerId"].toString(), updateStatus: true);
     } else if (msg["type"] == "answer") {
       final viewerId = msg["viewerId"].toString();
       final pc = _peerConnections[viewerId];
@@ -199,6 +183,35 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     }
   }
 
+  Future<void> _cleanupViewer(String viewerId, {bool updateStatus = false}) async {
+    // لازم نفصل الفيديو عن الشاشة قبل ما نقفل الاتصال
+    // عشان نتجنب تجمد التطبيق (deadlock معروف بمكتبة flutter_webrtc)
+    if (_activeViewerId == viewerId) {
+      try {
+        _remoteRenderer.srcObject = null;
+      } catch (_) {}
+    }
+
+    try {
+      await _peerConnections[viewerId]?.close();
+    } catch (_) {}
+    _peerConnections.remove(viewerId);
+    _remoteStreams.remove(viewerId);
+
+    if (mounted) {
+      setState(() {
+        _callerNames.remove(viewerId);
+        if (_activeViewerId == viewerId) {
+          _activeViewerId = null;
+          _hasRemoteVideo = false;
+        }
+        if (updateStatus) {
+          _status = "جاهز - في انتظار مكالمات";
+        }
+      });
+    }
+  }
+
   Future<void> _createOfferForViewer(String viewerId) async {
     final pc = await createPeerConnection({"iceServers": _iceServers});
     _peerConnections[viewerId] = pc;
@@ -209,12 +222,22 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     pc.onTrack = (event) {
       if (event.streams.isNotEmpty) {
-        _remoteRenderer.srcObject = event.streams[0];
-        if (mounted) {
-          setState(() {
-            _hasRemoteVideo = true;
-            _activeViewerId = viewerId;
-          });
+        final stream = event.streams[0];
+        _remoteStreams[viewerId] = stream;
+
+        // أول جهاز يوصل بيتعرض تلقائيًا، أي حد بعد كده بيتحفظ
+        // وميتعرضش غير لو المستخدم اختاره بنفسه من قائمة الأجهزة المتصلة
+        if (_activeViewerId == null || _activeViewerId == viewerId) {
+          _applyAudioMute(stream);
+          _remoteRenderer.srcObject = stream;
+          if (mounted) {
+            setState(() {
+              _hasRemoteVideo = true;
+              _activeViewerId = viewerId;
+            });
+          }
+        } else if (mounted) {
+          setState(() {});
         }
       }
     };
@@ -247,38 +270,118 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     }
   }
 
+  void _selectViewer(String viewerId) {
+    final stream = _remoteStreams[viewerId];
+    _applyAudioMute(stream);
+    _remoteRenderer.srcObject = stream;
+
+    setState(() {
+      _activeViewerId = viewerId;
+      _hasRemoteVideo = stream != null;
+    });
+
+    Navigator.of(context).pop();
+  }
+
+  void _applyAudioMute(MediaStream? stream) {
+    stream?.getAudioTracks().forEach((t) {
+      t.enabled = !_remoteAudioMuted;
+    });
+  }
+
+  void _toggleRemoteAudio() {
+    setState(() {
+      _remoteAudioMuted = !_remoteAudioMuted;
+    });
+    if (_activeViewerId != null) {
+      _applyAudioMute(_remoteStreams[_activeViewerId]);
+    }
+  }
+
+  void _toggleLocalPreview() {
+    setState(() {
+      _showLocalPreview = !_showLocalPreview;
+    });
+  }
+
+  Future<void> _kickViewer(String viewerId) async {
+    _ws?.add(jsonEncode({
+      "type": "kick",
+      "target": viewerId,
+    }));
+    Navigator.of(context).pop();
+    await _cleanupViewer(viewerId, updateStatus: true);
+  }
+
+  void _confirmKick(String viewerId, String name) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text("قطع الاتصال"),
+        content: Text("متأكد إنك عايز تقطع الاتصال مع \"$name\"؟"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text("إلغاء"),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _kickViewer(viewerId);
+            },
+            child: const Text("قطع الاتصال", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showCallersSheet() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text("الأجهزة المتصلة", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            ),
-            if (_callerNames.isEmpty)
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text("محدش متصل دلوقتي"),
-              )
-            else
-              ..._callerNames.entries.map((entry) {
-                final isActive = entry.key == _activeViewerId && _hasRemoteVideo;
-                return ListTile(
-                  leading: Icon(
-                    Icons.circle,
-                    size: 12,
-                    color: isActive ? Colors.green : Colors.orange,
-                  ),
-                  title: Text(entry.value),
-                  subtitle: Text(isActive ? "متصل - الفيديو شغال" : "بيتصل..."),
-                );
-              }),
-          ],
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text("الأجهزة المتصلة", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              ),
+              if (_callerNames.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text("محدش متصل دلوقتي"),
+                )
+              else
+                ..._callerNames.entries.map((entry) {
+                  final viewerId = entry.key;
+                  final hasVideo = _remoteStreams.containsKey(viewerId);
+                  final isActive = viewerId == _activeViewerId && _hasRemoteVideo;
+                  return ListTile(
+                    leading: Icon(
+                      Icons.circle,
+                      size: 12,
+                      color: isActive ? Colors.green : (hasVideo ? Colors.blue : Colors.orange),
+                    ),
+                    title: Text(entry.value),
+                    subtitle: Text(
+                      isActive
+                          ? "معروض دلوقتي على الشاشة"
+                          : (hasVideo ? "متصل - اضغط للعرض" : "بيتصل..."),
+                    ),
+                    onTap: hasVideo ? () => _selectViewer(viewerId) : null,
+                    trailing: IconButton(
+                      icon: const Icon(Icons.person_remove, color: Colors.red),
+                      tooltip: "قطع الاتصال",
+                      onPressed: () => _confirmKick(viewerId, entry.value),
+                    ),
+                  );
+                }),
+            ],
+          ),
         ),
       ),
     );
@@ -294,6 +397,11 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text("رابط الكاميرا دي بس:", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text(
+              "أي حد معاه الرابط ده يقدر يفتحه ويتصل، وأكتر من حد ممكن يفتحوا نفس الرابط في نفس الوقت.",
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
             const SizedBox(height: 6),
             SelectableText(widget.childUrl ?? ""),
             const SizedBox(height: 10),
@@ -394,6 +502,12 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
         title: Text(widget.cameraName),
         centerTitle: true,
         actions: [
+          if (_hasRemoteVideo)
+            IconButton(
+              icon: Icon(_remoteAudioMuted ? Icons.volume_off : Icons.volume_up),
+              onPressed: _toggleRemoteAudio,
+              tooltip: _remoteAudioMuted ? "تشغيل الصوت" : "كتم الصوت",
+            ),
           IconButton(
             icon: Badge(
               label: Text("${_callerNames.length}"),
@@ -449,7 +563,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
                               ),
                             ],
                           )
-                        : RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
+                        : _idleBody(),
           ),
           Container(
             width: double.infinity,
@@ -461,6 +575,55 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _idleBody() {
+    if (_showLocalPreview) {
+      return Stack(
+        children: [
+          Positioned.fill(
+            child: RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
+          ),
+          Positioned(
+            top: 8,
+            left: 12,
+            child: GestureDetector(
+              onTap: _toggleLocalPreview,
+              child: _pill("إخفاء المعاينة  🔒"),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // الكاميرا مقفولة على الشاشة الرئيسية بشكل افتراضي (البث لسه شغال في الخلفية)
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.videocam, color: Colors.white38, size: 56),
+            const SizedBox(height: 12),
+            const Text(
+              "الكاميرا شغالة في الخلفية",
+              style: TextStyle(color: Colors.white70, fontSize: 15),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              "المعاينة مقفولة من على الشاشة دي فقط",
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            TextButton.icon(
+              onPressed: _toggleLocalPreview,
+              icon: const Icon(Icons.visibility, size: 18),
+              label: const Text("إظهار المعاينة"),
+            ),
+          ],
+        ),
       ),
     );
   }
