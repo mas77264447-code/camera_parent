@@ -149,7 +149,18 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       await _createOfferForViewer(viewerId);
     } else if (msg["type"] == "viewer-left") {
       final viewerId = msg["viewerId"].toString();
-      _peerConnections[viewerId]?.close();
+
+      // لازم نفصل الفيديو عن الشاشة قبل ما نقفل الاتصال
+      // عشان نتجنب تجمد التطبيق (deadlock معروف بمكتبة flutter_webrtc)
+      if (_activeViewerId == viewerId) {
+        try {
+          _remoteRenderer.srcObject = null;
+        } catch (_) {}
+      }
+
+      try {
+        await _peerConnections[viewerId]?.close();
+      } catch (_) {}
       _peerConnections.remove(viewerId);
 
       if (mounted) {
@@ -166,20 +177,24 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       final viewerId = msg["viewerId"].toString();
       final pc = _peerConnections[viewerId];
       if (pc != null) {
-        await pc.setRemoteDescription(
-          RTCSessionDescription(msg["sdp"]["sdp"], msg["sdp"]["type"]),
-        );
+        try {
+          await pc.setRemoteDescription(
+            RTCSessionDescription(msg["sdp"]["sdp"], msg["sdp"]["type"]),
+          );
+        } catch (_) {}
       }
     } else if (msg["type"] == "ice") {
       final fromId = msg["from"].toString();
       final pc = _peerConnections[fromId];
       if (pc != null && msg["candidate"] != null) {
         final c = msg["candidate"];
-        await pc.addCandidate(RTCIceCandidate(
-          c["candidate"],
-          c["sdpMid"],
-          c["sdpMLineIndex"],
-        ));
+        try {
+          await pc.addCandidate(RTCIceCandidate(
+            c["candidate"],
+            c["sdpMid"],
+            c["sdpMLineIndex"],
+          ));
+        } catch (_) {}
       }
     }
   }
@@ -333,18 +348,24 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   Future<void> _switchCamera() async {
     if (_localStream == null) return;
 
-    final videoTrack = _localStream!.getVideoTracks().first;
-    await Helper.switchCamera(videoTrack);
+    try {
+      final videoTrack = _localStream!.getVideoTracks().first;
+      await Helper.switchCamera(videoTrack);
 
-    setState(() {
-      _usingFrontCamera = !_usingFrontCamera;
-    });
+      setState(() {
+        _usingFrontCamera = !_usingFrontCamera;
+      });
+    } catch (_) {
+      // لو فشل التبديل، نسيب الكاميرا الحالية شغالة زي ما هي
+    }
   }
 
   @override
   void dispose() {
     WakelockPlus.disable();
     _foregroundServiceChannel.invokeMethod('stop').catchError((_) {});
+    _remoteRenderer.srcObject = null;
+    _localRenderer.srcObject = null;
     for (final pc in _peerConnections.values) {
       pc.close();
     }
