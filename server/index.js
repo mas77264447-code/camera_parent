@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
@@ -179,20 +180,15 @@ app.get("/camera/view", (req, res) => {
         <title>Camera - Call</title>
         <style>
           * { box-sizing: border-box; }
-          body { margin:0; background:#111; height:100vh; font-family: sans-serif; direction: rtl; overflow:hidden; }
+          body { margin:0; background:#000; height:100vh; font-family: sans-serif; direction: rtl; overflow:hidden; }
 
           #landing { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; padding:20px; }
           #landing input { width:100%; max-width:280px; padding:12px; border-radius:8px; border:none; font-size:16px; margin-bottom:16px; text-align:center; }
           #callBtn { padding:14px 30px; border-radius:24px; border:none; background:#2ecc71; color:#fff; font-size:16px; font-weight:bold; }
           #landing p { color:#aaa; margin-bottom:24px; text-align:center; }
 
-          #callScreen { display:none; flex-direction:column; height:100vh; }
-          #remoteHalf, #localHalf { flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; }
-          #remoteHalf { border-bottom: 2px solid #333; }
-          video { width:100%; height:100%; object-fit:cover; }
-          .label { position:absolute; top:8px; right:12px; background:rgba(0,0,0,0.5); color:#fff; padding:4px 12px; border-radius:14px; font-size:12px; }
-          #unmuteBtn { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); padding:10px 20px; border-radius:20px; border:none; background:#6c3fc5; color:#fff; font-size:14px; display:none; z-index:5; }
-          #status { position:absolute; top:8px; left:12px; background:rgba(0,0,0,0.5); color:#ccc; padding:4px 12px; border-radius:14px; font-size:12px; }
+          #callScreen { display:none; height:100vh; background:#000; }
+          video { display:none; }
         </style>
       </head>
       <body>
@@ -203,16 +199,8 @@ app.get("/camera/view", (req, res) => {
         </div>
 
         <div id="callScreen">
-          <div id="remoteHalf" onclick="unmuteRemote()">
-            <span class="label">الكاميرا</span>
-            <span id="status">جاري الاتصال...</span>
-            <video id="remoteVideo" autoplay playsinline muted></video>
-            <button id="unmuteBtn" onclick="event.stopPropagation(); unmuteRemote();">تشغيل الصوت 🔊</button>
-          </div>
-          <div id="localHalf">
-            <span class="label">أنا</span>
-            <video id="localVideo" autoplay playsinline muted></video>
-          </div>
+          <video id="remoteVideo" autoplay playsinline muted></video>
+          <video id="localVideo" autoplay playsinline muted></video>
         </div>
 
         <script>
@@ -228,7 +216,7 @@ app.get("/camera/view", (req, res) => {
             const name = document.getElementById("nameInput").value.trim() || "زائر";
 
             document.getElementById("landing").style.display = "none";
-            document.getElementById("callScreen").style.display = "flex";
+            document.getElementById("callScreen").style.display = "block";
 
             const wsProto = location.protocol === "https:" ? "wss" : "ws";
             ws = new WebSocket(wsProto + "://" + location.host + "/signal");
@@ -248,8 +236,6 @@ app.get("/camera/view", (req, res) => {
                   const video = document.getElementById("remoteVideo");
                   video.srcObject = e.streams[0];
                   video.play().catch(() => {});
-                  document.getElementById("status").innerText = "متصل";
-                  document.getElementById("unmuteBtn").style.display = "inline-block";
                 };
 
                 pc.onicecandidate = (e) => {
@@ -275,22 +261,6 @@ app.get("/camera/view", (req, res) => {
                 try { await pc.addIceCandidate(msg.candidate); } catch (e) {}
               }
             };
-
-            ws.onclose = () => {
-              document.getElementById("status").innerText = "انقطع الاتصال";
-            };
-          }
-
-          document.getElementById("unmuteBtn").addEventListener("click", () => {
-            unmuteRemote();
-          });
-
-          function unmuteRemote() {
-            const video = document.getElementById("remoteVideo");
-            video.muted = false;
-            video.volume = 1.0;
-            video.play().catch(() => {});
-            document.getElementById("unmuteBtn").style.display = "none";
           }
         </script>
       </body>
