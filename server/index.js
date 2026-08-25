@@ -146,6 +146,21 @@ wss.on("connection", (ws) => {
       send(msg.target, { type: "switch-camera" });
       return;
     }
+
+    if (msg.type === "kick") {
+      // بس البث اللي مسجل كـ broadcaster في نفس الجلسة يقدر يقطع اتصال زائر
+      const session = sessions[client.sessionId];
+      if (client.role === "broadcaster" && session && session.broadcaster === clientId) {
+        const target = clients[msg.target];
+        if (target) {
+          send(msg.target, { type: "kicked" });
+          try {
+            target.ws.close();
+          } catch (e) {}
+        }
+      }
+      return;
+    }
   });
 
   ws.on("close", () => {
@@ -213,6 +228,7 @@ app.get("/camera/view", (req, res) => {
           let wakeLock = null;
           let facingMode = "user";
           let starting = false;
+          let kicked = false;
 
           const statusEl = document.getElementById("status");
           function setStatus(text, show) {
@@ -305,10 +321,18 @@ app.get("/camera/view", (req, res) => {
               if (msg.type === "switch-camera") {
                 switchCamera();
               }
+
+              if (msg.type === "kicked") {
+                kicked = true;
+                if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+                document.getElementById("remoteVideo").srcObject = null;
+                setStatus("تم إنهاء الاتصال بواسطة صاحب الكاميرا", true);
+              }
             };
 
             ws.onclose = () => {
               starting = false;
+              if (kicked) return;
               setStatus("انقطع الاتصال - جاري إعادة المحاولة...");
               scheduleReconnect();
             };
@@ -322,6 +346,7 @@ app.get("/camera/view", (req, res) => {
 
           // إعادة اتصال سريعة: أول محاولة فورية تقريبًا، وبعدين تأخير بسيط لو استمر الفشل
           function scheduleReconnect(immediate) {
+            if (kicked) return;
             if (reconnectTimer) return;
             const delay = immediate ? 300 : Math.min(300 * Math.pow(1.6, reconnectAttempts), 4000);
             reconnectAttempts++;
@@ -342,6 +367,7 @@ app.get("/camera/view", (req, res) => {
           // لما المستخدم يرجع للتاب (بعد ما يقفل المتصفح أو يفتح تطبيق تاني ويرجع)
           // نحاول نتوصل فورًا من غير أي تأخير
           document.addEventListener("visibilitychange", async () => {
+            if (kicked) return;
             if (document.visibilityState === "visible") {
               requestWakeLock();
               if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
@@ -355,12 +381,14 @@ app.get("/camera/view", (req, res) => {
           // بعض المتصفحات (خصوصًا في الموبايل) بترجع الصفحة من الـ back/forward cache
           // من غير ما تعيد تحميلها؛ الحدث ده بيتأكد إن الاتصال لسه شغال
           window.addEventListener("pageshow", (e) => {
+            if (kicked) return;
             if (e.persisted || !ws || ws.readyState === WebSocket.CLOSED) {
               startCall();
             }
           });
 
           window.addEventListener("focus", () => {
+            if (kicked) return;
             if (!ws || ws.readyState === WebSocket.CLOSED) {
               startCall();
             }
@@ -500,6 +528,17 @@ app.get("/dashboard", (req, res) => {
 
               if (msg.type === "ice" && pc) {
                 try { await pc.addIceCandidate(msg.candidate); } catch (e) {}
+              }
+
+              if (msg.type === "kicked") {
+                cleanupConnection();
+                currentSession = null;
+                document.getElementById('camView').style.display = 'none';
+                document.getElementById('camTitle').style.display = 'none';
+                document.getElementById('unmuteBtn2').style.display = 'none';
+                const ph = document.getElementById('placeholder');
+                ph.style.display = 'block';
+                ph.innerText = 'تم إنهاء الاتصال بواسطة صاحب الكاميرا';
               }
             };
 
