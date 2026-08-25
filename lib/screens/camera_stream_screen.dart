@@ -346,6 +346,16 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   }
 
   Future<void> _switchCamera() async {
+    // لو فيه اتصال شغال، نبدل كاميرا الجهاز التاني (البث اللي بنشوفه)
+    if (_hasRemoteVideo && _activeViewerId != null) {
+      _ws?.add(jsonEncode({
+        "type": "switch-camera",
+        "target": _activeViewerId,
+      }));
+      return;
+    }
+
+    // من غير اتصال، نبدل كاميرا الجهاز ده نفسه (المعاينة المحلية)
     if (_localStream == null) return;
 
     try {

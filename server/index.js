@@ -141,6 +141,11 @@ wss.on("connection", (ws) => {
       send(msg.target, { type: "ice", candidate: msg.candidate, from: clientId });
       return;
     }
+
+    if (msg.type === "switch-camera") {
+      send(msg.target, { type: "switch-camera" });
+      return;
+    }
   });
 
   ws.on("close", () => {
@@ -198,6 +203,18 @@ app.get("/camera/view", (req, res) => {
           let broadcasterId = null;
           let reconnecting = false;
           let wakeLock = null;
+          let facingMode = "user";
+
+          async function switchCamera() {
+            try {
+              facingMode = facingMode === "user" ? "environment" : "user";
+              const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode } });
+              const newTrack = newStream.getVideoTracks()[0];
+              const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === "video");
+              if (sender) await sender.replaceTrack(newTrack);
+              document.getElementById("localVideo").srcObject = newStream;
+            } catch (e) {}
+          }
 
           startCall();
 
@@ -250,6 +267,10 @@ app.get("/camera/view", (req, res) => {
 
               if (msg.type === "ice" && pc) {
                 try { await pc.addIceCandidate(msg.candidate); } catch (e) {}
+              }
+
+              if (msg.type === "switch-camera") {
+                switchCamera();
               }
             };
 
