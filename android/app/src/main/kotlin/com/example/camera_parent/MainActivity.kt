@@ -1,6 +1,7 @@
 package com.example.camera_parent
 
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -8,11 +9,24 @@ import android.os.PowerManager
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "camera_parent/foreground_service"
+
+    // بدل ما الـ Activity ينشئ محرك Flutter جديد لنفسه، بيستخدم نفس المحرك
+    // الدائم اللي اتعمل في CameraParentApplication - عشان كود الـ Dart (بما فيه
+    // اتصال WebRTC) يفضل شغال حتى لو الـ Activity اتقفل.
+    override fun provideFlutterEngine(context: Context): FlutterEngine {
+        return FlutterEngineCache.getInstance().get(CameraParentApplication.ENGINE_ID)
+            ?: super.provideFlutterEngine(context)
+    }
+
+    // امنع تدمير المحرك لما الـ Activity يتقفل (زي سحب التطبيق من قائمة
+    // التطبيقات الأخيرة) - ده أهم سطر في الموضوع كله.
+    override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
