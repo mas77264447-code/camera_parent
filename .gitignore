@@ -1,0 +1,174 @@
+# Flutter & Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+coverage/
+*.iml
+.idea/
+*.lock
+
+# Android
+android/**/gradle-wrapper.jar
+android/.gradle
+android/captures/
+android/gradlew.bat
+android/gradlew
+android/local.properties
+!android/gradle/wrapper/gradle-wrapper.jar
+*.jks
+*.keystore
+
+# iOS
+ios/**/*.pbxuser
+ios/**/*.perspective
+ios/**/*.perspectivev3
+ios/**/*sync/
+ios/**/.sconsign.dblite
+ios/**/.tags*
+ios/**/.nfs.*
+ios/**/DerivedData/
+ios/**/build/
+ios/**/.DS_Store
+ios/**/.generated.xcconfig
+ios/**/Flutter/Flutter.framework
+ios/**/Flutter/Flutter.podspec
+ios/Pods/
+
+# macOS
+macos/Flutter/Flutter-Debug.xcconfig
+macos/Flutter/Flutter-Release.xcconfig
+macos/Flutter/generated_plugins.cmake
+
+# Windows
+windows/flutter/generated_plugin_registrant.cc
+windows/flutter/generated_plugins.cmake
+windows/flutter/generated_app.rc
+
+# Web
+web/plugins/
+.dart_tool/
+.packages
+
+# Linux
+linux/flutter/generated_plugin_registrant.cc
+linux/flutter/generated_plugins.cmake
+linux/flutter/ephemeral/
+
+# Generated code
+*.g.dart
+*.config.dart
+*.chopper.dart
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+.vscode/launch.json
+.vscode/extensions.json
+.DS_Store
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Documentation
+*.md~
+.jekyll-cache/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# System files
+*.pem
+*.cer
+*.key
+credentials.json
+service-account.json
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+.firebase/
+.firebaserc
+
+# Node (for server)
+node_modules/
+package-lock.json
+npm-debug.log
+.npm
+
+# Personal notes
+TODO.txt
+NOTES.txt
+personal_notes/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Performance
+profiling/
+*.profile
+
+# Miscellaneous
+*.class
+*.log
+.apt_generated/
+.classpath
+.factorypath
+.gradle
+.history
+.svn/
+migrate_working_dir/
+
+# Build artifacts
+dist/
+build/
+out/
+*.apk
+*.ipa
+*.app.dSYM.zip
+*.ipa
+*.dSYM.zip
+
+# Sensitive files
+.admin_token
+.admin_claimed
+secrets.json
+private_key.json
+
+# Sync files
+*.sync
+.sync-config.json
+
+# Backup files
+*.bak
+*.backup
+*~
