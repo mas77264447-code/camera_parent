@@ -261,14 +261,23 @@ class _CameraViewerScreenState extends State<CameraViewerScreen> with WidgetsBin
     pc.onTrack = (event) {
       if (event.streams.isNotEmpty) {
         _remoteStream = event.streams[0];
-        _remoteRenderer.srcObject = _remoteStream;
-        if (mounted) {
+
+        print("REMOTE VIDEO TRACKS: ${_remoteStream!.getVideoTracks().length}");
+        print("REMOTE AUDIO TRACKS: ${_remoteStream!.getAudioTracks().length}");
+
+        _remoteRenderer.srcObject = null;
+
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (!mounted) return;
+
+          _remoteRenderer.srcObject = _remoteStream;
+
           setState(() {
             _hasRemoteVideo = true;
             _connecting = false;
             _status = "متصل";
           });
-        }
+        });
       }
     };
 
@@ -427,7 +436,10 @@ class _CameraViewerScreenState extends State<CameraViewerScreen> with WidgetsBin
                     ? Stack(
                         children: [
                           Positioned.fill(
-                            child: RTCVideoView(_remoteRenderer),
+                            child: RTCVideoView(
+                              _remoteRenderer,
+                              objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                            ),
                           ),
                           if (_showLocalPreview && _localStream != null)
                             Positioned(
