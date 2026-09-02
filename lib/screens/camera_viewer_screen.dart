@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:permission_handler/permission_handler.dart';
 import '../services/camera_service.dart';
 
 class CameraViewerScreen extends StatefulWidget {
@@ -26,15 +25,11 @@ class CameraViewerScreen extends StatefulWidget {
 class _CameraViewerScreenState extends State<CameraViewerScreen>
     with WidgetsBindingObserver {
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
-  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
-  MediaStream? _localStream;
   MediaStream? _remoteStream;
   RTCPeerConnection? _pc;
   WebSocket? _ws;
   String? _broadcasterId;
   String _status = "جاري الاتصال...";
-  bool _hasLocalVideo = false;
-  bool _localAudioEnabled = true;
   bool _remoteAudioMuted = false;
 
   bool _textureRefreshedForThisTrack = false;
@@ -84,26 +79,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   Future<void> _init() async {
-    unawaited(_loadIceServers());
+    await _loadIceServers();
 
     await _remoteRenderer.initialize();
-    await _localRenderer.initialize();
-
-    final camStatus = await Permission.camera.request();
-    final micStatus = await Permission.microphone.request();
-
-    if (camStatus.isGranted && micStatus.isGranted) {
-      try {
-        final stream = await navigator.mediaDevices.getUserMedia({
-          "video": true,
-          "audio": true,
-        });
-        _localStream = stream;
-        _localRenderer.srcObject = stream;
-        if (mounted) setState(() => _hasLocalVideo = true);
-      } catch (_) {}
-    }
-
     await _connectSignaling();
   }
 
@@ -230,10 +208,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
       };
 
-      _localStream?.getTracks().forEach((track) {
-        _pc!.addTrack(track, _localStream!);
-      });
-
       await _pc!.setRemoteDescription(
         RTCSessionDescription(msg["sdp"]["sdp"], msg["sdp"]["type"]),
       );
@@ -273,13 +247,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
   }
 
-  void _toggleLocalAudio() {
-    if (_localStream == null) return;
-    setState(() => _localAudioEnabled = !_localAudioEnabled);
-    for (final t in _localStream!.getAudioTracks()) {
-      t.enabled = _localAudioEnabled;
-    }
-  }
 
   @override
   void dispose() {
@@ -287,9 +254,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
     _pc?.close();
-    _localStream?.getTracks().forEach((t) => t.stop());
-    _localStream?.dispose();
-    _localRenderer.dispose();
     _ws?.close();
     _remoteRenderer.dispose();
     super.dispose();
@@ -308,12 +272,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
               icon: Icon(_remoteAudioMuted ? Icons.volume_off : Icons.volume_up),
               onPressed: _toggleRemoteAudio,
               tooltip: _remoteAudioMuted ? "تشغيل صوت الطفل" : "كتم صوت الطفل",
-            ),
-          if (_hasLocalVideo)
-            IconButton(
-              icon: Icon(_localAudioEnabled ? Icons.mic : Icons.mic_off),
-              onPressed: _toggleLocalAudio,
-              tooltip: _localAudioEnabled ? "كتم مايكي" : "تشغيل مايكي",
             ),
           IconButton(
             icon: const Icon(Icons.cameraswitch),
@@ -348,23 +306,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
                       ),
                     ),
                   ),
-                if (_hasLocalVideo)
-                  Positioned(
-                    bottom: 12,
-                    left: 12,
-                    width: 100,
-                    height: 140,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.white, width: 2),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: RTCVideoView(_localRenderer, mirror: true),
-                      ),
-                    ),
-                  ),
+
               ],
             ),
           ),

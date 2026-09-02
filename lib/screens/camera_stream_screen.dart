@@ -187,7 +187,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
 
     // نبدأ نجيب سيرفرات ICE بدري (ومن غير ما نستنى) عشان تكون جاهزة
     // غالبًا قبل ما أول زائر يتصل ويحتاجها فعليًا
-    unawaited(_loadIceServers());
+    await _loadIceServers();
 
     final camStatus = await Permission.camera.request();
     final micStatus = await Permission.microphone.request();
@@ -266,7 +266,12 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
         });
       } else {
         stream = await navigator.mediaDevices.getUserMedia({
-          "video": {"facingMode": "environment"},
+          "video": {
+            "facingMode": "environment",
+            "width": {"ideal": 640},
+            "height": {"ideal": 360},
+            "frameRate": {"ideal": 15, "max": 15},
+          },
           "audio": true,
         });
       }
