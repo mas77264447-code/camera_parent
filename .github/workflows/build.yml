@@ -1,0 +1,61 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-parent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: flutter pub get
+
+      - run: flutter clean
+
+      - run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camera-parent-app-apk
+          path: build/app/outputs/flutter-apk/app-parent-release.apk
+
+  build-child:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: flutter pub get
+
+      - run: flutter clean
+
+      - run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camera-child-app-apk
+          path: build/app/outputs/flutter-apk/app-child-release.apk
