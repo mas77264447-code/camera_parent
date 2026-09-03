@@ -3,7 +3,13 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
-const { Redis } = require("@upstash/redis");
+// Local memory Redis replacement for Termux testing
+const localStore = new Map();
+const redis = {
+  async get(k){ return localStore.has(k) ? localStore.get(k) : null; },
+  async set(k,v,opts){ localStore.set(k, typeof v === "string" ? v : JSON.stringify(v)); return "OK"; },
+  async del(k){ localStore.delete(k); return 1; }
+};
 
 const app = express();
 const server = http.createServer(app);
@@ -51,21 +57,7 @@ app.use((req, res, next) => {
 //   5) اعمل Manual Deploy مرة أخيرة - من هنا وطالع، الاقتران والأجهزة
 //      المقترنة هيفضلوا موجودين مهما عملت ديبلوي كذا مرة.
 // ------------------------------------------------------------------
-if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
-  console.error(
-    "[camera-parent] لازم تحدد UPSTASH_REDIS_REST_URL و UPSTASH_REDIS_REST_TOKEN " +
-      "كـ environment variables عشان التخزين الدائم يشتغل (شوف التعليق فوق " +
-      "في بداية الملف للتفاصيل). السيرفر مش هيشتغل من غيرهم."
-  );
-  process.exit(1);
-}
-
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
-
-const PAIRING_CODE_TTL_SECONDS = 5 * 60;
+// Upstash disabled for local Termux testing. Data is stored in RAM only.\n// It will reset when the server restarts.\n\nconst PAIRING_CODE_TTL_SECONDS = 5 * 60;
 
 // ------------------------------------------------------------------
 // توكن إداري (Admin Token) - بيتولد مرة واحدة بس ويتخزن في Redis
