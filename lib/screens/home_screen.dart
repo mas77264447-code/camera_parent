@@ -142,6 +142,7 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (_) => DeviceConnectionScreen(
           sessionId: device['session_id'],
           name: device['name'],
+          adminToken: _adminToken!,
         ),
       ),
     );
