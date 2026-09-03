@@ -4,11 +4,13 @@ import 'camera_viewer_screen.dart';
 class DeviceConnectionScreen extends StatelessWidget {
   final String sessionId;
   final String name;
+  final String adminToken;
 
   const DeviceConnectionScreen({
     super.key,
     required this.sessionId,
     required this.name,
+    required this.adminToken,
   });
 
   @override
@@ -37,8 +39,8 @@ class DeviceConnectionScreen extends StatelessWidget {
                 subtitle: const Text(
                   "مشاهدة كاميرا جهاز الطفل",
                 ),
-                trailing:
-                    const Icon(Icons.arrow_forward_ios),
+                trailing: const Icon(Icons.arrow_forward_ios),
+
                 onTap: () {
 
                   Navigator.push(
@@ -48,6 +50,7 @@ class DeviceConnectionScreen extends StatelessWidget {
                           CameraViewerScreen(
                             sessionId: sessionId,
                             name: name,
+                            adminToken: adminToken,
                           ),
                     ),
                   );
@@ -56,9 +59,7 @@ class DeviceConnectionScreen extends StatelessWidget {
               ),
             ),
 
-
             const SizedBox(height: 20),
-
 
             Card(
               child: ListTile(
@@ -73,8 +74,7 @@ class DeviceConnectionScreen extends StatelessWidget {
                 subtitle: const Text(
                   "عرض شاشة جهاز الطفل",
                 ),
-                trailing:
-                    const Icon(Icons.arrow_forward_ios),
+                trailing: const Icon(Icons.arrow_forward_ios),
 
                 onTap: () {
 
@@ -82,7 +82,7 @@ class DeviceConnectionScreen extends StatelessWidget {
                       .showSnackBar(
                     const SnackBar(
                       content: Text(
-                        "سيتم ربط مشاركة الشاشة مع WebRTC"
+                        "سيتم ربط مشاركة الشاشة مع WebRTC",
                       ),
                     ),
                   );
