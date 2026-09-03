@@ -1,5 +1,6 @@
 package com.example.camera_parent
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
@@ -11,8 +12,9 @@ object ScreenCaptureManager {
 
     var pendingResult: MethodChannel.Result? = null
 
-    var resultCode: Int? = null
-    var data: Intent? = null
+    // يحتفظ فقط أثناء حياة العملية
+    var resultCode: Int = Activity.RESULT_CANCELED
+    var projectionData: Intent? = null
 
 
     fun request(
@@ -20,29 +22,37 @@ object ScreenCaptureManager {
         result: MethodChannel.Result
     ) {
 
-        // إذا عندنا تصريح سابق استخدمه
-        if (resultCode != null && data != null) {
+        // إذا كان لدينا إذن سابق
+        if (projectionData != null &&
+            resultCode == Activity.RESULT_OK
+        ) {
             result.success("granted")
             return
         }
 
 
         val manager =
-            context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
-                    as MediaProjectionManager
+            context.getSystemService(
+                Context.MEDIA_PROJECTION_SERVICE
+            ) as MediaProjectionManager
 
 
         pendingResult = result
-
 
         val intent =
             manager.createScreenCaptureIntent()
 
 
-        (context as android.app.Activity)
+        (context as Activity)
             .startActivityForResult(
                 intent,
                 REQUEST_CODE
             )
+    }
+
+
+    fun clear() {
+        projectionData = null
+        resultCode = Activity.RESULT_CANCELED
     }
 }

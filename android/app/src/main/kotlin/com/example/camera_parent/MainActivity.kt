@@ -22,22 +22,13 @@ class MainActivity : FlutterActivity() {
         private const val REQUEST_ADMIN_CODE = 4210
     }
 
-    // بنستخدم نفس المحرك الدائم اللي اتعمل في CameraParentApplication بدل
-    // ما FlutterActivity يعمل محرك جديد يتقفل مع الـ Activity - عشان كود
-    // الـ Dart (بما فيه اتصال WebRTC) يفضل شغال حتى لو المستخدم قفل
-    // الشاشة أو سحب التطبيق من قائمة الأخيرة.
     override fun provideFlutterEngine(context: Context): FlutterEngine {
         return (application as CameraParentApplication).flutterEngine
     }
 
-    // ما نسيبش الـ Activity يقفل المحرك ده لما هو يتقفل - المحرك مربوط
-    // بعمر الـ Application كله زي ما موضح في CameraParentApplication.
     override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        // ملحوظة: ما بننادوش على super.configureFlutterEngine() هنا ولا
-        // بنسجل الـ plugins تاني، لأن CameraParentApplication سجلهم
-        // بالفعل مرة واحدة وقت ما أنشأ نفس المحرك ده.
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ADMIN_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -95,10 +86,6 @@ class MainActivity : FlutterActivity() {
                         }
                         result.success(true)
                     }
-
-                    // ============================
-                    // Device Owner فقط
-                    // ============================
 
                     "enableKioskMode" -> {
                         if (DeviceAdminReceiver.isDeviceOwner(this)) {
@@ -161,9 +148,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-        // ============================
-        // خدمة البث الأمامية (Foreground Service)
-        // ============================
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, FOREGROUND_SERVICE_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -197,17 +181,11 @@ class MainActivity : FlutterActivity() {
                             }
                             result.success(true)
                         } catch (e: Exception) {
-                            // بعض الشركات المصنّعة بتمنع النافذة دي - نرجّع نتيجة عادية
-                            // بدل ما نوقّع التطبيق، والمستخدم يقدر يعمله يدويًا من زرار
-                            // "إعدادات التشغيل التلقائي".
                             result.success(false)
                         }
                     }
 
                     "openAutoStartSettings" -> {
-                        // مفيش API موحّد لإعدادات "التشغيل التلقائي" بين الشركات
-                        // المصنّعة - أقرب حاجة موحّدة هي إعدادات تحسين البطارية
-                        // الخاصة بالتطبيق نفسه.
                         try {
                             val intent = Intent(
                                 Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -224,9 +202,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-        // ============================
-        // مشاركة الشاشة (MediaProjection)
-        // ============================
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCREEN_CAPTURE_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -236,12 +211,27 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?
+    ) {
         super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
-            val granted = resultCode == Activity.RESULT_OK
-            ScreenCaptureManager.pendingResult?.success(if (granted) "granted" else "denied")
+
+            if (resultCode == Activity.RESULT_OK && data != null) {
+
+                ScreenCaptureManager.resultCode = resultCode
+                ScreenCaptureManager.projectionData = data
+
+                ScreenCaptureManager.pendingResult?.success("granted")
+
+            } else {
+
+                ScreenCaptureManager.pendingResult?.success("denied")
+            }
+
             ScreenCaptureManager.pendingResult = null
         }
 
