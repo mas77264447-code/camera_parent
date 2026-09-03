@@ -4,9 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../services/camera_service.dart';
 
-/// شاشة الوالد: تولّد كود اقتران قصير الصلاحية بدل رابط قابل للمشاركة.
-/// الكود ده لازم يتكتب يدويًا على جهاز الطفل نفسه، ومحدش يقدر يستخدمه
-/// من غير كده - وبينتهي تلقائيًا خلال 5 دقايق.
 class AddDeviceScreen extends StatefulWidget {
   final String adminToken;
   const AddDeviceScreen({super.key, required this.adminToken});
@@ -43,19 +40,22 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           'Content-Type': 'application/json',
           'X-Admin-Token': widget.adminToken,
         },
-      );
-
-      final body = jsonDecode(response.body);
+      ).timeout(const Duration(seconds: 10), onTimeout: () {
+        throw TimeoutException('اتصال الخادم استغرق وقتاً طويلاً');
+      });
 
       if (response.statusCode != 200) {
+        print('Server error: ${response.statusCode} - ${response.body}');
         setState(() {
-          _error = 'تعذر توليد كود الاقتران';
+          _error = 'خطأ من السيرفر: ${response.statusCode}';
           _loading = false;
         });
         return;
       }
 
+      final body = jsonDecode(response.body);
       final data = body['data'];
+      
       setState(() {
         _code = data['code'];
         _secondsLeft = (data['expires_in_seconds'] as num).toInt();
@@ -72,11 +72,18 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           setState(() => _code = null);
         }
       });
-    } catch (e) {
+    } on TimeoutException catch (e) {
       setState(() {
-        _error = 'تعذر الاتصال بالسيرفر';
+        _error = 'انتهت مهلة الاتصال - تحقق من الإنترنت';
         _loading = false;
       });
+      print('Timeout: $e');
+    } catch (e) {
+      setState(() {
+        _error = 'تعذر الاتصال بالسيرفر: $e';
+        _loading = false;
+      });
+      print('Error: $e');
     }
   }
 
@@ -109,7 +116,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
             else if (_error != null)
               Column(
                 children: [
-                  Text(_error!, style: const TextStyle(color: Colors.red)),
+                  Text(_error!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
                   const SizedBox(height: 12),
                   ElevatedButton(onPressed: _generateCode, child: const Text('إعادة المحاولة')),
                 ],

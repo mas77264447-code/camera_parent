@@ -2,35 +2,32 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class CameraService {
+  static const String server = "https://camera-parent-server.onrender.com";
+  static const Duration httpTimeout = Duration(seconds: 10);
 
-  static const String server =
-      "https://camera-parent-server.onrender.com";
-
-  // إلغاء اقتران جهاز - يقدر يستدعيها الجهاز المُقترَن نفسه في أي وقت
-  // من إعداداته، بدون الحاجة لموافقة الوالد.
   static Future<bool> forgetDevice(String sessionId, String adminToken) async {
     try {
       final response = await http.delete(
         Uri.parse("$server/camera/sessions/$sessionId"),
         headers: {"X-Admin-Token": adminToken},
-      );
+      ).timeout(httpTimeout);
       return response.statusCode == 200;
-    } catch (_) {
+    } catch (e) {
+      print('Error: $e');
       return false;
     }
   }
 
-  // بيتحقق إن admin_token اتكتب يدويًا (شاشة استرجاع الاقتران) لسه
-  // صحيح ومطابق للتوكن الحقيقي المتخزن على السيرفر.
   static Future<bool> verifyAdminToken(String adminToken) async {
     try {
       final response = await http.post(
         Uri.parse("$server/admin/verify"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"admin_token": adminToken}),
-      );
+      ).timeout(httpTimeout);
       return response.statusCode == 200;
-    } catch (_) {
+    } catch (e) {
+      print('Error: $e');
       return false;
     }
   }
@@ -40,20 +37,14 @@ class CameraService {
       final response = await http.post(
         Uri.parse("$server/pairing/unpair"),
         headers: {"X-Device-Token": deviceToken},
-      );
+      ).timeout(httpTimeout);
       return response.statusCode == 200;
-    } catch (_) {
+    } catch (e) {
+      print('Error: $e');
       return false;
     }
   }
 
-  // بيجيب قائمة سيرفرات ICE (STUN/TURN) من السيرفر بدل ما تكون مكتوبة
-  // ثابتة (hardcoded) في التطبيق. كده لو صاحب السيرفر ظبط TURN خاص بيه
-  // (متغيرات TURN_URLS/TURN_USERNAME/TURN_CREDENTIAL على السيرفر)،
-  // التطبيق هيستخدمه تلقائيًا من غير ما يحتاج تحديث/نشر جديد.
-  //
-  // fallback ثابت (STUN بس) لو الطلب فشل لأي سبب (مثلاً مفيش نت وقت
-  // فتح الشاشة)، عشان التطبيق يقدر على الأقل يحاول الاتصال المباشر.
   static const List<Map<String, dynamic>> _fallbackIceServers = [
     {"urls": "stun:stun.l.google.com:19302"},
   ];
@@ -73,8 +64,8 @@ class CameraService {
               .toList();
         }
       }
-    } catch (_) {
-      // هنستخدم القيمة الاحتياطية تحت
+    } catch (e) {
+      print('Error fetching ICE servers: $e');
     }
 
     return _fallbackIceServers;

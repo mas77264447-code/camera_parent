@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
 import 'screens/home_screen.dart';
 import 'screens/pairing_screen.dart';
 import 'screens/camera_stream_screen.dart';
@@ -9,12 +8,6 @@ void main() {
   runApp(const CameraParentApp());
 }
 
-/// نقطة الدخول بتحدد الدور: تطبيق الوالد (يبدأ بشاشة الأجهزة المقترنة)
-/// أو تطبيق الطفل (يبدأ بشاشة الاقتران، أو مباشرة بالبث لو الجهاز
-/// كان مقترن من قبل). ما فيه أي منطق روابط عميقة (deep link) بعد كده -
-/// الاقتران الوحيد المسموح بيه هو عبر كود يُكتب يدويًا.
-///
-/// اضبط IS_CHILD_BUILD = true وقت بناء نسخة تطبيق الطفل.
 const bool isChildBuild = bool.fromEnvironment('IS_CHILD_BUILD', defaultValue: false);
 
 class CameraParentApp extends StatelessWidget {
@@ -31,8 +24,6 @@ class CameraParentApp extends StatelessWidget {
   }
 }
 
-/// عند فتح تطبيق الطفل: لو الجهاز مقترن بالفعل (device_token متخزن)
-/// يبدأ البث على طول، وإلا يعرض شاشة إدخال كود الاقتران.
 class _ChildEntry extends StatefulWidget {
   const _ChildEntry();
 

@@ -45,18 +45,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
 
-
-            <!-- Android App Links -->
-            <!-- ملحوظة: intent-filter الرابط العميق القديم (لفتح رابط
-                 /camera/view تلقائيًا) اتشال بالكامل من هنا. النظام
-                 الجديد يعتمد على كود اقتران يُكتب يدويًا، مش رابط
-                 يفتحه التطبيق تلقائيًا. -->
-
+            <!-- Deep Link Intent Filter -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="camera-child" android:host="pairing" />
+            </intent-filter>
 
         </activity>
 
-
-        
         <receiver
             android:name=".DeviceAdminReceiver"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
@@ -83,14 +81,11 @@
             android:stopWithTask="false"
             android:foregroundServiceType="camera|microphone|mediaProjection"/>
 
-
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>
 
-
     </application>
-
 
     <queries>
         <intent>
