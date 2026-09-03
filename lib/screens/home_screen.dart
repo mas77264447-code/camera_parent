@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/camera_service.dart';
 import 'add_device_screen.dart';
-import 'camera_viewer_screen.dart';
+import 'device_connection_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -139,10 +139,9 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => CameraViewerScreen(
+        builder: (_) => DeviceConnectionScreen(
           sessionId: device['session_id'],
           name: device['name'],
-          adminToken: _adminToken!,
         ),
       ),
     );
