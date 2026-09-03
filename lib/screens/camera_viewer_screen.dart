@@ -219,6 +219,19 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         "type": "answer",
         "sdp": {"sdp": answer.sdp, "type": answer.type},
       }));
+    } else if (msg["type"] == "broadcaster-left") {
+      try {
+        _remoteRenderer.srcObject = null;
+      } catch (_) {}
+      try {
+        await _pc?.close();
+      } catch (_) {}
+      _pc = null;
+      _remoteStream = null;
+      _broadcasterId = null;
+      if (mounted) {
+        setState(() => _status = "انقطع جهاز الطفل - في انتظار عودة البث...");
+      }
     } else if (msg["type"] == "ice") {
       if (_pc != null && msg["candidate"] != null) {
         final c = msg["candidate"];
@@ -248,24 +261,78 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
 
+  Future<void> _leaveViewerSession() async {
+    if (_disposed) return;
+
+    _disposed = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+
+    // أخبر السيرفر فورًا أن شاشة الوالد خرجت. هذا يمنع بقاء viewer قديم
+    // في live[sessionId] عندما نرجع نفتـح الكاميرا بسرعة مرة أخرى.
+    final socket = _ws;
+    try {
+      if (socket != null && socket.readyState == WebSocket.open) {
+        socket.add(jsonEncode({
+          "type": "leave-viewer",
+        }));
+      }
+    } catch (_) {}
+
+    _ws = null;
+
+    try {
+      await _pc?.close();
+    } catch (_) {}
+    _pc = null;
+
+    try {
+      socket?.close();
+    } catch (_) {}
+  }
+
+  Future<bool> _handleBack() async {
+    await _leaveViewerSession();
+    return true;
+  }
+
   @override
   void dispose() {
+    // dispose لازم يظل متزامن، لذلك نرسل رسالة الخروج ونغلق الموارد مباشرة.
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
-    _pc?.close();
-    _ws?.close();
+    _reconnectTimer = null;
+
+    try {
+      if (_ws?.readyState == WebSocket.open) {
+        _ws?.add(jsonEncode({"type": "leave-viewer"}));
+      }
+    } catch (_) {}
+
+    try { _pc?.close(); } catch (_) {}
+    try { _ws?.close(); } catch (_) {}
     _remoteRenderer.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: Text(widget.name),
-        centerTitle: true,
+    return WillPopScope(
+      onWillPop: _handleBack,
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: "رجوع",
+            onPressed: () async {
+              await _leaveViewerSession();
+              if (mounted) Navigator.of(context).pop();
+            },
+          ),
+          title: Text(widget.name),
+          centerTitle: true,
         actions: [
           if (_remoteStream != null)
             IconButton(
@@ -319,8 +386,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
               style: const TextStyle(color: Colors.white70),
               textAlign: TextAlign.center,
             ),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }

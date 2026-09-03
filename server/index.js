@@ -369,6 +369,9 @@ wss.on("connection", (ws) => {
         client.sessionId = boundSession;
         client.role = role;
         const liveSession = getLive(boundSession);
+
+        // نحتفظ بالاتصال الحالي كما هو؛ إعادة اتصال جهاز الطفل تتم تلقائيًا
+        // من التطبيق، وإغلاق الاتصال السابق هنا قد يسبب حلقة إعادة اتصال.
         liveSession.broadcaster = clientId;
         console.log(`[ws] broadcaster registered: client=${clientId} session=${boundSession} name=${deviceInfo.deviceName}`);
 
@@ -410,6 +413,38 @@ wss.on("connection", (ws) => {
         }
         return;
       }
+      return;
+    }
+
+    if (msg.type === "leave-viewer" || msg.type === "leave-broadcaster") {
+      const sessionId = client.sessionId;
+      const liveSession = sessionId ? live[sessionId] : null;
+
+      if (liveSession) {
+        if (client.role === "viewer") {
+          liveSession.viewers.delete(clientId);
+          if (liveSession.broadcaster) {
+            send(liveSession.broadcaster, { type: "viewer-left", viewerId: clientId });
+          }
+        } else if (client.role === "broadcaster" && liveSession.broadcaster === clientId) {
+          liveSession.broadcaster = null;
+          // قطع كل زوار الجلسة الحالية لأن مصدر البث خرج فعليًا.
+          for (const [viewerId] of liveSession.viewers) {
+            send(viewerId, { type: "broadcaster-left" });
+          }
+          liveSession.viewers.clear();
+        }
+
+        if (!liveSession.broadcaster && liveSession.viewers.size === 0) {
+          delete live[sessionId];
+        }
+      }
+
+      // بعد leave لا نحتاج أي إعادة استخدام لهذا العميل. الإغلاق الفعلي
+      // سيأتي مباشرة من التطبيق، لكن نحمي السيرفر أيضًا من أي رسائل لاحقة.
+      client.sessionId = null;
+      client.role = null;
+      try { client.ws.close(1000, "left"); } catch (_) {}
       return;
     }
 
@@ -511,6 +546,10 @@ wss.on("connection", (ws) => {
 
       if (client.role === "broadcaster" && liveSession.broadcaster === clientId) {
         liveSession.broadcaster = null;
+        for (const [viewerId] of liveSession.viewers) {
+          send(viewerId, { type: "broadcaster-left" });
+        }
+        liveSession.viewers.clear();
       }
       if (client.role === "viewer") {
         liveSession.viewers.delete(clientId);
@@ -518,6 +557,10 @@ wss.on("connection", (ws) => {
         if (liveSession.broadcaster) {
           send(liveSession.broadcaster, { type: "viewer-left", viewerId: clientId });
         }
+      }
+
+      if (!liveSession.broadcaster && liveSession.viewers.size === 0) {
+        delete live[client.sessionId];
       }
     }
     delete clients[clientId];
