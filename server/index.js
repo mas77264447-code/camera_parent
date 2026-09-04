@@ -3,12 +3,112 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
-// Local memory Redis replacement for Termux testing
-const localStore = new Map();
+
+// ============================================
+// Upstash Redis - Persistent Storage
+// ============================================
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+  console.error(
+    "[ERROR] Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN environment variables!"
+  );
+  console.error("Set them in Render Dashboard > Settings > Environment");
+  process.exit(1);
+}
+
 const redis = {
-  async get(k){ return localStore.has(k) ? localStore.get(k) : null; },
-  async set(k,v,opts){ localStore.set(k, typeof v === "string" ? v : JSON.stringify(v)); return "OK"; },
-  async del(k){ localStore.delete(k); return 1; }
+  async get(k) {
+    try {
+      const res = await fetch(`${UPSTASH_URL}/get/${k}`, {
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      });
+      const data = await res.json();
+      return data.result || null;
+    } catch (e) {
+      console.error(`[Redis GET Error] ${k}:`, e.message);
+      return null;
+    }
+  },
+
+  async set(k, v, opts) {
+    try {
+      const value = typeof v === "string" ? v : JSON.stringify(v);
+      let url = `${UPSTASH_URL}/set/${k}/${encodeURIComponent(value)}`;
+
+      if (opts?.ex) {
+        url += `/EX/${opts.ex}`;
+      }
+
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      });
+      const data = await res.json();
+      return data.result ? "OK" : null;
+    } catch (e) {
+      console.error(`[Redis SET Error] ${k}:`, e.message);
+      return null;
+    }
+  },
+
+  async del(k) {
+    try {
+      const res = await fetch(`${UPSTASH_URL}/del/${k}`, {
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      });
+      const data = await res.json();
+      return data.result ? 1 : 0;
+    } catch (e) {
+      console.error(`[Redis DEL Error] ${k}:`, e.message);
+      return 0;
+    }
+  },
+
+  async sadd(key, member) {
+    try {
+      const res = await fetch(
+        `${UPSTASH_URL}/sadd/${key}/${encodeURIComponent(member)}`,
+        {
+          headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+        }
+      );
+      const data = await res.json();
+      return data.result ? 1 : 0;
+    } catch (e) {
+      console.error(`[Redis SADD Error] ${key}:`, e.message);
+      return 0;
+    }
+  },
+
+  async srem(key, member) {
+    try {
+      const res = await fetch(
+        `${UPSTASH_URL}/srem/${key}/${encodeURIComponent(member)}`,
+        {
+          headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+        }
+      );
+      const data = await res.json();
+      return data.result ? 1 : 0;
+    } catch (e) {
+      console.error(`[Redis SREM Error] ${key}:`, e.message);
+      return 0;
+    }
+  },
+
+  async smembers(key) {
+    try {
+      const res = await fetch(`${UPSTASH_URL}/smembers/${key}`, {
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      });
+      const data = await res.json();
+      return Array.isArray(data.result) ? data.result : [];
+    } catch (e) {
+      console.error(`[Redis SMEMBERS Error] ${key}:`, e.message);
+      return [];
+    }
+  },
 };
 
 const app = express();
@@ -20,49 +120,15 @@ app.use(express.json());
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token, X-Device-Token");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-Admin-Token, X-Device-Token"
+  );
   next();
 });
 
 // ------------------------------------------------------------------
-// تخزين دائم (Upstash Redis) بدل الملفات المحلية / الذاكرة بس.
-// ------------------------------------------------------------------
-// المشكلة القديمة: Render (الخطة المجانية) بيمسح قرص السيرفر بالكامل
-// مع كل عملية إعادة نشر (redeploy) أو إعادة تشغيل - سواء كان التخزين
-// في ملف (.admin_token / .admin_claimed) أو في متغيرات JS في الذاكرة
-// (sessions / deviceTokens / pairingCodes). يعني كل ما تعمل ديبلوي
-// جديد، الاقتران القديم (claim الوالد + كل أجهزة الأطفال المقترنة)
-// كان بيتمسح.
-//
-// الحل: أي بيانات لازم تعيش لفترة طويلة (توكن الوالد، حالة الـ claim،
-// الأجهزة المقترنة device_token، بيانات الجلسات) بقت متخزنة في Upstash
-// Redis - قاعدة بيانات خارجية مجانية مستضافة بره Render، فمش بتتأثر
-// خالص بإعادة نشر أو إعادة تشغيل سيرفر Render.
-//
-// أما حالة الاتصال اللحظية (مين متصل دلوقتي فعليًا عبر WebSocket) فده
-// طبيعي يتصفر مع كل إعادة تشغيل مهما كان نوع التخزين - لأن الاتصال
-// نفسه (TCP/WebSocket) بينقطع وقتها على أي حال. تطبيق الموبايل أصلًا
-// فيه منطق إعادة اتصال تلقائي (`_scheduleReconnect`)، فبمجرد ما
-// السيرفر يرجع يشتغل، الأجهزة بترجع تتسجل تلقائيًا خلال ثواني من
-// غير ما تحتاج اقتران جديد - لأن الـ device_token نفسه لسه محفوظ في
-// Redis.
-//
-// الإعداد المطلوب (مرة واحدة بس):
-//   1) اعمل حساب مجاني على https://upstash.com
-//   2) اعمل Redis database جديدة (اختار أي region قريب)
-//   3) من صفحة الـ database، انسخ "UPSTASH_REDIS_REST_URL" و
-//      "UPSTASH_REDIS_REST_TOKEN"
-//   4) في Render، Environment > Add Environment Variable، وضيفهم
-//      بنفس الاسمين دول بالظبط.
-//   5) اعمل Manual Deploy مرة أخيرة - من هنا وطالع، الاقتران والأجهزة
-//      المقترنة هيفضلوا موجودين مهما عملت ديبلوي كذا مرة.
-// ------------------------------------------------------------------
-// Upstash disabled for local Termux testing. Data is stored in RAM only.\n// It will reset when the server restarts.\n\nconst PAIRING_CODE_TTL_SECONDS = 5 * 60;
-
-// ------------------------------------------------------------------
-// توكن إداري (Admin Token) - بيتولد مرة واحدة بس ويتخزن في Redis
-// (أو يتقرأ من متغير بيئة ADMIN_TOKEN لو معمول له set يدويًا). بيفضل
-// نفس القيمة عبر كل عمليات إعادة النشر.
+// Admin Token Management
 // ------------------------------------------------------------------
 async function getOrCreateAdminToken() {
   if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN;
@@ -78,20 +144,14 @@ async function getOrCreateAdminToken() {
 let ADMIN_TOKEN = null;
 
 // ------------------------------------------------------------------
-// أول تطبيق والد يفتح السيرفر ده هو اللي "يتبنى" (claim) الـ
-// ADMIN_TOKEN مرة واحدة بس. حالة الـ claim نفسها متخزنة في Redis
-// دلوقتي - يعني حتى لو السيرفر عمل ريستارت أو ديبلوي جديد، هي بتفضل
-// "متبناة" ومحدش تاني يقدر يستولي عليها.
-//
-// لو فقدت بيانات تطبيق الوالد (مسحت بيانات التطبيق / جهاز جديد)،
-// مينفعش تعمل claim تاني عادي - استخدم خيار "أدخل توكن يدويًا" في
-// شاشة تطبيق الوالد، والصق فيه نفس الـ ADMIN_TOKEN اللي مطبوع في لوج
-// السيرفر عند بدء التشغيل (شوف تحت).
+// Admin Claim Endpoint
 // ------------------------------------------------------------------
 app.post("/admin/claim", async (req, res) => {
   const claimed = await redis.get("admin:claimed");
   if (claimed) {
-    res.status(403).json({ error: "تم ربط هذا السيرفر بحساب والد بالفعل." });
+    res.status(403).json({
+      error: "تم ربط هذا السيرفر بحساب والد بالفعل.",
+    });
     return;
   }
 
@@ -99,10 +159,9 @@ app.post("/admin/claim", async (req, res) => {
   res.json({ data: { admin_token: ADMIN_TOKEN } });
 });
 
-// مسار استرجاع: لو تطبيق الوالد فقد بيانات الجهاز (claim فاشل) بس
-// المستخدم لسه معاه نسخة قديمة من الـ admin_token (مثلاً من لوج
-// السيرفر)، يقدر يتحقق منه هنا ويستخدمه تاني من غير ما يحتاج يعمل
-// claim جديد أو يمسح أي حاجة.
+// ------------------------------------------------------------------
+// Admin Verify Endpoint (for recovery)
+// ------------------------------------------------------------------
 app.post("/admin/verify", (req, res) => {
   const token = (req.body && req.body.admin_token) || "";
   if (token && token === ADMIN_TOKEN) {
@@ -123,15 +182,11 @@ function requireAdminToken(req, res, next) {
 }
 
 // ------------------------------------------------------------------
-// حالة لحظية (runtime state) بس - في الذاكرة، وبتتصفر طبيعي مع كل
-// إعادة تشغيل، لأنها أصلًا بتمثل اتصالات WebSocket حية مش بيانات دائمة.
-// clients: كل اتصال WS مفتوح دلوقتي.
-// live[sessionId]: broadcaster المتصل حاليًا (لو موجود) وقائمة الزائرين
-// المتصلين حاليًا لنفس الجلسة.
+// Runtime State (in-memory, resets on restart)
 // ------------------------------------------------------------------
 const clients = {};
 let nextClientId = 1;
-const live = {}; // sessionId -> { broadcaster: clientId|null, viewers: Map(clientId -> {name, approved}) }
+const live = {};
 
 function getLive(sessionId) {
   if (!live[sessionId]) {
@@ -151,15 +206,14 @@ function generatePairingCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+const PAIRING_CODE_TTL_SECONDS = 5 * 60;
+
 // ------------------------------------------------------------------
-// نظام الاقتران (Pairing). الكود القصير نفسه بيتخزن في Redis بـ TTL
-// (بينتهي تلقائيًا بعد 5 دقايق من غير ما نحتاج تنضيف يدوي)، وبيتمسح
-// فورًا أول ما يُستخدم مرة واحدة (single-use).
+// Pairing System
 // ------------------------------------------------------------------
 app.post("/pairing/create", requireAdminToken, async (req, res) => {
   let code = generatePairingCode();
-  // تأكيد إن الكود مش مستخدم بالفعل (احتمال ضئيل جدًا لتصادم لكن بسيط
-  // نتأكد منه)
+
   for (let i = 0; i < 5; i++) {
     const exists = await redis.get(`pairing:${code}`);
     if (!exists) break;
@@ -183,16 +237,19 @@ app.post("/pairing/create", requireAdminToken, async (req, res) => {
 app.post("/pairing/claim", async (req, res) => {
   const code = (req.body && req.body.code ? String(req.body.code) : "").trim();
   const deviceName =
-    (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
+    (req.body &&
+      req.body.device_name &&
+      String(req.body.device_name).trim()) ||
     "جهاز غير مسمى";
 
   const raw = await redis.get(`pairing:${code}`);
   if (!raw) {
-    res.status(400).json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
+    res
+      .status(400)
+      .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
     return;
   }
 
-  // single-use: نمسح الكود فورًا عشان محدش يقدر يستخدمه تاني
   await redis.del(`pairing:${code}`);
 
   const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -211,7 +268,12 @@ app.post("/pairing/claim", async (req, res) => {
   await redis.set(`session:${sessionId}`, JSON.stringify(sessionData));
   await redis.set(
     `device:${deviceToken}`,
-    JSON.stringify({ sessionId, ownerToken, deviceName, pairedAt: Date.now() })
+    JSON.stringify({
+      sessionId,
+      ownerToken,
+      deviceName,
+      pairedAt: Date.now(),
+    })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
 
@@ -224,7 +286,6 @@ app.post("/pairing/claim", async (req, res) => {
   });
 });
 
-// جهاز الطفل يقدر يلغي الاقتران بنفسه في أي وقت من إعداداته
 app.post("/pairing/unpair", async (req, res) => {
   const deviceToken = req.header("x-device-token") || "";
   const raw = await redis.get(`device:${deviceToken}`);
@@ -254,16 +315,20 @@ app.post("/pairing/unpair", async (req, res) => {
   res.json({ data: { unpaired: true } });
 });
 
-// محمي بتوكن إداري - كل والد يشوف بس أجهزته هو
+// ------------------------------------------------------------------
+// Camera Sessions (Protected)
+// ------------------------------------------------------------------
 app.get("/camera/sessions", requireAdminToken, async (req, res) => {
   const requesterToken = req.query.token || req.header("x-admin-token");
 
-  const sessionIds = (await redis.smembers(`owner:${requesterToken}:sessions`)) || [];
+  const sessionIds =
+    (await redis.smembers(`owner:${requesterToken}:sessions`)) || [];
   const list = [];
 
   for (const sessionId of sessionIds) {
     const raw = await redis.get(`session:${sessionId}`);
-    if (!raw) continue; // ممكن يكون اتمسح بس الـ set لسه ماتحدثش، تجاهله
+    if (!raw) continue;
+
     const s = typeof raw === "string" ? JSON.parse(raw) : raw;
     const liveSession = live[sessionId];
 
@@ -280,7 +345,9 @@ app.get("/camera/sessions", requireAdminToken, async (req, res) => {
   res.json({ data: list });
 });
 
-// حذف/نسيان جهاز من لوحة الوالد
+// ------------------------------------------------------------------
+// Delete Device Session
+// ------------------------------------------------------------------
 app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
   const requesterToken = req.query.token || req.header("x-admin-token");
   const sessionId = req.params.id;
@@ -290,6 +357,7 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
     res.status(404).json({ error: "الجهاز غير موجود." });
     return;
   }
+
   const s = typeof raw === "string" ? JSON.parse(raw) : raw;
 
   if (s.ownerToken !== requesterToken) {
@@ -317,6 +385,9 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
   res.json({ data: { deleted: true } });
 });
 
+// ------------------------------------------------------------------
+// WebSocket Signaling
+// ------------------------------------------------------------------
 wss.on("connection", (ws) => {
   const clientId = String(nextClientId++);
   clients[clientId] = { ws, sessionId: null, role: null };
@@ -337,6 +408,7 @@ wss.on("connection", (ws) => {
     const client = clients[clientId];
     if (!client) return;
 
+    // ------ Register Broadcaster ------
     if (msg.type === "register") {
       const { role, session } = msg;
 
@@ -348,9 +420,11 @@ wss.on("connection", (ws) => {
           send(clientId, { type: "auth-failed", reason: "device_not_paired" });
           return;
         }
-        const deviceInfo = typeof rawDevice === "string" ? JSON.parse(rawDevice) : rawDevice;
 
+        const deviceInfo =
+          typeof rawDevice === "string" ? JSON.parse(rawDevice) : rawDevice;
         const rawSession = await redis.get(`session:${deviceInfo.sessionId}`);
+
         if (!rawSession) {
           send(clientId, { type: "auth-failed", reason: "device_not_paired" });
           return;
@@ -362,14 +436,18 @@ wss.on("connection", (ws) => {
         client.role = role;
         const liveSession = getLive(boundSession);
 
-        // نحتفظ بالاتصال الحالي كما هو؛ إعادة اتصال جهاز الطفل تتم تلقائيًا
-        // من التطبيق، وإغلاق الاتصال السابق هنا قد يسبب حلقة إعادة اتصال.
         liveSession.broadcaster = clientId;
-        console.log(`[ws] broadcaster registered: client=${clientId} session=${boundSession} name=${deviceInfo.deviceName}`);
+        console.log(
+          `[ws] broadcaster registered: client=${clientId} session=${boundSession} name=${deviceInfo.deviceName}`
+        );
 
         liveSession.viewers.forEach((info, viewerId) => {
           if (info.approved) {
-            send(clientId, { type: "viewer-joined", viewerId, name: info.name });
+            send(clientId, {
+              type: "viewer-joined",
+              viewerId,
+              name: info.name,
+            });
           } else {
             send(clientId, { type: "join-request", viewerId, name: info.name });
           }
@@ -377,13 +455,20 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // ------ Register Viewer ------
       if (role === "viewer") {
         const adminToken = msg.adminToken;
         const rawSession = await redis.get(`session:${session}`);
-        const targetSession = rawSession ? (typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession) : null;
+        const targetSession = rawSession
+          ? typeof rawSession === "string"
+            ? JSON.parse(rawSession)
+            : rawSession
+          : null;
 
         if (!targetSession || adminToken !== targetSession.ownerToken) {
-          console.log(`[ws] viewer auth-failed: client=${clientId} session=${session} sessionExists=${!!targetSession}`);
+          console.log(
+            `[ws] viewer auth-failed: client=${clientId} session=${session} sessionExists=${!!targetSession}`
+          );
           send(clientId, { type: "auth-failed", reason: "not_authorized" });
           return;
         }
@@ -398,16 +483,24 @@ wss.on("connection", (ws) => {
           approved: true,
         });
 
-        console.log(`[ws] viewer registered: client=${clientId} session=${session} broadcasterOnline=${!!liveSession.broadcaster}`);
+        console.log(
+          `[ws] viewer registered: client=${clientId} session=${session} broadcasterOnline=${!!liveSession.broadcaster}`
+        );
 
         if (liveSession.broadcaster) {
-          send(liveSession.broadcaster, { type: "viewer-joined", viewerId: clientId, name: client.callerName });
+          send(liveSession.broadcaster, {
+            type: "viewer-joined",
+            viewerId: clientId,
+            name: client.callerName,
+          });
         }
         return;
       }
+
       return;
     }
 
+    // ------ Leave ------
     if (msg.type === "leave-viewer" || msg.type === "leave-broadcaster") {
       const sessionId = client.sessionId;
       const liveSession = sessionId ? live[sessionId] : null;
@@ -416,33 +509,47 @@ wss.on("connection", (ws) => {
         if (client.role === "viewer") {
           liveSession.viewers.delete(clientId);
           if (liveSession.broadcaster) {
-            send(liveSession.broadcaster, { type: "viewer-left", viewerId: clientId });
+            send(liveSession.broadcaster, {
+              type: "viewer-left",
+              viewerId: clientId,
+            });
           }
-        } else if (client.role === "broadcaster" && liveSession.broadcaster === clientId) {
+        } else if (
+          client.role === "broadcaster" &&
+          liveSession.broadcaster === clientId
+        ) {
           liveSession.broadcaster = null;
-          // قطع كل زوار الجلسة الحالية لأن مصدر البث خرج فعليًا.
           for (const [viewerId] of liveSession.viewers) {
             send(viewerId, { type: "broadcaster-left" });
           }
           liveSession.viewers.clear();
         }
 
-        if (!liveSession.broadcaster && liveSession.viewers.size === 0) {
+        if (
+          !liveSession.broadcaster &&
+          liveSession.viewers.size === 0
+        ) {
           delete live[sessionId];
         }
       }
 
-      // بعد leave لا نحتاج أي إعادة استخدام لهذا العميل. الإغلاق الفعلي
-      // سيأتي مباشرة من التطبيق، لكن نحمي السيرفر أيضًا من أي رسائل لاحقة.
       client.sessionId = null;
       client.role = null;
-      try { client.ws.close(1000, "left"); } catch (_) {}
+      try {
+        client.ws.close(1000, "left");
+      } catch (_) {}
       return;
     }
 
+    // ------ Approve Viewer ------
     if (msg.type === "approve-viewer") {
       const liveSession = live[client.sessionId];
-      if (client.role !== "broadcaster" || !liveSession || liveSession.broadcaster !== clientId) return;
+      if (
+        client.role !== "broadcaster" ||
+        !liveSession ||
+        liveSession.broadcaster !== clientId
+      )
+        return;
 
       const viewerInfo = liveSession.viewers.get(msg.target);
       if (!viewerInfo) return;
@@ -451,9 +558,15 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // ------ Reject Viewer ------
     if (msg.type === "reject-viewer") {
       const liveSession = live[client.sessionId];
-      if (client.role !== "broadcaster" || !liveSession || liveSession.broadcaster !== clientId) return;
+      if (
+        client.role !== "broadcaster" ||
+        !liveSession ||
+        liveSession.broadcaster !== clientId
+      )
+        return;
 
       liveSession.viewers.delete(msg.target);
       send(msg.target, { type: "join-rejected" });
@@ -466,43 +579,65 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // ------ Offer ------
     if (msg.type === "offer") {
       const liveSession = live[client.sessionId];
-      if (client.role !== "broadcaster" || !liveSession || liveSession.broadcaster !== clientId) {
-        console.log(`[ws] offer REJECTED: client=${clientId} role=${client.role} hasSession=${!!liveSession}`);
+      if (
+        client.role !== "broadcaster" ||
+        !liveSession ||
+        liveSession.broadcaster !== clientId
+      ) {
+        console.log(
+          `[ws] offer REJECTED: client=${clientId} role=${client.role} hasSession=${!!liveSession}`
+        );
         return;
       }
 
       const viewerInfo = liveSession.viewers.get(msg.viewerId);
       if (!viewerInfo) {
-        console.log(`[ws] offer DROPPED - viewer not found: viewerId=${msg.viewerId} knownViewers=${[...liveSession.viewers.keys()]}`);
+        console.log(
+          `[ws] offer DROPPED - viewer not found: viewerId=${msg.viewerId} knownViewers=${[
+            ...liveSession.viewers.keys(),
+          ]}`
+        );
         return;
       }
 
-      console.log(`[ws] offer forwarded: from=${clientId} to=${msg.viewerId}`);
+      console.log(
+        `[ws] offer forwarded: from=${clientId} to=${msg.viewerId}`
+      );
       send(msg.viewerId, { type: "offer", sdp: msg.sdp, from: clientId });
       return;
     }
 
+    // ------ Answer ------
     if (msg.type === "answer") {
       const liveSession = live[client.sessionId];
       if (liveSession && liveSession.broadcaster) {
-        console.log(`[ws] answer forwarded: from=${clientId} to=${liveSession.broadcaster}`);
-        send(liveSession.broadcaster, { type: "answer", sdp: msg.sdp, viewerId: clientId });
+        console.log(
+          `[ws] answer forwarded: from=${clientId} to=${liveSession.broadcaster}`
+        );
+        send(liveSession.broadcaster, {
+          type: "answer",
+          sdp: msg.sdp,
+          viewerId: clientId,
+        });
       } else {
-        console.log(`[ws] answer DROPPED - no broadcaster: client=${clientId} session=${client.sessionId}`);
+        console.log(
+          `[ws] answer DROPPED - no broadcaster: client=${clientId} session=${client.sessionId}`
+        );
       }
       return;
     }
 
+    // ------ ICE Candidate ------
     if (msg.type === "ice") {
       send(msg.target, { type: "ice", candidate: msg.candidate, from: clientId });
       return;
     }
 
+    // ------ Switch Camera ------
     if (msg.type === "switch-camera") {
-      // تشخيص مؤقت: نتأكد الرسالة وصلت للسيرفر ونعرف هل فيه عميل
-      // فعلاً بالـ target ده متصل دلوقتي ولا لأ (لو مفيش، send() هتتجاهله بصمت).
       const targetExists = !!clients[msg.target];
       console.log(
         `[ws] switch-camera: from=${clientId} target=${msg.target} targetConnected=${targetExists}`
@@ -511,14 +646,20 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // ------ Toggle Mic ------
     if (msg.type === "toggle-mic") {
       send(msg.target, { type: "toggle-mic" });
       return;
     }
 
+    // ------ Kick ------
     if (msg.type === "kick") {
       const liveSession = live[client.sessionId];
-      if (client.role === "broadcaster" && liveSession && liveSession.broadcaster === clientId) {
+      if (
+        client.role === "broadcaster" &&
+        liveSession &&
+        liveSession.broadcaster === clientId
+      ) {
         const target = clients[msg.target];
         if (target) {
           send(msg.target, { type: "kicked" });
@@ -543,11 +684,14 @@ wss.on("connection", (ws) => {
         }
         liveSession.viewers.clear();
       }
+
       if (client.role === "viewer") {
         liveSession.viewers.delete(clientId);
-
         if (liveSession.broadcaster) {
-          send(liveSession.broadcaster, { type: "viewer-left", viewerId: clientId });
+          send(liveSession.broadcaster, {
+            type: "viewer-left",
+            viewerId: clientId,
+          });
         }
       }
 
@@ -559,6 +703,9 @@ wss.on("connection", (ws) => {
   });
 });
 
+// ------------------------------------------------------------------
+// Heartbeat
+// ------------------------------------------------------------------
 const heartbeatInterval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
@@ -574,8 +721,7 @@ const heartbeatInterval = setInterval(() => {
 wss.on("close", () => clearInterval(heartbeatInterval));
 
 // ------------------------------------------------------------------
-// سيرفرات ICE (STUN/TURN) - قابلة للتهيئة عن طريق متغيرات البيئة.
-// TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL
+// ICE Servers
 // ------------------------------------------------------------------
 let _warnedNoPrivateTurn = false;
 
@@ -608,9 +754,21 @@ function getIceServers() {
 
   return [
     stun,
-    { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
   ];
 }
 
@@ -619,9 +777,16 @@ app.get("/ice-servers", (req, res) => {
 });
 
 app.get("/camera/view", (req, res) => {
-  res.status(410).send("تم إيقاف هذا المسار. المشاهدة الآن تتم فقط من لوحة الوالد بعد تسجيل الدخول.");
+  res
+    .status(410)
+    .send(
+      "تم إيقاف هذا المسار. المشاهدة الآن تتم فقط من لوحة الوالد بعد تسجيل الدخول."
+    );
 });
 
+// ------------------------------------------------------------------
+// Dashboard
+// ------------------------------------------------------------------
 app.get("/dashboard", requireAdminToken, (req, res) => {
   const dashboardToken = req.query.token;
   res.send(`
@@ -812,21 +977,20 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 8080;
 
 // ------------------------------------------------------------------
-// بدء التشغيل: لازم نجيب/نولّد ADMIN_TOKEN من Redis الأول قبل ما
-// نفتح أي اتصال، عشان requireAdminToken وباقي المسارات تلاقيه جاهز.
-// بيتطبع في اللوج دايمًا (مش بس أول مرة) عشان لو فقدت بيانات تطبيق
-// الوالد، تقدر تيجي هنا وتاخده وتحطه يدويًا من شاشة "استرجاع الاقتران"
-// في التطبيق.
+// Initialize
 // ------------------------------------------------------------------
 (async () => {
   ADMIN_TOKEN = await getOrCreateAdminToken();
-  console.log(`[camera-parent] ADMIN_TOKEN الحالي: ${ADMIN_TOKEN}`);
+  console.log(
+    `[camera-parent] ✅ ADMIN_TOKEN الحالي: ${ADMIN_TOKEN}`
+  );
   console.log(
     "[camera-parent] احتفظ بالقيمة دي في مكان آمن - لو فقدت بيانات تطبيق " +
-      "الوالد تقدر تستخدمها من خيار \"استرجاع الاقتران\" في التطبيق."
+      'الوالد تقدر تستخدمها من خيار "استرجاع الاقتران" في التطبيق.'
   );
+  console.log("[camera-parent] ✅ متصل بـ Upstash Redis");
 
   server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`✅ Server running on port ${PORT}`);
   });
 })();
