@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../services/camera_service.dart';
@@ -45,7 +46,9 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       });
 
       if (response.statusCode != 200) {
-        print('Server error: ${response.statusCode} - ${response.body}');
+        if (kDebugMode) {
+          debugPrint('Server error: ${response.statusCode} - ${response.body}');
+        }
         setState(() {
           _error = 'خطأ من السيرفر: ${response.statusCode}';
           _loading = false;
@@ -77,13 +80,17 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         _error = 'انتهت مهلة الاتصال - تحقق من الإنترنت';
         _loading = false;
       });
-      print('Timeout: $e');
+      if (kDebugMode) {
+        debugPrint('Timeout: $e');
+      }
     } catch (e) {
       setState(() {
         _error = 'تعذر الاتصال بالسيرفر: $e';
         _loading = false;
       });
-      print('Error: $e');
+      if (kDebugMode) {
+        debugPrint('Error: $e');
+      }
     }
   }
 
