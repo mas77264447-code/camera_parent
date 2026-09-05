@@ -11,37 +11,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.16.0'
-        channel: 'stable'
-    
-    - name: Get dependencies
-      run: flutter pub get
-    
-    - name: Run analyzer
-      run: flutter analyze
-    
-    - name: Build APK (Debug)
-      run: flutter build apk --debug --split-per-abi
-    
-    - name: Build APK (Release)
-      run: flutter build apk --release
-    
-    - name: Upload APK artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: apk-builds
-        path: build/app/outputs/flutter-app/
-        retention-days: 30
+      - uses: actions/checkout@v4
 
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: build/app/outputs/flutter-app/release/*.apk
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Run analyzer
+        run: flutter analyze
+
+      - name: Build APK (Debug)
+        run: flutter build apk --debug --split-per-abi
+
+      - name: Build APK (Release)
+        run: flutter build apk --release
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-builds
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/app/outputs/flutter-apk/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
