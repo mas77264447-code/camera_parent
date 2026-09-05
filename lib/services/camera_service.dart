@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 
 class CameraService {
   static const String server = "https://camera-parent-server.onrender.com";
@@ -13,7 +14,9 @@ class CameraService {
       ).timeout(httpTimeout);
       return response.statusCode == 200;
     } catch (e) {
-      print('Error: $e');
+      if (kDebugMode) {
+        debugPrint('Error: $e');
+      }
       return false;
     }
   }
@@ -27,7 +30,9 @@ class CameraService {
       ).timeout(httpTimeout);
       return response.statusCode == 200;
     } catch (e) {
-      print('Error: $e');
+      if (kDebugMode) {
+        debugPrint('Error: $e');
+      }
       return false;
     }
   }
@@ -40,7 +45,9 @@ class CameraService {
       ).timeout(httpTimeout);
       return response.statusCode == 200;
     } catch (e) {
-      print('Error: $e');
+      if (kDebugMode) {
+        debugPrint('Error: $e');
+      }
       return false;
     }
   }
@@ -65,7 +72,9 @@ class CameraService {
         }
       }
     } catch (e) {
-      print('Error fetching ICE servers: $e');
+      if (kDebugMode) {
+        debugPrint('Error fetching ICE servers: $e');
+      }
     }
 
     return _fallbackIceServers;
