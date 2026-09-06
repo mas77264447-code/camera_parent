@@ -1,61 +1,61 @@
 name: Build APK
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+    branches: [ "main" ]
 
 jobs:
-  build:
+  build-parent:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.0'
           channel: stable
           cache: true
 
-      - name: Flutter version
-        run: flutter --version
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Analyze project
-        run: flutter analyze || true
-
-      - name: Clean project
-        run: flutter clean
-
-      - name: Build APK Split ABI
-        run: |
-          flutter pub get
-          flutter build apk --release --split-per-abi
-
-      - name: Check APK output
-        run: |
-          echo "APK files:"
-          ls -lh build/app/outputs/flutter-apk/
-          find build/app/outputs/flutter-apk -name "*.apk" -print
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-java@v4
         with:
-          name: camera-parent-apk
-          path: build/app/outputs/flutter-apk/*.apk
-          retention-days: 1
+          distribution: temurin
+          java-version: '17'
+
+      - run: flutter pub get
+
+      - run: flutter clean
+
+      - run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camera-parent-app-apk
+          path: build/app/outputs/flutter-apk/app-parent-release.apk
+
+  build-child:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: flutter pub get
+
+      - run: flutter clean
+
+      - run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camera-child-app-apk
+          path: build/app/outputs/flutter-apk/app-child-release.apk
