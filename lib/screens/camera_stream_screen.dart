@@ -254,453 +254,309 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
         _renderersReady = true;
       }
 
-      MediaStream stream;
-      if (_broadcastScreen) {
-        final granted = await ScreenCaptureService.request();
-        if (!granted) {
-          throw Exception("لم تتم الموافقة على مشاركة الشاشة");
-        }
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          "video": true,
-          "audio": true,
-        });
-      } else {
-        stream = await navigator.mediaDevices.getUserMedia({
-          "video": {
-            "facingMode": "environment",
-            "width": {"ideal": 640},
-            "height": {"ideal": 360},
-            "frameRate": {"ideal": 15, "max": 15},
-          },
-          "audio": true,
-        });
-      }
+      final stream = _broadcastScreen
+          ? await ScreenCaptureService.startScreenCapture()
+          : await CameraService.getUserMedia(
+              audio: true,
+              video: true,
+              videoConstraints: <String, dynamic>{
+                'mandatory': <String, dynamic>{
+                  'minWidth': 640,
+                  'minHeight': 480,
+                  'minFrameRate': 30,
+                },
+                'optional': <dynamic>[],
+              },
+            );
 
-      _localStream = stream;
-      _localRenderer.srcObject = stream;
+      if (_disposed) return;
 
       setState(() {
+        _localStream = stream;
+        _localRenderer.srcObject = stream;
         _ready = true;
         _error = null;
-        _status = "جاهز - في انتظار مكالمات";
+        _status = "جاهز للبث!";
       });
-      _retryTimer?.cancel();
-      _retryAttempts = 0;
 
-      _connectSignaling();
+      _connectToWebSocket();
     } catch (e) {
-      final attempt = _retryAttempts + 1;
+      if (_disposed) return;
+
       setState(() {
-        _error = "فشل تشغيل مصدر البث: $e\nمحاولة تلقائية جديدة قريبًا... اضغط \"Start now\" في نافذة النظام لما تظهر.";
+        _error = "فشل تهيئة البث: $e";
+        _status = "خطأ";
         _canRetry = true;
       });
-      _scheduleAutoRetry(attempt);
+
+      if (_retryAttempts < _maxAutoRetries) {
+        _retryAttempts++;
+        _retryTimer = Timer(Duration(seconds: 3 + _retryAttempts), _startMediaSource);
+      }
     }
   }
 
-  // إعادة محاولة تلقائية بفاصل زمني متزايد (3، 6، 12، 24، 48 ثانية) لحد
-  // ما نوصل لحد أقصى من المحاولات - بعدها بنسيبها لزرار "إعادة المحاولة"
-  // اليدوي، عشان منجاش في حلقة تفتح نافذة النظام كل ثانية من غير داعي.
-  void _scheduleAutoRetry(int attempt) {
-    _retryTimer?.cancel();
-    if (_disposed || attempt > _maxAutoRetries) return;
+  Future<void> _connectToWebSocket() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final serverUrl = prefs.getString('serverUrl') ?? '';
 
-    _retryAttempts = attempt;
-    final delaySeconds = 3 * math.pow(2, attempt - 1).toInt();
-    _retryTimer = Timer(Duration(seconds: delaySeconds), () {
-      if (!_disposed && _error != null) {
-        _startMediaSource();
-      }
-    });
-  }
-
-  void _connectSignaling() {
-    final wsBase = CameraService.server
-        .replaceFirst("https://", "wss://")
-        .replaceFirst("http://", "ws://");
-    final wsUrl = "$wsBase/signal";
-
-    WebSocket.connect(wsUrl).then((socket) {
-      if (_disposed) {
-        socket.close();
+      if (serverUrl.isEmpty) {
+        setState(() {
+          _error = 'عنوان السيرفر غير مسجل';
+          _canRetry = false;
+        });
         return;
       }
 
-      _ws = socket;
-      _reconnectAttempts = 0;
+      final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
+      _ws = await WebSocket.connect(wsUrl);
 
-      socket.add(jsonEncode({
-        "type": "register",
-        "role": "broadcaster",
-        "deviceToken": widget.deviceToken,
-        "name": widget.cameraName,
+      _ws!.add(jsonEncode({
+        'type': 'child-register',
+        'session_id': widget.sessionId,
+        'device_token': widget.deviceToken,
       }));
 
-      socket.listen(
-        _onSignalMessage,
-        onDone: () {
-          if (mounted) setState(() => _status = "انقطع الاتصال بالسيرفر - جاري إعادة المحاولة...");
-          _scheduleReconnect();
+      _ws!.listen(
+        _handleWebSocketMessage,
+        onError: (error) {
+          if (!_disposed) {
+            setState(() => _status = 'خطأ في الاتصال');
+            _scheduleReconnect();
+          }
         },
-        onError: (e) {
-          if (mounted) setState(() => _status = "خطأ في الاتصال: $e");
-          _scheduleReconnect();
+        onDone: () {
+          if (!_disposed) {
+            setState(() => _status = 'اتصال مقطوع');
+            _scheduleReconnect();
+          }
         },
       );
-    }).catchError((e) {
-      if (mounted) setState(() => _status = "فشل الاتصال بالسيرفر - جاري إعادة المحاولة...");
-      _scheduleReconnect();
-    });
+
+      setState(() => _status = 'متصل بالسيرفر');
+    } catch (e) {
+      if (!_disposed) {
+        setState(() => _status = 'فشل الاتصال بالسيرفر');
+        _scheduleReconnect();
+      }
+    }
   }
 
   void _scheduleReconnect() {
-    if (_disposed) return;
-    if (_reconnectTimer != null) return;
-
-    final delayMs = (300 * math.pow(1.6, _reconnectAttempts)).clamp(300, 4000).toInt();
+    _reconnectTimer?.cancel();
     _reconnectAttempts++;
-
-    _reconnectTimer = Timer(Duration(milliseconds: delayMs), () {
-      _reconnectTimer = null;
-      if (!_disposed) _connectSignaling();
-    });
+    final delay = Duration(seconds: math.min(30, 3 * _reconnectAttempts));
+    _reconnectTimer = Timer(delay, _connectToWebSocket);
   }
 
-  Future<void> _onSignalMessage(dynamic raw) async {
-    final msg = jsonDecode(raw);
+  void _handleWebSocketMessage(dynamic message) {
+    if (_disposed) return;
 
-    if (msg["type"] == "auth-failed") {
-      if (mounted) {
-        setState(() {
-          _error = "تم إلغاء اقتران هذا الجهاز. افتح شاشة الاقتران مرة أخرى.";
-        });
+    try {
+      final data = jsonDecode(message as String);
+      final type = data['type'] as String?;
+
+      switch (type) {
+        case 'viewer-request':
+          _handleViewerRequest(data);
+          break;
+        case 'answer':
+          _handleAnswer(data);
+          break;
+        case 'ice-candidate':
+          _handleIceCandidate(data);
+          break;
+        case 'viewer-disconnect':
+          _handleViewerDisconnect(data);
+          break;
+        case 'request-camera-switch':
+          _switchCamera();
+          break;
+        case 'mute-microphone':
+          setState(() => _localMicMuted = true);
+          break;
+        case 'unmute-microphone':
+          setState(() => _localMicMuted = false);
+          break;
       }
-      _ws?.close();
+    } catch (e) {
+      debugPrint('خطأ في معالجة رسالة WebSocket: $e');
+    }
+  }
+
+  Future<void> _handleViewerRequest(Map<String, dynamic> data) async {
+    final viewerId = data['viewer_id'] as String?;
+    final callerName = data['caller_name'] as String? ?? 'Unknown';
+
+    if (viewerId == null) return;
+
+    setState(() {
+      _pendingViewers[viewerId] = callerName;
+    });
+
+    final approved = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("طلب اتصال"),
+            content: Text("هل تسمح ل$callerName بمشاهدة الكاميرا؟"),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("رفض"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text("موافقة"),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    setState(() => _pendingViewers.remove(viewerId));
+
+    if (!approved) {
+      _ws?.add(jsonEncode({'type': 'decline', 'viewer_id': viewerId}));
       return;
     }
 
-    if (msg["type"] == "viewer-joined") {
-      // ده بيوصل غير من الزائرين المعتمدين مسبقًا (مثلاً لوحة الأدمن، أو
-      // زائر كان متوافق عليه من قبل وبيرجع يتصل تاني)
-      final viewerId = msg["viewerId"].toString();
-      final name = (msg["name"] ?? "زائر").toString();
-
-      if (mounted) {
-        setState(() {
-          _callerNames[viewerId] = name;
-        });
-      }
-
-      await _createOfferForViewer(viewerId);
-    } else if (msg["type"] == "viewer-left") {
-      _cleanupViewer(msg["viewerId"].toString(), updateStatus: true);
-    } else if (msg["type"] == "answer") {
-      final viewerId = msg["viewerId"].toString();
-      final pc = _peerConnections[viewerId];
-      if (pc != null) {
-        try {
-          await pc.setRemoteDescription(
-            RTCSessionDescription(msg["sdp"]["sdp"], msg["sdp"]["type"]),
-          );
-        } catch (_) {}
-      }
-    } else if (msg["type"] == "ice") {
-      final fromId = msg["from"].toString();
-      final pc = _peerConnections[fromId];
-      if (pc != null && msg["candidate"] != null) {
-        final c = msg["candidate"];
-        try {
-          await pc.addCandidate(RTCIceCandidate(
-            c["candidate"],
-            c["sdpMid"],
-            c["sdpMLineIndex"],
-          ));
-        } catch (_) {}
-      }
-    } else if (msg["type"] == "switch-camera") {
-      // أمر جاي من شاشة الوالد: بدّل كاميرا هذا الجهاز (أمامي/خلفي).
-      // منطقي بس لو بنبث كاميرا فعلاً، مش لقطة شاشة.
-      await _performLocalCameraSwitch();
-    } else if (msg["type"] == "toggle-mic") {
-      // أمر جاي من شاشة الوالد: كتم/تشغيل مايك هذا الجهاز في البث.
-      _toggleLocalMic();
-    }
-  }
-
-  Future<void> _performLocalCameraSwitch() async {
-    if (_broadcastScreen || _localStream == null) return;
-    try {
-      final videoTrack = _localStream!.getVideoTracks().first;
-      await Helper.switchCamera(videoTrack);
-      if (mounted) {
-        setState(() {
-          _usingFrontCamera = !_usingFrontCamera;
-        });
-      }
-    } catch (_) {
-      // لو فشل التبديل، نسيب الكاميرا الحالية شغالة زي ما هي
-    }
-  }
-
-  void _toggleLocalMic() {
-    if (_localStream == null) return;
-    setState(() {
-      _localMicMuted = !_localMicMuted;
-    });
-    for (final t in _localStream!.getAudioTracks()) {
-      t.enabled = !_localMicMuted;
-    }
-  }
-
-  Future<void> _cleanupViewer(String viewerId, {bool updateStatus = false}) async {
-    // لازم نفصل الفيديو عن الشاشة قبل ما نقفل الاتصال
-    // عشان نتجنب تجمد التطبيق (deadlock معروف بمكتبة flutter_webrtc)
-    if (_activeViewerId == viewerId) {
-      try {
-        _remoteRenderer.srcObject = null;
-      } catch (_) {}
-    }
-
-    try {
-      await _peerConnections[viewerId]?.close();
-    } catch (_) {}
-    _peerConnections.remove(viewerId);
-    _remoteStreams.remove(viewerId);
-
-    if (mounted) {
-      setState(() {
-        _callerNames.remove(viewerId);
-        _pendingViewers.remove(viewerId);
-        if (_activeViewerId == viewerId) {
-          _activeViewerId = null;
-          _hasRemoteVideo = false;
-        }
-        if (updateStatus) {
-          _status = "جاهز - في انتظار مكالمات";
-        }
-      });
-    }
-  }
-
-  void _showJoinRequestDialog(String viewerId, String name) {
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text("طلب اتصال جديد"),
-        content: Text("\"$name\" عايز يشوف بث الكاميرا. توافق؟"),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(dialogContext).pop();
-              _rejectViewer(viewerId);
-            },
-            child: const Text("رفض", style: TextStyle(color: Colors.red)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(dialogContext).pop();
-              _approveViewer(viewerId, name);
-            },
-            child: const Text("موافقة"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _approveViewer(String viewerId, String name) async {
-    if (mounted) {
-      setState(() {
-        _pendingViewers.remove(viewerId);
-        _callerNames[viewerId] = name;
-      });
-    }
-
-    _ws?.add(jsonEncode({
-      "type": "approve-viewer",
-      "target": viewerId,
-    }));
-
-    await _createOfferForViewer(viewerId);
-  }
-
-  void _rejectViewer(String viewerId) {
-    _ws?.add(jsonEncode({
-      "type": "reject-viewer",
-      "target": viewerId,
-    }));
-
-    if (mounted) {
-      setState(() {
-        _pendingViewers.remove(viewerId);
-      });
-    }
-  }
-
-  Future<void> _createOfferForViewer(String viewerId) async {
-    final pc = await createPeerConnection({"iceServers": _iceServers});
+    final pc = await _createPeerConnection();
     _peerConnections[viewerId] = pc;
 
-    _localStream?.getTracks().forEach((track) {
-      pc.addTrack(track, _localStream!);
-    });
-
-    pc.onTrack = (event) {
-      if (event.streams.isNotEmpty) {
-        final stream = event.streams[0];
-        _remoteStreams[viewerId] = stream;
-
-        // أول جهاز يوصل بيتعرض تلقائيًا، أي حد بعد كده بيتحفظ
-        // وميتعرضش غير لو المستخدم اختاره بنفسه من قائمة الأجهزة المتصلة
-        if (_activeViewerId == null || _activeViewerId == viewerId) {
-          _applyAudioMute(stream);
-          _remoteRenderer.srcObject = stream;
-          if (mounted) {
-            setState(() {
-              _hasRemoteVideo = true;
-              _activeViewerId = viewerId;
-            });
-          }
-          // نفس إصلاح مشكلة الـ texture السودة المطبق في شاشة الوالد:
-          // أول فريم بيوصل أحيانًا مش بيترسم لحد ما نعيد ربط الـ stream
-          // بالـ renderer (باج معروف في flutter_webrtc).
-          _refreshRemoteVideoTexture();
-          Future.delayed(const Duration(milliseconds: 600), () {
-            if (mounted && _activeViewerId == viewerId) {
-              _refreshRemoteVideoTexture();
-            }
-          });
-        } else if (mounted) {
-          setState(() {});
-        }
-      }
-    };
-
-    pc.onIceCandidate = (candidate) {
-      _ws?.add(jsonEncode({
-        "type": "ice",
-        "target": viewerId,
-        "candidate": {
-          "candidate": candidate.candidate,
-          "sdpMid": candidate.sdpMid,
-          "sdpMLineIndex": candidate.sdpMLineIndex,
-        },
-      }));
-    };
-
-    // لازم نراقب حالة الاتصال بنفسنا ومش نعتمد بس على رسالة
-    // "viewer-left" الجايّة من السيرفر. لو الزائر فقد النت فجأة (مش خروج
-    // نظيف)، ممكن السيرفر ياخد وقت طويل جدًا (أو ميوصلوش خالص) عشان
-    // يبعت "viewer-left"، فيفضل الاتصال الميت ده متراكم في الذاكرة
-    // ومقفول على الشاشة إنه لسه شغال، وده اللي بيسبب التجمد بعد كذا
-    // محاولة اتصال متراكمة.
-    pc.onConnectionState = (state) {
-      if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-        _cleanupViewer(viewerId, updateStatus: true);
-      } else if (state ==
-          RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
-        Future.delayed(const Duration(seconds: 8), () {
-          final currentPc = _peerConnections[viewerId];
-          if (currentPc != null &&
-              currentPc.connectionState ==
-                  RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
-            _cleanupViewer(viewerId, updateStatus: true);
-          }
-        });
-      }
-    };
-
-    pc.onIceConnectionState = (state) {
-      // لو فشل ICE (مثلاً TURN مش متاح)، منستناش الـ 8 ثواني بتاعة حالة
-      // "Disconnected" - نظّف فورًا ونوضّح السبب في الحالة الظاهرة.
-      if (state == RTCIceConnectionState.RTCIceConnectionStateFailed &&
-          mounted) {
-        setState(() {
-          _status = "فشل الاتصال بزائر - مشكلة شبكة (تحقق من TURN/الإنترنت)";
-        });
-      }
-    };
+    for (final track in _localStream!.getTracks()) {
+      await pc.addTrack(track, _localStream!);
+    }
 
     final offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
     _ws?.add(jsonEncode({
-      "type": "offer",
-      "viewerId": viewerId,
-      "sdp": {"sdp": offer.sdp, "type": offer.type},
+      'type': 'offer',
+      'viewer_id': viewerId,
+      'sdp': offer.sdp,
     }));
 
-    if (mounted) {
+    setState(() {
+      _callerNames[viewerId] = callerName;
+      _activeViewerId = viewerId;
+    });
+  }
+
+  Future<void> _handleAnswer(Map<String, dynamic> data) async {
+    final viewerId = data['viewer_id'] as String?;
+    final sdp = data['sdp'] as String?;
+
+    if (viewerId == null || sdp == null) return;
+
+    final pc = _peerConnections[viewerId];
+    if (pc == null) return;
+
+    final answer = RTCSessionDescription(sdp, 'answer');
+    await pc.setRemoteDescription(answer);
+  }
+
+  Future<void> _handleIceCandidate(Map<String, dynamic> data) async {
+    final viewerId = data['viewer_id'] as String?;
+    final candidate = data['candidate'] as String?;
+    final sdpMLineIndex = data['sdpMLineIndex'] as int?;
+
+    if (viewerId == null || candidate == null) return;
+
+    final pc = _peerConnections[viewerId];
+    if (pc == null) return;
+
+    try {
+      await pc.addCandidate(
+        RTCIceCandidate(candidate, 'video', sdpMLineIndex ?? 0),
+      );
+    } catch (_) {}
+  }
+
+  void _handleViewerDisconnect(Map<String, dynamic> data) {
+    final viewerId = data['viewer_id'] as String?;
+    if (viewerId == null) return;
+
+    _peerConnections[viewerId]?.close();
+    _peerConnections.remove(viewerId);
+    _remoteStreams.remove(viewerId);
+    _callerNames.remove(viewerId);
+
+    if (_activeViewerId == viewerId) {
+      _remoteRenderer.srcObject = null;
       setState(() {
-        _status = "شغال - عدد المتصلين: ${_peerConnections.length}";
+        _activeViewerId = null;
+        _hasRemoteVideo = false;
       });
     }
   }
 
-  void _selectViewer(String viewerId) {
-    final stream = _remoteStreams[viewerId];
-    _applyAudioMute(stream);
-    _remoteRenderer.srcObject = stream;
+  Future<RTCPeerConnection> _createPeerConnection() async {
+    final pc = await createPeerConnection(
+      {
+        'iceServers': _iceServers,
+      },
+    );
 
-    setState(() {
-      _activeViewerId = viewerId;
-      _hasRemoteVideo = stream != null;
-    });
+    pc.onTrack = (RTCTrackEvent event) {
+      if (_disposed) return;
 
-    Navigator.of(context).pop();
-  }
+      if (event.track.kind == 'video') {
+        _remoteStreams[event.streams[0].id] = event.streams[0];
 
-  void _applyAudioMute(MediaStream? stream) {
-    stream?.getAudioTracks().forEach((t) {
-      t.enabled = !_remoteAudioMuted;
-    });
+        setState(() {
+          if (_activeViewerId != null) {
+            _remoteRenderer.srcObject = _remoteStreams[_activeViewerId];
+          }
+          _hasRemoteVideo = true;
+        });
+      }
+    };
+
+    pc.onIceCandidate = (RTCIceCandidate candidate) {
+      if (_disposed || _activeViewerId == null) return;
+
+      _ws?.add(jsonEncode({
+        'type': 'ice-candidate',
+        'viewer_id': _activeViewerId,
+        'candidate': candidate.candidate,
+        'sdpMLineIndex': candidate.sdpMLineIndex,
+      }));
+    };
+
+    return pc;
   }
 
   void _toggleRemoteAudio() {
-    setState(() {
-      _remoteAudioMuted = !_remoteAudioMuted;
-    });
-    if (_activeViewerId != null) {
-      _applyAudioMute(_remoteStreams[_activeViewerId]);
+    setState(() => _remoteAudioMuted = !_remoteAudioMuted);
+
+    final stream = _remoteStreams[_activeViewerId];
+    if (stream != null) {
+      for (final track in stream.getAudioTracks()) {
+        track.enabled = !_remoteAudioMuted;
+      }
     }
   }
 
   void _toggleLocalPreview() {
-    setState(() {
-      _showLocalPreview = !_showLocalPreview;
-    });
+    setState(() => _showLocalPreview = !_showLocalPreview);
   }
 
-  Future<void> _kickViewer(String viewerId) async {
-    _ws?.add(jsonEncode({
-      "type": "kick",
-      "target": viewerId,
-    }));
-    Navigator.of(context).pop();
-    await _cleanupViewer(viewerId, updateStatus: true);
-  }
-
-  void _confirmKick(String viewerId, String name) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text("قطع الاتصال"),
-        content: Text("متأكد إنك عايز تقطع الاتصال مع \"$name\"؟"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text("إلغاء"),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(dialogContext).pop();
-              _kickViewer(viewerId);
-            },
-            child: const Text("قطع الاتصال", style: TextStyle(color: Colors.red)),
+  Widget _monitoringBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      color: Colors.deepOrange,
+      child: Row(
+        children: [
+          const Icon(Icons.info, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _broadcastScreen
+                  ? "شاشة جهازك قيد البث الحالي. أي شيء تفتحه سيكون مرئيًا!"
+                  : "كاميرا جهازك قيد البث الحالي.",
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
           ),
         ],
       ),
@@ -710,147 +566,49 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   void _showCallersSheet() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Text("الأجهزة المتصلة", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              ),
-              if (_pendingViewers.isNotEmpty) ...[
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 4),
-                  child: Text("مستنيين موافقة", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.orange)),
-                ),
-                ..._pendingViewers.entries.map((entry) {
-                  final viewerId = entry.key;
-                  final name = entry.value;
-                  return ListTile(
-                    leading: const Icon(Icons.hourglass_empty, size: 20, color: Colors.orange),
-                    title: Text(name),
-                    subtitle: const Text("عايز يشوف الكاميرا"),
-                    trailing: Wrap(
-                      spacing: 4,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.check_circle, color: Colors.green),
-                          tooltip: "موافقة",
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            _approveViewer(viewerId, name);
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.cancel, color: Colors.red),
-                          tooltip: "رفض",
-                          onPressed: () {
-                            _rejectViewer(viewerId);
-                            setSheetState(() {});
-                          },
-                        ),
-                      ],
-                    ),
-                  );
-                }),
-                const Divider(),
-              ],
-              if (_callerNames.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text("محدش متصل دلوقتي"),
-                )
-              else
-                ..._callerNames.entries.map((entry) {
-                  final viewerId = entry.key;
-                  final hasVideo = _remoteStreams.containsKey(viewerId);
-                  final isActive = viewerId == _activeViewerId && _hasRemoteVideo;
-                  return ListTile(
-                    leading: Icon(
-                      Icons.circle,
-                      size: 12,
-                      color: isActive ? Colors.green : (hasVideo ? Colors.blue : Colors.orange),
-                    ),
-                    title: Text(entry.value),
-                    subtitle: Text(
-                      isActive
-                          ? "معروض دلوقتي على الشاشة"
-                          : (hasVideo ? "متصل - اضغط للعرض" : "بيتصل..."),
-                    ),
-                    onTap: hasVideo ? () => _selectViewer(viewerId) : null,
-                    trailing: IconButton(
-                      icon: const Icon(Icons.person_remove, color: Colors.red),
-                      tooltip: "قطع الاتصال",
-                      onPressed: () => _confirmKick(viewerId, entry.value),
-                    ),
-                  );
-                }),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _confirmUnpair() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text("إلغاء اقتران هذا الجهاز"),
-        content: const Text(
-          "سيتوقف البث فورًا، ولازم يتعمل اقتران جديد بكود من الوالد "
-          "عشان يشتغل تاني. متأكد؟",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text("إلغاء"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text("إلغاء الاقتران", style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      await CameraService.unpairDevice(widget.deviceToken);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.clear();
-      if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const PairingScreen()),
-          (route) => false,
-        );
-      }
-    }
-  }
-
-  Widget _monitoringBanner() {
-    // بانر ثابت، ما يتقفلش، يفضل ظاهر طول أي جلسة بث - عشان الجهاز
-    // يكون واضح دايمًا إنه بيُبث دلوقتي ولمين.
-    return Container(
-      width: double.infinity,
-      color: Colors.red.shade700,
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-      child: Row(
+      builder: (context) => ListView(
+        shrinkWrap: true,
         children: [
-          const Icon(Icons.fiber_manual_record, color: Colors.white, size: 12),
-          const SizedBox(width: 8),
-          const Expanded(
-            child: Text(
-              "هذا الجهاز يُشارك شاشته الآن مع حساب الوالد المقترن",
-              style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+          if (_callerNames.isEmpty)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(20),
+                child: Text("لا توجد أجهزة متصلة"),
+              ),
+            )
+          else
+            ..._callerNames.entries.map((entry) {
+              final viewerId = entry.key;
+              final callerName = entry.value;
+              final isActive = viewerId == _activeViewerId;
+
+              return ListTile(
+                leading: isActive
+                    ? const Icon(Icons.videocam, color: Colors.green)
+                    : null,
+                title: Text(callerName),
+                subtitle: isActive ? const Text("البث الحالي") : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  if (!isActive) {
+                    setState(() {
+                      if (_activeViewerId != null) {
+                        _peerConnections[_activeViewerId]?.close();
+                      }
+                      _activeViewerId = viewerId;
+                      _remoteRenderer.srcObject = _remoteStreams[viewerId];
+                    });
+                  }
+                },
+              );
+            }),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: TextButton(
+              style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0)),
+              child: const Text("إلغاء الاقتران", style: TextStyle(color: Colors.white, fontSize: 11, decoration: TextDecoration.underline)),
             ),
-          ),
-          TextButton(
-            onPressed: _confirmUnpair,
-            style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0)),
-            child: const Text("إلغاء الاقتران", style: TextStyle(color: Colors.white, fontSize: 11, decoration: TextDecoration.underline)),
           ),
         ],
       ),
@@ -921,119 +679,130 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          tooltip: "رجوع",
-          onPressed: () {
-            Navigator.of(context).pop();
-          },
-        ),
-        title: Text(widget.cameraName),
-        centerTitle: true,
-        actions: [
-          if (_hasRemoteVideo)
-            IconButton(
-              icon: Icon(_remoteAudioMuted ? Icons.volume_off : Icons.volume_up),
-              onPressed: _toggleRemoteAudio,
-              tooltip: _remoteAudioMuted ? "تشغيل الصوت" : "كتم الصوت",
-            ),
-          IconButton(
-            icon: Badge(
-              label: Text("${_callerNames.length}"),
-              isLabelVisible: _callerNames.isNotEmpty,
-              child: const Icon(Icons.people),
-            ),
-            onPressed: _showCallersSheet,
-            tooltip: "الأجهزة المتصلة",
-          ),
-          TextButton(
-            onPressed: () async {
-              await _cleanupCurrentStream();
-              await _chooseSource();
-              if (mounted) {
-                await _startMediaSource();
-              }
-            },
-            child: const Text(
-              "تغيير مصدر البث",
-              style: TextStyle(color: Colors.white),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.cameraswitch),
-            onPressed: (_ready && !_broadcastScreen) ? _switchCamera : null,
-            tooltip: _broadcastScreen ? "غير متاح أثناء بث الشاشة" : "تبديل الكاميرا",
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: "إعدادات التشغيل التلقائي",
+    // ===== حل مشكلة الشاشة السوداء عند الرجوع =====
+    return WillPopScope(
+      onWillPop: () async {
+        // تنظيف الموارد قبل الرجوع
+        await _cleanupCurrentStream();
+        
+        // الرجوع للشاشة السابقة
+        Navigator.pop(context);
+        return false;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: "رجوع",
             onPressed: () {
-              _foregroundServiceChannel.invokeMethod('openAutoStartSettings');
+              Navigator.of(context).pop();
             },
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _monitoringBanner(),
-          Expanded(
-            child: _error != null
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            _error!,
-                            style: const TextStyle(color: Colors.red, fontSize: 16),
-                            textAlign: TextAlign.center,
-                          ),
-                          if (_canRetry) ...[
-                            const SizedBox(height: 16),
-                            ElevatedButton.icon(
-                              onPressed: _startMediaSource,
-                              icon: const Icon(Icons.refresh),
-                              label: const Text("إعادة المحاولة"),
+          title: Text(widget.cameraName),
+          centerTitle: true,
+          actions: [
+            if (_hasRemoteVideo)
+              IconButton(
+                icon: Icon(_remoteAudioMuted ? Icons.volume_off : Icons.volume_up),
+                onPressed: _toggleRemoteAudio,
+                tooltip: _remoteAudioMuted ? "تشغيل الصوت" : "كتم الصوت",
+              ),
+            IconButton(
+              icon: Badge(
+                label: Text("${_callerNames.length}"),
+                isLabelVisible: _callerNames.isNotEmpty,
+                child: const Icon(Icons.people),
+              ),
+              onPressed: _showCallersSheet,
+              tooltip: "الأجهزة المتصلة",
+            ),
+            TextButton(
+              onPressed: () async {
+                await _cleanupCurrentStream();
+                await _chooseSource();
+                if (mounted) {
+                  await _startMediaSource();
+                }
+              },
+              child: const Text(
+                "تغيير مصدر البث",
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.cameraswitch),
+              onPressed: (_ready && !_broadcastScreen) ? _switchCamera : null,
+              tooltip: _broadcastScreen ? "غير متاح أثناء بث الشاشة" : "تبديل الكاميرا",
+            ),
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: "إعدادات التشغيل التلقائي",
+              onPressed: () {
+                _foregroundServiceChannel.invokeMethod('openAutoStartSettings');
+              },
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            _monitoringBanner(),
+            Expanded(
+              child: _error != null
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _error!,
+                              style: const TextStyle(color: Colors.red, fontSize: 16),
+                              textAlign: TextAlign.center,
                             ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  )
-                : !_ready
-                    ? const Center(child: CircularProgressIndicator())
-                    : _hasRemoteVideo
-                        ? Stack(
-                            children: [
-                              Positioned.fill(
-                                child: RTCVideoView(_remoteRenderer),
-                              ),
-                              Positioned(
-                                top: 8,
-                                right: 12,
-                                child: _pill(
-                                  _activeViewerId != null
-                                      ? (_callerNames[_activeViewerId] ?? "متصل")
-                                      : "متصل",
-                                ),
+                            if (_canRetry) ...[
+                              const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                onPressed: _startMediaSource,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text("إعادة المحاولة"),
                               ),
                             ],
-                          )
-                        : _idleBody(),
-          ),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            color: Colors.black,
-            child: Text(
-              _status,
-              style: const TextStyle(color: Colors.white70, fontSize: 13),
+                          ],
+                        ),
+                      ),
+                    )
+                  : !_ready
+                      ? const Center(child: CircularProgressIndicator())
+                      : _hasRemoteVideo
+                          ? Stack(
+                              children: [
+                                Positioned.fill(
+                                  child: RTCVideoView(_remoteRenderer),
+                                ),
+                                Positioned(
+                                  top: 8,
+                                  right: 12,
+                                  child: _pill(
+                                    _activeViewerId != null
+                                        ? (_callerNames[_activeViewerId] ?? "متصل")
+                                        : "متصل",
+                                  ),
+                                ),
+                              ],
+                            )
+                          : _idleBody(),
             ),
-          ),
-        ],
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              color: Colors.black,
+              child: Text(
+                _status,
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
