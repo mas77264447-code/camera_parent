@@ -886,21 +886,36 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   @override
   void dispose() {
     _disposed = true;
+
     WidgetsBinding.instance.removeObserver(this);
+
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
+
+    // لا نوقف Foreground Service هنا.
+    // الخدمة مسؤولة عن إبقاء جلسة البث حية عند خروج الواجهة.
+
     WakelockPlus.disable();
-    _foregroundServiceChannel.invokeMethod('stop').catchError((_) {});
-    _remoteRenderer.srcObject = null;
-    _localRenderer.srcObject = null;
+
+    // نفصل الـ renderer فقط، ولا نغلق مصدر البث هنا.
+    try {
+      _remoteRenderer.srcObject = null;
+      _localRenderer.srcObject = null;
+    } catch (_) {}
+
+    // إغلاق اتصالات العرض فقط.
     for (final pc in _peerConnections.values) {
       pc.close();
     }
-    _localStream?.getTracks().forEach((t) => t.stop());
-    _localStream?.dispose();
+
+    // لا نستخدم stop() للكاميرا هنا حتى لا تنقطع الجلسة
+    // عند إغلاق شاشة التطبيق.
+
     _localRenderer.dispose();
     _remoteRenderer.dispose();
-    _ws?.close();
+
+    // لا نوقف الخدمة ولا نغلق WebSocket هنا.
+
     super.dispose();
   }
 
