@@ -908,7 +908,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: null,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          tooltip: "رجوع",
+          onPressed: () {
+            Navigator.of(context).pop();
+          },
+        ),
         title: Text(widget.cameraName),
         centerTitle: true,
         actions: [
