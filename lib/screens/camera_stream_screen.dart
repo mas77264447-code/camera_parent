@@ -15,6 +15,12 @@ import 'pairing_screen.dart';
 
 const MethodChannel _foregroundServiceChannel =
     MethodChannel('camera_parent/foreground_service');
+// قناة منفصلة لأن الميثودز دي متسجلة في MainActivity.kt تحت
+// BATTERY_OPTIMIZATION_CHANNEL ("camera_parent/battery_optimization")
+// مش تحت foreground_service - استخدامها على القناة التانية كان بيفشل
+// بصمت (notImplemented) ومايستثنيش التطبيق فعليًا من قيود البطارية.
+const MethodChannel _batteryOptimizationChannel =
+    MethodChannel('camera_parent/battery_optimization');
 
 class CameraStreamScreen extends StatefulWidget {
   final String sessionId;
@@ -240,7 +246,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     if (!_foregroundServiceStarted) {
       try {
         await _foregroundServiceChannel.invokeMethod('start');
-        await _foregroundServiceChannel.invokeMethod('requestBatteryOptimizationExemption');
+        await _batteryOptimizationChannel.invokeMethod('requestBatteryOptimizationExemption');
         _foregroundServiceStarted = true;
       } catch (_) {
         // لو فشل تشغيل الخدمة، البث هيفضل شغال طول ما التطبيق فاتح
@@ -298,8 +304,10 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
 
   Future<void> _connectToWebSocket() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final serverUrl = prefs.getString('serverUrl') ?? '';
+      // نفس عنوان السيرفر المستخدم في pairing_screen.dart وقت الاقتران -
+      // مفيش داعي لتخزينه في SharedPreferences تحت اسم منفصل ("serverUrl")
+      // لأنه مش بيتخزن هناك أصلاً، وده كان سبب رسالة "عنوان السيرفر غير مسجل".
+      final serverUrl = CameraService.server;
 
       if (serverUrl.isEmpty) {
         setState(() {
@@ -310,12 +318,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       }
 
       final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
-      _ws = await WebSocket.connect(wsUrl);
+      // السيرفر عامل الـ WebSocket على مسار "/signal" تحديدًا
+      // (new WebSocketServer({ server, path: "/signal" }))، فلازم نتصل
+      // على نفس المسار وإلا الاتصال هيفشل من الأول.
+      _ws = await WebSocket.connect('$wsUrl/signal');
 
       _ws!.add(jsonEncode({
-        'type': 'child-register',
-        'session_id': widget.sessionId,
-        'device_token': widget.deviceToken,
+        'type': 'register',
+        'role': 'broadcaster',
+        'deviceToken': widget.deviceToken,
       }));
 
       _ws!.listen(
@@ -358,26 +369,40 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       final type = data['type'] as String?;
 
       switch (type) {
-        case 'viewer-request':
+        case 'join-request':
+          // فيوير لسه محتاج موافقة صاحب الكاميرا
           _handleViewerRequest(data);
+          break;
+        case 'viewer-joined':
+          // فيوير متوافق عليه بالفعل من قبل (أو رجع يتصل تاني) - نبعتله
+          // offer على طول من غير ما نعرض نافذة موافقة
+          _handleApprovedViewer(data);
           break;
         case 'answer':
           _handleAnswer(data);
           break;
-        case 'ice-candidate':
+        case 'ice':
           _handleIceCandidate(data);
           break;
-        case 'viewer-disconnect':
+        case 'viewer-left':
           _handleViewerDisconnect(data);
           break;
-        case 'request-camera-switch':
+        case 'switch-camera':
           _switchCamera();
           break;
-        case 'mute-microphone':
-          setState(() => _localMicMuted = true);
+        case 'toggle-mic':
+          setState(() => _localMicMuted = !_localMicMuted);
           break;
-        case 'unmute-microphone':
-          setState(() => _localMicMuted = false);
+        case 'kicked':
+          setState(() => _status = 'تم إنهاء الاتصال من طرف السيرفر');
+          break;
+        case 'auth-failed':
+          _reconnectTimer?.cancel();
+          setState(() {
+            _status = 'فشل التحقق من الجهاز';
+            _error = 'الجهاز غير مقترن على السيرفر. أعد الاقتران من جديد.';
+            _canRetry = false;
+          });
           break;
       }
     } catch (e) {
@@ -386,8 +411,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Future<void> _handleViewerRequest(Map<String, dynamic> data) async {
-    final viewerId = data['viewer_id'] as String?;
-    final callerName = data['caller_name'] as String? ?? 'Unknown';
+    final viewerId = data['viewerId']?.toString();
+    final callerName = data['name'] as String? ?? 'Unknown';
 
     if (viewerId == null) return;
 
@@ -417,11 +442,28 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     setState(() => _pendingViewers.remove(viewerId));
 
     if (!approved) {
-      _ws?.add(jsonEncode({'type': 'decline', 'viewer_id': viewerId}));
+      _ws?.add(jsonEncode({'type': 'reject-viewer', 'target': viewerId}));
       return;
     }
 
-    final pc = await _createPeerConnection();
+    _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
+    await _sendOfferTo(viewerId, callerName);
+  }
+
+  // فيوير متوافق عليه بالفعل من السيرفر (approved: true) - بيوصلنا
+  // مباشرة كـ "viewer-joined" من غير ما يمر بمرحلة الموافقة تاني.
+  Future<void> _handleApprovedViewer(Map<String, dynamic> data) async {
+    final viewerId = data['viewerId']?.toString();
+    final callerName = data['name'] as String? ?? 'Unknown';
+    if (viewerId == null) return;
+
+    await _sendOfferTo(viewerId, callerName);
+  }
+
+  Future<void> _sendOfferTo(String viewerId, String callerName) async {
+    if (_localStream == null) return;
+
+    final pc = await _createPeerConnection(viewerId);
     _peerConnections[viewerId] = pc;
 
     for (final track in _localStream!.getTracks()) {
@@ -433,7 +475,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
 
     _ws?.add(jsonEncode({
       'type': 'offer',
-      'viewer_id': viewerId,
+      'viewerId': viewerId,
       'sdp': offer.sdp,
     }));
 
@@ -444,7 +486,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Future<void> _handleAnswer(Map<String, dynamic> data) async {
-    final viewerId = data['viewer_id'] as String?;
+    final viewerId = data['viewerId']?.toString();
     final sdp = data['sdp'] as String?;
 
     if (viewerId == null || sdp == null) return;
@@ -457,24 +499,28 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Future<void> _handleIceCandidate(Map<String, dynamic> data) async {
-    final viewerId = data['viewer_id'] as String?;
-    final candidate = data['candidate'] as String?;
-    final sdpMLineIndex = data['sdpMLineIndex'] as int?;
+    // السيرفر بيبعت الـ ice على شكل: { type: "ice", candidate: {...}, from: viewerId }
+    final viewerId = data['from']?.toString();
+    final candidateData = data['candidate'];
 
-    if (viewerId == null || candidate == null) return;
+    if (viewerId == null || candidateData is! Map) return;
 
     final pc = _peerConnections[viewerId];
     if (pc == null) return;
 
     try {
       await pc.addCandidate(
-        RTCIceCandidate(candidate, 'video', sdpMLineIndex ?? 0),
+        RTCIceCandidate(
+          candidateData['candidate'] as String?,
+          candidateData['sdpMid'] as String?,
+          candidateData['sdpMLineIndex'] as int?,
+        ),
       );
     } catch (_) {}
   }
 
   void _handleViewerDisconnect(Map<String, dynamic> data) {
-    final viewerId = data['viewer_id'] as String?;
+    final viewerId = data['viewerId']?.toString();
     if (viewerId == null) return;
 
     _peerConnections[viewerId]?.close();
@@ -491,7 +537,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     }
   }
 
-  Future<RTCPeerConnection> _createPeerConnection() async {
+  Future<RTCPeerConnection> _createPeerConnection(String viewerId) async {
     final pc = await createPeerConnection(
       {
         'iceServers': _iceServers,
@@ -502,11 +548,11 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       if (_disposed) return;
 
       if (event.track.kind == 'video') {
-        _remoteStreams[event.streams[0].id] = event.streams[0];
+        _remoteStreams[viewerId] = event.streams[0];
 
         setState(() {
-          if (_activeViewerId != null) {
-            _remoteRenderer.srcObject = _remoteStreams[_activeViewerId];
+          if (_activeViewerId == viewerId) {
+            _remoteRenderer.srcObject = _remoteStreams[viewerId];
           }
           _hasRemoteVideo = true;
         });
@@ -514,13 +560,16 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     };
 
     pc.onIceCandidate = (RTCIceCandidate candidate) {
-      if (_disposed || _activeViewerId == null) return;
+      if (_disposed) return;
 
       _ws?.add(jsonEncode({
-        'type': 'ice-candidate',
-        'viewer_id': _activeViewerId,
-        'candidate': candidate.candidate,
-        'sdpMLineIndex': candidate.sdpMLineIndex,
+        'type': 'ice',
+        'target': viewerId,
+        'candidate': {
+          'candidate': candidate.candidate,
+          'sdpMid': candidate.sdpMid,
+          'sdpMLineIndex': candidate.sdpMLineIndex,
+        },
       }));
     };
 
@@ -560,6 +609,54 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _unpairDevice() async {
+    final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("إلغاء الاقتران"),
+            content: const Text(
+              "هل أنت متأكد من إلغاء الاقتران مع هذا الجهاز؟ لن يتمكن أحد من الاتصال بعد ذلك حتى يتم الاقتران من جديد.",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("إلغاء"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text("تأكيد", style: TextStyle(color: Colors.red)),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed || !mounted) return;
+
+    // اقفل كل الاتصالات الحالية
+    for (final pc in _peerConnections.values) {
+      pc.close();
+    }
+    _peerConnections.clear();
+    _ws?.close();
+
+    // امسح بيانات الاقتران المحفوظة محليًا (نفس المفاتيح المستخدمة في
+    // pairing_screen.dart وقت الـ claim)
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('device_token');
+    await prefs.remove('session_id');
+    await prefs.remove('device_name');
+    await prefs.remove('is_paired');
+
+    if (!mounted) return;
+
+    Navigator.of(context).pop(); // اقفل الـ bottom sheet
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const PairingScreen()),
+      (route) => false,
     );
   }
 
@@ -607,6 +704,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: TextButton(
               style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0)),
+              onPressed: _unpairDevice,
               child: const Text("إلغاء الاقتران", style: TextStyle(color: Colors.white, fontSize: 11, decoration: TextDecoration.underline)),
             ),
           ),
@@ -682,12 +780,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     // ===== حل مشكلة الشاشة السوداء عند الرجوع =====
     return WillPopScope(
       onWillPop: () async {
-        // تنظيف الموارد قبل الرجوع
-        await _cleanupCurrentStream();
-        
-        // الرجوع للشاشة السابقة
-        Navigator.pop(context);
-        return false;
+        // مسموح بالرجوع العادي - من غير ما نوقف البث، عشان يفضل شغال
+        // في الخلفية زي ما هو مقصود (نفس السبب اللي مكتوب في dispose()).
+        // كان فيه هنا نداء لـ _cleanupCurrentStream() + Navigator.pop()
+        // يدوي جوه onWillPop نفسها، وده كان بيوقف الكاميرا/الشاشة
+        // وأحيانًا يسيب الشاشة عالقة على استريم متقفول (شاشة سودة
+        // ما تروحش).
+        return true;
       },
       child: Scaffold(
         appBar: AppBar(
@@ -738,7 +837,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
               icon: const Icon(Icons.settings),
               tooltip: "إعدادات التشغيل التلقائي",
               onPressed: () {
-                _foregroundServiceChannel.invokeMethod('openAutoStartSettings');
+                _batteryOptimizationChannel.invokeMethod('openAutoStartSettings');
               },
             ),
           ],
