@@ -1,4 +1,4 @@
-name: Build APK
+دname: Build APK
 
 on:
   push:
@@ -42,23 +42,20 @@ jobs:
       - name: Clean project
         run: flutter clean
 
-      - name: Build APK Release Split ABI
+      - name: Build APK Split ABI
         run: |
           flutter pub get
-          flutter build apk --release --split-per-abi -v || true
+          flutter build apk --release --split-per-abi
 
-      - name: Check generated files
+      - name: Check APK output
         run: |
-          echo "Searching APK files..."
-          find . -name "*.apk" -print || true
+          echo "APK files:"
+          ls -lh build/app/outputs/flutter-apk/
+          find build/app/outputs/flutter-apk -name "*.apk" -print
 
-          echo "Checking build output..."
-          ls -R build/app/outputs || true
-
-      - name: Upload APK Artifacts
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: camera-parent-release-apks
-          path: |
-            **/*.apk
-          retention-days: 7
+          name: camera-parent-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 1
