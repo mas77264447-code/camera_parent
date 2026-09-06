@@ -544,4 +544,31 @@ class MainActivity : FlutterActivity() {
                 null
         }
     }
+
+    // ===== معالجة زر الرجوع =====
+    override fun onBackPressed() {
+        // التأكد من معالجة الرجوع بشكل صحيح
+        try {
+            super.onBackPressed()
+        } catch (e: Exception) {
+            // إذا حدثت مشكلة، نغلق التطبيق بشكل آمن
+            finishAffinity()
+        }
+    }
+
+    // ===== معالجة دورة حياة الـ Activity =====
+    override fun onResume() {
+        super.onResume()
+        // التأكد من أن الواجهة نشطة
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // تحرير الموارد
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // تنظيف الموارد النهائي
+    }
 }
