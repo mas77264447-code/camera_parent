@@ -51,6 +51,8 @@ class MainActivity : FlutterActivity() {
         flutterEngine: FlutterEngine
     ) {
 
+        super.configureFlutterEngine(flutterEngine)
+
         // ===== قناة التحكم في صلاحيات الجهاز (Device Admin) =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
