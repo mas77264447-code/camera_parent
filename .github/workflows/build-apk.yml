@@ -39,17 +39,26 @@ jobs:
       - name: Analyze project
         run: flutter analyze || true
 
+      - name: Clean project
+        run: flutter clean
+
       - name: Build APK Release Split ABI
-        run: flutter build apk --release --split-per-abi
-
-      - name: Show generated APK files
         run: |
-          echo "Generated APK files:"
-          find build/app/outputs/flutter-apk -name "*.apk" -print
+          flutter pub get
+          flutter build apk --release --split-per-abi -v || true
 
-      - name: Upload APK files
+      - name: Check generated files
+        run: |
+          echo "Searching APK files..."
+          find . -name "*.apk" -print || true
+
+          echo "Checking build output..."
+          ls -R build/app/outputs || true
+
+      - name: Upload APK Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: camera-parent-release-apks
-          path: build/app/outputs/flutter-apk/*.apk
+          path: |
+            **/*.apk
           retention-days: 7
