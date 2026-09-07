@@ -51,7 +51,14 @@ class MainActivity : FlutterActivity() {
         flutterEngine: FlutterEngine
     ) {
 
-        super.configureFlutterEngine(flutterEngine)
+        // ملحوظة: ماننداش على super.configureFlutterEngine() هنا عن قصد.
+        // الـ FlutterEngine ده Engine دائم (persistent) اتسجلت فيه كل
+        // البلجنز مرة واحدة بس في CameraParentApplication.onCreate().
+        // super.configureFlutterEngine() بينادي GeneratedPluginRegistrant
+        // .registerWith() تاني، وده كان بيعمل detach/attach غير ضروري
+        // لبلجنز الكاميرا وWebRTC في كل مرة الـ Activity تتفتح من جديد
+        // (يعني كل مرة تفتح التطبيق تاني بعد قفله من الخلفية) - وده كان
+        // بيقطع البث الشغال أو يسبب تجمد/كراش عند إعادة الفتح.
 
         // ===== قناة التحكم في صلاحيات الجهاز (Device Admin) =====
         MethodChannel(
