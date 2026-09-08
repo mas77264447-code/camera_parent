@@ -85,10 +85,6 @@ object ScreenCaptureManager {
             pendingResult?.success(
                 "denied"
             )
-
-            // تنظيف الحالة عند فشل/إلغاء طلب مشاركة الشاشة
-            this.resultCode = Activity.RESULT_CANCELED
-            this.projectionData = null
         }
 
 
