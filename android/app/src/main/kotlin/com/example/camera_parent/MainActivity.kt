@@ -530,10 +530,11 @@ class MainActivity : FlutterActivity() {
                 data != null
             ) {
 
-                ScreenCaptureManager.setPermission(
-                    resultCode,
+                ScreenCaptureManager.resultCode =
+                    resultCode
+
+                ScreenCaptureManager.projectionData =
                     data
-                )
 
                 ScreenCaptureManager
                     .pendingResult
@@ -546,8 +547,15 @@ class MainActivity : FlutterActivity() {
                     ?.success("denied")
             }
 
-            ScreenCaptureManager.pendingResult =
-                null
+            ScreenCaptureManager.pendingResult = null
+
+            // تنظيف حالة الطلب بعد رجوع نتيجة مشاركة الشاشة
+            if (resultCode != Activity.RESULT_OK) {
+                ScreenCaptureManager.resultCode =
+                    Activity.RESULT_CANCELED
+                ScreenCaptureManager.projectionData =
+                    null
+            }
         }
     }
 
