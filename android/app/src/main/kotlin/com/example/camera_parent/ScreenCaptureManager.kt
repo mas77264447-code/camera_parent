@@ -10,11 +10,13 @@ object ScreenCaptureManager {
 
     const val REQUEST_CODE = 9001
 
-    var pendingResult: MethodChannel.Result? = null
+    private var pendingResult: MethodChannel.Result? = null
 
-    // يحتفظ فقط أثناء حياة العملية
     var resultCode: Int = Activity.RESULT_CANCELED
+        private set
+
     var projectionData: Intent? = null
+        private set
 
 
     fun request(
@@ -22,8 +24,9 @@ object ScreenCaptureManager {
         result: MethodChannel.Result
     ) {
 
-        // إذا كان لدينا إذن سابق
-        if (projectionData != null &&
+        // إذا كان الإذن موجود أثناء تشغيل التطبيق
+        if (
+            projectionData != null &&
             resultCode == Activity.RESULT_OK
         ) {
             result.success("granted")
@@ -39,20 +42,70 @@ object ScreenCaptureManager {
 
         pendingResult = result
 
+
         val intent =
             manager.createScreenCaptureIntent()
 
 
-        (context as Activity)
-            .startActivityForResult(
+        if (context is Activity) {
+
+            context.startActivityForResult(
                 intent,
                 REQUEST_CODE
             )
+
+        } else {
+
+            pendingResult = null
+
+            result.success("denied")
+        }
+    }
+
+
+    fun onResult(
+        resultCode: Int,
+        data: Intent?
+    ) {
+
+        if (
+            resultCode == Activity.RESULT_OK &&
+            data != null
+        ) {
+
+            this.resultCode = resultCode
+            this.projectionData = data
+
+            pendingResult?.success(
+                "granted"
+            )
+
+        } else {
+
+            pendingResult?.success(
+                "denied"
+            )
+        }
+
+
+        pendingResult = null
     }
 
 
     fun clear() {
+
         projectionData = null
-        resultCode = Activity.RESULT_CANCELED
+
+        resultCode =
+            Activity.RESULT_CANCELED
+
+        pendingResult = null
+    }
+
+
+    fun hasPermission(): Boolean {
+
+        return projectionData != null &&
+                resultCode == Activity.RESULT_OK
     }
 }
