@@ -525,30 +525,13 @@ class MainActivity : FlutterActivity() {
             ScreenCaptureManager.REQUEST_CODE
         ) {
 
-            if (
-                resultCode == Activity.RESULT_OK &&
-                data != null
-            ) {
-
-                ScreenCaptureManager.resultCode =
-                    resultCode
-
-                ScreenCaptureManager.projectionData =
-                    data
-
-                ScreenCaptureManager
-                    .pendingResult
-                    ?.success("granted")
-
-            } else {
-
-                ScreenCaptureManager
-                    .pendingResult
-                    ?.success("denied")
-            }
-
-            ScreenCaptureManager.pendingResult =
-                null
+            // بنستخدم الدالة الجاهزة في ScreenCaptureManager بدل الوصول
+            // المباشر لخصائصه الـ private - ده هو اللي كان بيسبب خطأ
+            // "Cannot access ... it is private in ScreenCaptureManager"
+            ScreenCaptureManager.onResult(
+                resultCode,
+                data
+            )
         }
     }
 
