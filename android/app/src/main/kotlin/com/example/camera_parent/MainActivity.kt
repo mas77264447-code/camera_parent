@@ -530,11 +530,10 @@ class MainActivity : FlutterActivity() {
                 data != null
             ) {
 
-                ScreenCaptureManager.resultCode =
-                    resultCode
-
-                ScreenCaptureManager.projectionData =
+                ScreenCaptureManager.setPermission(
+                    resultCode,
                     data
+                )
 
                 ScreenCaptureManager
                     .pendingResult
