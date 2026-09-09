@@ -80,6 +80,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   String? _pendingOfferViewerId;
   String? _pendingOfferCallerName;
 
+  // بمجرد ما توافق مرة واحدة، بيتحفظ القرار محليًا وميظهرش نافذة
+  // موافقة تاني لطلبات الاتصال الجاية - لأن كل الطلبات اللي توصل هنا
+  // أصلاً من نفس الوالد المُقترن (السيرفر بيتأكد إن adminToken يطابق
+  // مالك الجلسة قبل ما يوصل الطلب للطفل أصلاً). بيترجع false تلقائيًا
+  // بعد أي "إلغاء اقتران" (شوف _unpairDevice).
+  bool _autoApproveViewers = false;
+
   // كتم صوت الطرف المتصل حاليًا
   bool _remoteAudioMuted = false;
   // كتم مايك الجهاز ده نفسه (بأمر بعيد من شاشة الوالد)
@@ -161,6 +168,10 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   static const int _maxAutoRetries = 5;
 
   Future<void> _init() async {
+    // حمّل قرار "الموافقة التلقائية" المحفوظ من مرة سابقة (لو موجود).
+    final prefs = await SharedPreferences.getInstance();
+    _autoApproveViewers = prefs.getBool('auto_approve_viewers') ?? false;
+
     // اطلب Device Admin لو مش مفعّل - بيظهر نافذة نظام مرة واحدة بس
     // ولو المستخدم وافق قبل كده بتعدي بدون ما تظهر نافذة.
     final adminActive = await DeviceAdminService.isAdminActive();
@@ -444,30 +455,45 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
 
     if (viewerId == null) return;
 
-    setState(() {
-      _pendingViewers[viewerId] = callerName;
-    });
+    bool approved;
 
-    final approved = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text("طلب اتصال"),
-            content: Text("$callerName يطلب مشاهدة: $sourceLabel\nهل توافق؟"),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text("رفض"),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text("موافقة"),
-              ),
-            ],
-          ),
-        ) ??
-        false;
+    if (_autoApproveViewers) {
+      // اتوافق قبل كده على طلبات نفس الوالد - منعرضش نافذة موافقة تاني.
+      approved = true;
+    } else {
+      setState(() {
+        _pendingViewers[viewerId] = callerName;
+      });
 
-    setState(() => _pendingViewers.remove(viewerId));
+      approved = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text("طلب اتصال"),
+              content: Text("$callerName يطلب مشاهدة: $sourceLabel\nهل توافق؟"),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("رفض"),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text("موافقة"),
+                ),
+              ],
+            ),
+          ) ??
+          false;
+
+      setState(() => _pendingViewers.remove(viewerId));
+
+      if (approved) {
+        // احفظ الموافقة عشان الطلبات الجاية من نفس الوالد متعرضش
+        // النافذة دي تاني.
+        _autoApproveViewers = true;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('auto_approve_viewers', true);
+      }
+    }
 
     if (!approved) {
       _ws?.add(jsonEncode({'type': 'reject-viewer', 'target': viewerId}));
@@ -703,6 +729,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     await prefs.remove('session_id');
     await prefs.remove('device_name');
     await prefs.remove('is_paired');
+    // لو اترّبط بوالد جديد بعد كده، لازم يوافق من الأول تاني.
+    await prefs.remove('auto_approve_viewers');
 
     if (!mounted) return;
 
