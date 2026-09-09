@@ -70,7 +70,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   // إن كاميرا جهاز الابن بتلتقط صورة فعليًا. رجّعها false قبل الاستخدام
   // الحقيقي عشان ما تتعرضش المعاينة المحلية لصاحب جهاز الابن تلقائيًا.
   bool _showLocalPreview = true;
-  bool _broadcastScreen = true;
+
+  // مصدر البث بيتحدد دلوقتي من الوالد وقت ما يطلب الاتصال (مش باختيار
+  // محلي عند فتح التطبيق) - شوف _handleViewerRequest/_handleApprovedViewer.
+  bool _broadcastScreen = false;
+
+  // فيوير اتوافق عليه وبننتظر نجهز مصدر البث (كاميرا/شاشة) عشان نبعتله
+  // الـ offer بعد ما يجهز. بيتصفّر بعد ما نبعت الـ offer فعليًا.
+  String? _pendingOfferViewerId;
+  String? _pendingOfferCallerName;
 
   // كتم صوت الطرف المتصل حاليًا
   bool _remoteAudioMuted = false;
@@ -142,28 +150,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     }
   }
 
-  Future<void> _chooseSource() async {
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text("اختر مصدر البث"),
-        content: const Text("هل تريد بث الكاميرا أم مشاركة شاشة الجهاز؟"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text("📷 الكاميرا"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text("🖥️ الشاشة"),
-          ),
-        ],
-      ),
-    );
-    _broadcastScreen = result ?? true;
-  }
-
   // بيبقى true لو ممكن نعيد المحاولة بزرار (يعني المشكلة كانت رفض
   // نافذة الموافقة أو خطأ مؤقت)، وbالse لو المشكلة تتطلب إجراء تاني
   // (زي إلغاء الاقتران، أو صلاحيات الكاميرا/المايك من الإعدادات)
@@ -189,8 +175,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       }
     }
 
-    await _chooseSource();
-
     // نبدأ نجيب سيرفرات ICE بدري (ومن غير ما نستنى) عشان تكون جاهزة
     // غالبًا قبل ما أول زائر يتصل ويحتاجها فعليًا
     await _loadIceServers();
@@ -207,10 +191,50 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       return;
     }
 
-    await _startMediaSource();
+    // مفيش اختيار مصدر محلي هنا ولا بث بيبدأ لوحده - بنتصل بالسيرفر
+    // ونستنى طلب فعلي من الوالد (بيحدد فيه هو عايز يشوف الكاميرا ولا
+    // الشاشة)، وبعد ما نوافق على الطلب باشر نجهز المصدر المطلوب.
+    await _startSignaling();
   }
 
-  // الجزء اللي ممكن يفشل ونحتاج نعيده (طلب مصدر البث نفسه) - منفصل
+  // تجهيز الخدمة والاتصال بالسيرفر كـ broadcaster - من غير ما نلتقط أي
+  // مصدر بث لسه. الالتقاط الفعلي (كاميرا/شاشة) بيتأجل لحد ما يوصل طلب
+  // اتصال متوافق عليه من الوالد (شوف _handleViewerRequest).
+  Future<void> _startSignaling() async {
+    setState(() {
+      _error = null;
+      _status = "جاري الاتصال بالسيرفر...";
+    });
+
+    if (!_foregroundServiceStarted) {
+      try {
+        await _foregroundServiceChannel.invokeMethod('start');
+        await _batteryOptimizationChannel.invokeMethod('requestBatteryOptimizationExemption');
+        _foregroundServiceStarted = true;
+      } catch (_) {
+        // لو فشل تشغيل الخدمة، البث هيفضل شغال طول ما التطبيق فاتح
+      }
+    }
+
+    try {
+      if (!_renderersReady) {
+        await _localRenderer.initialize();
+        await _remoteRenderer.initialize();
+        _renderersReady = true;
+      }
+    } catch (_) {}
+
+    if (_disposed) return;
+
+    setState(() {
+      _ready = true;
+      _status = "متصل - في انتظار طلب مشاهدة من الوالد";
+    });
+
+    _connectToWebSocket();
+  }
+
+  // الجزء اللي ممكن يفشل ونحتاج نعيده (تجهيز مصدر البث نفسه) - منفصل
   // عن بقية الـ init عشان زرار "إعادة المحاولة" يقدر ينادي عليه لوحده
   // من غير ما يعيد كل خطوات التهيئة اللي فوق تاني.
   // تنظيف مصدر البث الحالي قبل إنشاء مصدر جديد.
@@ -235,23 +259,16 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     }
   }
 
+  // بيلتقط مصدر البث المطلوب (_broadcastScreen بيتحدد قبل ما الدالة دي
+  // تتنادى، من الطلب اللي جالنا من الوالد). لو فيه فيوير مستني (بعد
+  // موافقة) هنبعتله offer تلقائيًا بمجرد ما المصدر يجهز.
   Future<void> _startMediaSource() async {
     await _cleanupCurrentStream();
 
     setState(() {
       _error = null;
-      _status = "جاري التجهيز...";
+      _status = _broadcastScreen ? "جاري تجهيز مشاركة الشاشة..." : "جاري تجهيز الكاميرا...";
     });
-
-    if (!_foregroundServiceStarted) {
-      try {
-        await _foregroundServiceChannel.invokeMethod('start');
-        await _batteryOptimizationChannel.invokeMethod('requestBatteryOptimizationExemption');
-        _foregroundServiceStarted = true;
-      } catch (_) {
-        // لو فشل تشغيل الخدمة، البث هيفضل شغال طول ما التطبيق فاتح
-      }
-    }
 
     try {
       if (!_renderersReady) {
@@ -285,7 +302,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
         _status = "جاهز للبث!";
       });
 
-      _connectToWebSocket();
+      // لو فيه فيوير كان مستني الموافقة دي عشان نجهز المصدر، ابعتله
+      // الـ offer دلوقتي بعد ما المصدر بقى جاهز فعليًا.
+      if (_pendingOfferViewerId != null) {
+        final viewerId = _pendingOfferViewerId!;
+        final callerName = _pendingOfferCallerName ?? 'Unknown';
+        _pendingOfferViewerId = null;
+        _pendingOfferCallerName = null;
+        await _sendOfferTo(viewerId, callerName);
+      }
     } catch (e) {
       if (_disposed) return;
 
@@ -413,6 +438,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   Future<void> _handleViewerRequest(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     final callerName = data['name'] as String? ?? 'Unknown';
+    // نوع البث اللي الوالد طلبه: "camera" أو "screen".
+    final requestedSource = data['source'] as String? ?? 'camera';
+    final sourceLabel = requestedSource == 'screen' ? 'مشاركة شاشة الجهاز' : 'الكاميرا';
 
     if (viewerId == null) return;
 
@@ -424,7 +452,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
           context: context,
           builder: (context) => AlertDialog(
             title: const Text("طلب اتصال"),
-            content: Text("هل تسمح ل$callerName بمشاهدة الكاميرا؟"),
+            content: Text("$callerName يطلب مشاهدة: $sourceLabel\nهل توافق؟"),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
@@ -447,7 +475,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     }
 
     _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
-    await _sendOfferTo(viewerId, callerName);
+
+    // جهّز المصدر اللي الوالد طلبه، وابعت الـ offer بمجرد ما يجهز
+    // (شوف نهاية _startMediaSource).
+    _broadcastScreen = requestedSource == 'screen';
+    _pendingOfferViewerId = viewerId;
+    _pendingOfferCallerName = callerName;
+    await _startMediaSource();
   }
 
   // فيوير متوافق عليه بالفعل من السيرفر (approved: true) - بيوصلنا
@@ -455,9 +489,24 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   Future<void> _handleApprovedViewer(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     final callerName = data['name'] as String? ?? 'Unknown';
+    final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
 
-    await _sendOfferTo(viewerId, callerName);
+    // لو المصدر شغال بالفعل، ابعت الـ offer على طول.
+    if (_localStream != null) {
+      await _sendOfferTo(viewerId, callerName);
+      return;
+    }
+
+    // مفيش مصدر شغال لسه (مثلاً السيرفر عمل ريستارت والبرودكاستر
+    // اتسجل من جديد) - جهّزه بنفس النوع اللي كان متفق عليه وابعت الـ
+    // offer بعد ما يجهز.
+    if (requestedSource != null) {
+      _broadcastScreen = requestedSource == 'screen';
+    }
+    _pendingOfferViewerId = viewerId;
+    _pendingOfferCallerName = callerName;
+    await _startMediaSource();
   }
 
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
@@ -592,6 +641,12 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Widget _monitoringBanner() {
+    final text = _localStream == null
+        ? "لا يوجد بث حاليًا - في انتظار طلب مشاهدة من الوالد"
+        : (_broadcastScreen
+            ? "شاشة جهازك قيد البث الحالي. أي شيء تفتحه سيكون مرئيًا!"
+            : "كاميرا جهازك قيد البث الحالي.");
+
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
       color: Colors.deepOrange,
@@ -601,9 +656,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              _broadcastScreen
-                  ? "شاشة جهازك قيد البث الحالي. أي شيء تفتحه سيكون مرئيًا!"
-                  : "كاميرا جهازك قيد البث الحالي.",
+              text,
               style: const TextStyle(color: Colors.white, fontSize: 13),
             ),
           ),
@@ -759,7 +812,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       _localRenderer.srcObject = null;
     } catch (_) {}
 
-
     // لا نستخدم stop() للكاميرا هنا حتى لا تنقطع الجلسة
     // عند إغلاق شاشة التطبيق.
 
@@ -811,22 +863,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
               onPressed: _showCallersSheet,
               tooltip: "الأجهزة المتصلة",
             ),
-            TextButton(
-              onPressed: () async {
-                await _cleanupCurrentStream();
-                await _chooseSource();
-                if (mounted) {
-                  await _startMediaSource();
-                }
-              },
-              child: const Text(
-                "تغيير مصدر البث",
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
             IconButton(
               icon: const Icon(Icons.cameraswitch),
-              onPressed: (_ready && !_broadcastScreen) ? _switchCamera : null,
+              onPressed: (_ready && !_broadcastScreen && _localStream != null) ? _switchCamera : null,
               tooltip: _broadcastScreen ? "غير متاح أثناء بث الشاشة" : "تبديل الكاميرا",
             ),
             IconButton(
@@ -903,6 +942,26 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Widget _idleBody() {
+    if (_localStream == null) {
+      // لسه مفيش مصدر بث شغال - مستنيين طلب اتصال متوافق عليه من الوالد.
+      return Container(
+        color: Colors.black,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              Icon(Icons.hourglass_empty, color: Colors.white38, size: 56),
+              SizedBox(height: 12),
+              Text(
+                "جاهز - في انتظار طلب مشاهدة من الوالد",
+                style: TextStyle(color: Colors.white70, fontSize: 15),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (_showLocalPreview && !_broadcastScreen) {
       // المعاينة الحية مسموحة بس وضع "الكاميرا" - في وضع "الشاشة" عرض
       // نفس اللقطة على الشاشة اللي بتُلتقط بيرجع يدخل جوه اللقطة نفسها

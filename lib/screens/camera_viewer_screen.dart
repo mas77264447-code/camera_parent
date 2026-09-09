@@ -34,6 +34,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   bool _textureRefreshedForThisTrack = false;
 
+  // المصدر اللي هنطلبه من جهاز الطفل: "camera" أو "screen". بيتحدد من
+  // المستخدم (الوالد) قبل ما نتصل، وبيتبعت مع طلب التسجيل عشان الطفل
+  // يعرف يعرض نوع الطلب في نافذة الموافقة بتاعته.
+  String _requestedSource = "camera";
+
   Timer? _reconnectTimer;
   Timer? _healthCheckTimer;
   Timer? _pingTimer;
@@ -102,7 +107,33 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
   }
 
+  // اسأل الوالد قبل الاتصال: عايز يشوف الكاميرا ولا شاشة جهاز الطفل؟
+  // الاختيار ده بيتبعت مع طلب التسجيل (requestedSource) عشان جهاز
+  // الطفل يعرضه في نافذة الموافقة ويجهّز المصدر المطلوب بعد الموافقة.
+  Future<void> _chooseRequestedSource() async {
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("اختر مصدر البث"),
+        content: const Text("هل تريد بث الكاميرا أم مشاركة شاشة الجهاز؟"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, "camera"),
+            child: const Text("📷 الكاميرا"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, "screen"),
+            child: const Text("🖥️ الشاشة"),
+          ),
+        ],
+      ),
+    );
+    _requestedSource = result ?? "camera";
+  }
+
   Future<void> _init() async {
+    await _chooseRequestedSource();
     await _loadIceServers();
     await _remoteRenderer.initialize();
     
@@ -203,6 +234,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         "session": widget.sessionId,
         "adminToken": widget.adminToken,
         "name": widget.name,
+        "requestedSource": _requestedSource,
       }));
 
       if (mounted) {

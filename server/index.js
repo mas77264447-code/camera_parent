@@ -604,9 +604,15 @@ wss.on("connection", (ws) => {
               type: "viewer-joined",
               viewerId,
               name: info.name,
+              source: info.source,
             });
           } else {
-            send(clientId, { type: "join-request", viewerId, name: info.name });
+            send(clientId, {
+              type: "join-request",
+              viewerId,
+              name: info.name,
+              source: info.source,
+            });
           }
         });
         return;
@@ -634,22 +640,32 @@ wss.on("connection", (ws) => {
         client.role = role;
         client.callerName = msg.name || "الوالد";
 
+        // نوع البث المطلوب من الوالد: "camera" أو "screen". أي قيمة
+        // تانية أو مفقودة بترجع "camera" افتراضيًا.
+        const requestedSource = msg.requestedSource === "screen" ? "screen" : "camera";
+
         const liveSession = getLive(session);
         liveSession.viewers.set(clientId, {
           name: client.callerName,
-          approved: true,
+          // approved بتبقى false لحد ما صاحب الكاميرا (الطفل) يوافق
+          // صراحةً على الطلب ده - كده كل اتصال محتاج موافقة فعلية.
+          approved: false,
+          source: requestedSource,
         });
 
         console.log(
-          `[ws] viewer registered: client=${clientId} session=${session} broadcasterOnline=${!!liveSession.broadcaster}`
+          `[ws] viewer registered: client=${clientId} session=${session} broadcasterOnline=${!!liveSession.broadcaster} source=${requestedSource}`
         );
 
         if (liveSession.broadcaster) {
           send(liveSession.broadcaster, {
-            type: "viewer-joined",
+            type: "join-request",
             viewerId: clientId,
             name: client.callerName,
+            source: requestedSource,
           });
+        } else {
+          send(clientId, { type: "await-approval" });
         }
         return;
       }
@@ -1101,7 +1117,7 @@ app.get("/dashboard", requireAdminToken, (req, res) => {
             ws = new WebSocket(wsProto + "://" + location.host + "/signal");
 
             ws.onopen = () => {
-              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, adminToken: dashboardToken }));
+              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, adminToken: dashboardToken, requestedSource: "camera" }));
             };
 
             ws.onmessage = async (event) => {
