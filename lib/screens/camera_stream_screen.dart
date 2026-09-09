@@ -759,10 +759,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       _localRenderer.srcObject = null;
     } catch (_) {}
 
-    // إغلاق اتصالات العرض فقط.
-    for (final pc in _peerConnections.values) {
-      pc.close();
-    }
 
     // لا نستخدم stop() للكاميرا هنا حتى لا تنقطع الجلسة
     // عند إغلاق شاشة التطبيق.
