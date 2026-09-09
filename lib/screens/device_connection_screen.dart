@@ -26,6 +26,10 @@ class DeviceConnectionScreen extends StatelessWidget {
 
             const SizedBox(height: 40),
 
+            // بطاقة واحدة بس - عند الدخول عليها هتسألك مباشرة "الكاميرا
+            // ولا الشاشة؟" (شوف CameraViewerScreen._chooseRequestedSource)
+            // فمفيش داعي لبطاقة "مشاركة الشاشة" منفصلة كانت أصلاً مجرد
+            // Placeholder مش متوصل بأي بث حقيقي.
             Card(
               child: ListTile(
                 leading: const Icon(
@@ -33,11 +37,11 @@ class DeviceConnectionScreen extends StatelessWidget {
                   size: 40,
                 ),
                 title: const Text(
-                  "الكاميرا",
+                  "مشاهدة الجهاز",
                   style: TextStyle(fontSize: 20),
                 ),
                 subtitle: const Text(
-                  "مشاهدة كاميرا جهاز الطفل",
+                  "شاهد كاميرا أو شاشة جهاز الطفل",
                 ),
                 trailing: const Icon(Icons.arrow_forward_ios),
 
@@ -52,38 +56,6 @@ class DeviceConnectionScreen extends StatelessWidget {
                             name: name,
                             adminToken: adminToken,
                           ),
-                    ),
-                  );
-
-                },
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            Card(
-              child: ListTile(
-                leading: const Icon(
-                  Icons.screen_share,
-                  size: 40,
-                ),
-                title: const Text(
-                  "مشاركة الشاشة",
-                  style: TextStyle(fontSize: 20),
-                ),
-                subtitle: const Text(
-                  "عرض شاشة جهاز الطفل",
-                ),
-                trailing: const Icon(Icons.arrow_forward_ios),
-
-                onTap: () {
-
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        "سيتم ربط مشاركة الشاشة مع WebRTC",
-                      ),
                     ),
                   );
 
