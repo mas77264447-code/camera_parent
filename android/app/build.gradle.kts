@@ -48,13 +48,11 @@ android {
     productFlavors {
         create("parent") {
             dimension = "role"
-            applicationIdSuffix = ".parent"
             resValue("string", "app_name", "Camera Parent")
         }
 
         create("child") {
             dimension = "role"
-            applicationIdSuffix = ".child"
             resValue("string", "app_name", "Camera")
         }
     }
