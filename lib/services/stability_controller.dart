@@ -41,11 +41,44 @@ class StabilityController {
     }
 
     recoveryQueue.enqueue(() async {
-      // هنا يتم ربط Recovery الحقيقي
+      // Recovery pipeline placeholder
+      //
+      // سيتم ربط:
       // WebRTCSessionManager.rebuildPeerConnection()
       // StreamManager.restoreSession()
     });
   }
+
+
+  // ==============================
+  // Compatibility API
+  // AgentService يستخدم هذه الدوال
+  // ==============================
+
+  void start() {
+    initialize();
+  }
+
+
+  Future<void> requestRecovery() async {
+    if (recoveryQueue.isRunning) {
+      return;
+    }
+
+    await recoveryQueue.enqueue(() async {
+      // Recovery execution
+      //
+      // سيتم تنفيذ:
+      // إعادة بناء PeerConnection
+      // استرجاع Stream Session
+    });
+  }
+
+
+  void stop() {
+    dispose();
+  }
+
 
   void dispose() {
     _networkSubscription?.cancel();
