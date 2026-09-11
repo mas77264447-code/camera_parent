@@ -1,6 +1,7 @@
 package com.example.camera_parent
 
 import android.app.Application
+import android.content.Context
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.embedding.engine.dart.DartExecutor
@@ -15,22 +16,32 @@ class CameraParentApplication : Application() {
     lateinit var flutterEngine: FlutterEngine
         private set
 
+
     object AppHolder {
         var engine: FlutterEngine? = null
+        var context: Context? = null
     }
+
 
     override fun onCreate() {
         super.onCreate()
+
+        // حفظ Context لاستخدامه من ForegroundService
+        AppHolder.context = applicationContext
+
 
         flutterEngine = FlutterEngine(this)
 
         GeneratedPluginRegistrant.registerWith(flutterEngine)
 
+
         flutterEngine.dartExecutor.executeDartEntrypoint(
             DartExecutor.DartEntrypoint.createDefault()
         )
 
+
         AppHolder.engine = flutterEngine
+
 
         FlutterEngineCache
             .getInstance()
