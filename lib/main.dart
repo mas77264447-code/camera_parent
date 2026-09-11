@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'services/native_bridge.dart';
 import 'screens/home_screen.dart';
 import 'screens/pairing_screen.dart';
 import 'screens/camera_stream_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  NativeBridge.initialize();
   runApp(const CameraParentApp());
 }
 

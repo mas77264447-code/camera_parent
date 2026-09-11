@@ -43,6 +43,9 @@ class StreamForegroundService : Service() {
 
         acquireWakeLock()
 
+        // Start Dart background agent through the cached FlutterEngine
+        FlutterServiceBridge.startAgent()
+
         return START_STICKY
     }
 

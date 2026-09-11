@@ -15,6 +15,10 @@ class CameraParentApplication : Application() {
     lateinit var flutterEngine: FlutterEngine
         private set
 
+    object AppHolder {
+        var engine: FlutterEngine? = null
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -25,6 +29,8 @@ class CameraParentApplication : Application() {
         flutterEngine.dartExecutor.executeDartEntrypoint(
             DartExecutor.DartEntrypoint.createDefault()
         )
+
+        AppHolder.engine = flutterEngine
 
         FlutterEngineCache
             .getInstance()

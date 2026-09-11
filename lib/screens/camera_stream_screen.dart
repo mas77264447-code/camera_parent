@@ -9,6 +9,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/camera_service.dart';
+import '../services/webrtc_session_manager.dart';
+import '../services/stream_manager.dart';
+import '../services/recovery_queue.dart';
 import '../services/screen_capture_service.dart';
 import '../services/device_admin_service.dart';
 import 'pairing_screen.dart';
@@ -65,6 +68,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
   bool _disposed = false;
+  final Set<String> _recoveringViewers = <String>{};
+  final Set<String> _intentionalDisconnects = <String>{};
 
   // TODO(تجربة/تشخيص فقط): تم تفعيل المعاينة افتراضيًا مؤقتًا للتأكد
   // إن كاميرا جهاز الابن بتلتقط صورة فعليًا. رجّعها false قبل الاستخدام
@@ -381,7 +386,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
         },
       );
 
+      _reconnectAttempts = 0;
       setState(() => _status = 'متصل بالسيرفر');
+      debugPrint('[WS] connected; approved viewers will be re-offered by the server');
     } catch (e) {
       if (!_disposed) {
         setState(() => _status = 'فشل الاتصال بالسيرفر');
@@ -517,6 +524,10 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     final callerName = data['name'] as String? ?? 'Unknown';
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
+    if (_recoveringViewers.contains(viewerId)) {
+      debugPrint('[Recovery] viewer=$viewerId already recovering; ignore duplicate viewer-joined');
+      return;
+    }
 
     // لو المصدر شغال بالفعل، ابعت الـ offer على طول.
     if (_localStream != null) {
@@ -536,28 +547,115 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
-    if (_localStream == null) return;
+    if (_localStream == null || _disposed) return;
+
+    final old = _peerConnections[viewerId];
+    if (old != null &&
+        old.connectionState ==
+            RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+      return;
+    }
+
+    if (old != null) {
+      _intentionalDisconnects.add(viewerId);
+      try { await old.close(); } catch (_) {}
+      _peerConnections.remove(viewerId);
+      StreamManager.instance.unregisterPeerConnection(viewerId, peerConnection: old);
+      _intentionalDisconnects.remove(viewerId);
+    }
 
     final pc = await _createPeerConnection(viewerId);
     _peerConnections[viewerId] = pc;
+    StreamManager.instance.registerPeerConnection(
+      viewerId: viewerId,
+      peerConnection: pc,
+      recover: () => _recoverViewerConnection(viewerId, callerName),
+    );
 
-    for (final track in _localStream!.getTracks()) {
-      await pc.addTrack(track, _localStream!);
+    try {
+      for (final track in _localStream!.getTracks()) {
+        await pc.addTrack(track, _localStream!);
+      }
+
+      debugPrint('[Recovery] creating offer for viewer=$viewerId');
+      final offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await WebRTCSessionManager.instance.saveOffer(offer);
+
+      if (_ws == null || _ws!.readyState != WebSocket.open) {
+        debugPrint('[Recovery] WS not open; offer will be retried after signaling reconnect');
+        return;
+      }
+
+      _ws!.add(jsonEncode({
+        'type': 'offer',
+        'viewerId': viewerId,
+        'sdp': offer.sdp,
+      }));
+      debugPrint('[Recovery] offer sent viewer=$viewerId');
+
+      if (mounted) {
+        setState(() {
+          _callerNames[viewerId] = callerName;
+          _activeViewerId = viewerId;
+        });
+      }
+    } catch (e) {
+      debugPrint('[Recovery] offer creation failed viewer=$viewerId: $e');
+      StreamManager.instance.unregisterPeerConnection(viewerId, peerConnection: pc);
+      if (_peerConnections[viewerId] == pc) _peerConnections.remove(viewerId);
+      try { await pc.close(); } catch (_) {}
+      rethrow;
     }
+  }
 
-    final offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+  Future<void> _recoverViewerConnection(String viewerId, String callerName) async {
+    if (_disposed || _localStream == null) return;
+    if (_recoveringViewers.contains(viewerId)) return;
 
-    _ws?.add(jsonEncode({
-      'type': 'offer',
-      'viewerId': viewerId,
-      'sdp': offer.sdp,
-    }));
+    _recoveringViewers.add(viewerId);
+    debugPrint('[Recovery] START viewer=$viewerId');
+    try {
+      await RecoveryQueue.instance.enqueue(() async {
+        if (_disposed || _localStream == null) return;
 
-    setState(() {
-      _callerNames[viewerId] = callerName;
-      _activeViewerId = viewerId;
-    });
+        final old = _peerConnections[viewerId];
+        if (old != null) {
+          _intentionalDisconnects.add(viewerId);
+          try { await old.close(); } catch (_) {}
+          if (_peerConnections[viewerId] == old) {
+            _peerConnections.remove(viewerId);
+          }
+          StreamManager.instance.unregisterPeerConnection(
+            viewerId,
+            peerConnection: old,
+          );
+          _intentionalDisconnects.remove(viewerId);
+        }
+
+        await _waitForWebSocket();
+        if (_disposed || _localStream == null) return;
+
+        await _sendOfferTo(viewerId, callerName);
+        debugPrint('[Recovery] COMPLETE viewer=$viewerId');
+      });
+    } finally {
+      _recoveringViewers.remove(viewerId);
+    }
+  }
+
+  Future<void> _waitForWebSocket() async {
+    for (var i = 0; i < 10; i++) {
+      if (_ws != null && _ws!.readyState == WebSocket.open) return;
+      if (_disposed) return;
+      if (_ws == null || _ws!.readyState != WebSocket.open) {
+        _connectToWebSocket();
+      }
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    if (_ws == null || _ws!.readyState != WebSocket.open) {
+      throw StateError('WebSocket recovery timeout');
+    }
   }
 
   Future<void> _handleAnswer(Map<String, dynamic> data) async {
@@ -570,6 +668,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     if (pc == null) return;
 
     final answer = RTCSessionDescription(sdp, 'answer');
+    await WebRTCSessionManager.instance.saveAnswer(answer);
     await pc.setRemoteDescription(answer);
   }
 
@@ -594,12 +693,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     } catch (_) {}
   }
 
-  void _handleViewerDisconnect(Map<String, dynamic> data) {
+  Future<void> _handleViewerDisconnect(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     if (viewerId == null) return;
 
-    _peerConnections[viewerId]?.close();
-    _peerConnections.remove(viewerId);
+    _intentionalDisconnects.add(viewerId);
+    final pc = _peerConnections.remove(viewerId);
+    try { await pc?.close(); } catch (_) {}
+    StreamManager.instance.unregisterPeerConnection(viewerId, peerConnection: pc);
+    _intentionalDisconnects.remove(viewerId);
     _remoteStreams.remove(viewerId);
     _callerNames.remove(viewerId);
 
@@ -634,8 +736,27 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       }
     };
 
-    pc.onIceCandidate = (RTCIceCandidate candidate) {
+    pc.onConnectionState = (RTCPeerConnectionState state) {
+      debugPrint('[PC] viewer=$viewerId state=$state');
       if (_disposed) return;
+
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        if (_intentionalDisconnects.contains(viewerId)) return;
+
+        final callerName = _callerNames[viewerId] ?? 'Unknown';
+        debugPrint('[Recovery] fatal PC state for viewer=$viewerId -> rebuild');
+        _recoverViewerConnection(viewerId, callerName);
+      }
+    };
+
+    pc.onIceConnectionState = (RTCIceConnectionState state) {
+      debugPrint('[ICE] viewer=$viewerId state=$state');
+    };
+
+    pc.onIceCandidate = (RTCIceCandidate candidate) async {
+      if (_disposed) return;
+      await WebRTCSessionManager.instance.saveIceCandidate(candidate);
 
       _ws?.add(jsonEncode({
         'type': 'ice',
@@ -716,8 +837,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     if (!confirmed || !mounted) return;
 
     // اقفل كل الاتصالات الحالية
-    for (final pc in _peerConnections.values) {
-      pc.close();
+    for (final entry in _peerConnections.entries.toList()) {
+      _intentionalDisconnects.add(entry.key);
+      try { await entry.value.close(); } catch (_) {}
+      StreamManager.instance.unregisterPeerConnection(
+        entry.key,
+        peerConnection: entry.value,
+      );
     }
     _peerConnections.clear();
     _ws?.close();
