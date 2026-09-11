@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 class StreamForegroundService : Service() {
@@ -17,18 +18,28 @@ class StreamForegroundService : Service() {
     companion object {
         const val CHANNEL_ID = "camera_parent_stream_channel"
         const val NOTIFICATION_ID = 4821
+
+        private const val TAG = "StreamService"
     }
 
+
     private var wakeLock: PowerManager.WakeLock? = null
+
 
     override fun onCreate() {
         super.onCreate()
 
+        Log.d(TAG, "Service created")
+
         createNotificationChannel()
 
-        // منع تجميد الخدمة بسبب تحسين البطارية
+        // طلب استثناء تحسين البطارية
         BatteryOptimizationManager.requestDisable(this)
+
+        // لا نفتح Autostart من هنا
+        // لأنه يسبب مشاكل عند تشغيل الخدمة بالخلفية
     }
+
 
 
     override fun onStartCommand(
@@ -37,13 +48,18 @@ class StreamForegroundService : Service() {
         startId: Int
     ): Int {
 
+
+        Log.d(TAG, "Service started")
+
         val notification = buildNotification()
+
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
 
             startForeground(
                 NOTIFICATION_ID,
                 notification,
+
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
@@ -58,40 +74,72 @@ class StreamForegroundService : Service() {
         }
 
 
+
         acquireWakeLock()
 
 
-        // تشغيل Agent بعد تجهيز FlutterEngine
+
+        // تشغيل Agent
         FlutterServiceBridge.startAgent()
+
+
+
+        Log.d(
+            TAG,
+            "Foreground active - Agent started"
+        )
 
 
         return START_STICKY
     }
 
 
+
+
     private fun acquireWakeLock() {
 
-        if (wakeLock?.isHeld == true) return
+        if (wakeLock?.isHeld == true) {
+            return
+        }
 
 
         val powerManager =
-            getSystemService(POWER_SERVICE) as PowerManager
+            getSystemService(POWER_SERVICE)
+                    as PowerManager
 
 
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "CameraParent::StreamWakeLock"
-        )
+
+        wakeLock =
+            powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "CameraParent::StreamWakeLock"
+            )
+
 
 
         wakeLock?.setReferenceCounted(false)
 
         wakeLock?.acquire()
+
+
+
+        Log.d(
+            TAG,
+            "WakeLock acquired"
+        )
     }
 
 
 
+
     override fun onTaskRemoved(rootIntent: Intent?) {
+
+
+        Log.d(
+            TAG,
+            "Task removed - restarting service"
+        )
+
 
         val restart =
             Intent(
@@ -115,7 +163,16 @@ class StreamForegroundService : Service() {
 
 
 
+
     override fun onDestroy() {
+
+
+        Log.d(
+            TAG,
+            "Service destroyed"
+        )
+
+
 
         wakeLock?.let {
 
@@ -133,13 +190,19 @@ class StreamForegroundService : Service() {
 
 
 
-    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
+    }
+
 
 
 
     private fun createNotificationChannel() {
 
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
 
             val channel =
                 NotificationChannel(
@@ -151,6 +214,7 @@ class StreamForegroundService : Service() {
 
             channel.description =
                 "إشعار البث المباشر شغال"
+
 
 
             val manager =
@@ -165,10 +229,15 @@ class StreamForegroundService : Service() {
 
 
 
+
     private fun buildNotification(): Notification {
 
+
         val launchIntent =
-            packageManager.getLaunchIntentForPackage(packageName)
+            packageManager.getLaunchIntentForPackage(
+                packageName
+            )
+
 
 
         val pendingIntent =
@@ -180,13 +249,16 @@ class StreamForegroundService : Service() {
             )
 
 
+
         return NotificationCompat.Builder(
             this,
             CHANNEL_ID
         )
-            .setContentTitle("مشاركة الشاشة نشطة")
+            .setContentTitle(
+                "مشاركة الشاشة نشطة"
+            )
             .setContentText(
-                "جهازك يُشارك شاشته الآن مع حساب الوالد المقترن"
+                "جهازك يُشارك شاشته الآن"
             )
             .setSmallIcon(
                 android.R.drawable.ic_menu_camera
