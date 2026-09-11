@@ -23,13 +23,24 @@ class StreamForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+
         createNotificationChannel()
+
+        // منع تجميد الخدمة بسبب تحسين البطارية
+        BatteryOptimizationManager.requestDisable(this)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int
+    ): Int {
+
         val notification = buildNotification()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+
             startForeground(
                 NOTIFICATION_ID,
                 notification,
@@ -37,75 +48,152 @@ class StreamForegroundService : Service() {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             )
+
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+
+            startForeground(
+                NOTIFICATION_ID,
+                notification
+            )
         }
+
 
         acquireWakeLock()
 
-        // Start Dart background agent through the cached FlutterEngine
+
+        // تشغيل Agent بعد تجهيز FlutterEngine
         FlutterServiceBridge.startAgent()
+
 
         return START_STICKY
     }
 
+
     private fun acquireWakeLock() {
+
         if (wakeLock?.isHeld == true) return
 
-        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+
+        val powerManager =
+            getSystemService(POWER_SERVICE) as PowerManager
+
+
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "CameraParent::StreamWakeLock"
         )
+
+
         wakeLock?.setReferenceCounted(false)
+
         wakeLock?.acquire()
     }
 
+
+
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val restart = Intent(applicationContext, StreamForegroundService::class.java)
+
+        val restart =
+            Intent(
+                applicationContext,
+                StreamForegroundService::class.java
+            )
+
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
             startForegroundService(restart)
+
         } else {
+
             startService(restart)
         }
+
+
         super.onTaskRemoved(rootIntent)
     }
 
+
+
     override fun onDestroy() {
+
         wakeLock?.let {
-            if (it.isHeld) it.release()
+
+            if (it.isHeld) {
+                it.release()
+            }
         }
+
+
         wakeLock = null
+
+
         super.onDestroy()
     }
 
+
+
     override fun onBind(intent: Intent?): IBinder? = null
 
+
+
     private fun createNotificationChannel() {
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "بث الكاميرا",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            channel.description = "إشعار البث المباشر شغال"
-            val manager = getSystemService(NotificationManager::class.java)
+
+            val channel =
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "بث الكاميرا",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+
+
+            channel.description =
+                "إشعار البث المباشر شغال"
+
+
+            val manager =
+                getSystemService(
+                    NotificationManager::class.java
+                )
+
+
             manager?.createNotificationChannel(channel)
         }
     }
 
-    private fun buildNotification(): Notification {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, launchIntent,
-            PendingIntent.FLAG_IMMUTABLE
-        )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+
+    private fun buildNotification(): Notification {
+
+        val launchIntent =
+            packageManager.getLaunchIntentForPackage(packageName)
+
+
+        val pendingIntent =
+            PendingIntent.getActivity(
+                this,
+                0,
+                launchIntent,
+                PendingIntent.FLAG_IMMUTABLE
+            )
+
+
+        return NotificationCompat.Builder(
+            this,
+            CHANNEL_ID
+        )
             .setContentTitle("مشاركة الشاشة نشطة")
-            .setContentText("جهازك يُشارك شاشته الآن مع حساب الوالد المقترن")
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentIntent(pendingIntent)
+            .setContentText(
+                "جهازك يُشارك شاشته الآن مع حساب الوالد المقترن"
+            )
+            .setSmallIcon(
+                android.R.drawable.ic_menu_camera
+            )
+            .setContentIntent(
+                pendingIntent
+            )
             .setOngoing(true)
             .build()
     }
