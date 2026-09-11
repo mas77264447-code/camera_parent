@@ -26,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Camera access is needed to stream live video between the child device and the parent device.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Microphone access is needed to stream live audio between the child device and the parent device.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Location access is needed to show the device location while using the app.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

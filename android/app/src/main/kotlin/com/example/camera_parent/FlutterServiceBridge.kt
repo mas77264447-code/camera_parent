@@ -6,7 +6,7 @@ object FlutterServiceBridge {
     private const val CHANNEL = "camera_parent/service"
 
     fun startAgent() {
-        val app = AppHolder.engine ?: return
+        val app = CameraParentApplication.AppHolder.engine ?: return
         MethodChannel(app.dartExecutor.binaryMessenger, CHANNEL)
             .invokeMethod("startAgent", null)
     }

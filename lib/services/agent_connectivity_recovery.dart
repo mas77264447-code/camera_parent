@@ -13,7 +13,7 @@ class AgentConnectivityRecovery {
 
   void initialize() {
     ConnectivityMethodChannel.initialize(
-      onChanged: (online) async {
+      onNetworkChanged: (online) async {
         if (online) {
           await _networkRestored();
         } else {
