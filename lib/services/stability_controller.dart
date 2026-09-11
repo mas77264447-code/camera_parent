@@ -1,44 +1,54 @@
+import 'dart:async';
 
 import 'network_monitor.dart';
 import 'recovery_queue.dart';
-import 'stream_watchdog.dart';
-import 'stream_manager.dart';
+import 'connection_state_manager.dart';
 
 class StabilityController {
   StabilityController._();
-  static final StabilityController instance = StabilityController._();
 
-  final RecoveryQueue recoveryQueue = RecoveryQueue();
-  final NetworkMonitor networkMonitor = NetworkMonitor();
-  final StreamWatchdog watchdog = StreamWatchdog();
+  static final StabilityController instance =
+      StabilityController._();
 
-  final StreamManager stream = StreamManager.instance;
+  final RecoveryQueue recoveryQueue = RecoveryQueue.instance;
+  final NetworkMonitor networkMonitor = NetworkMonitor.instance;
 
-  bool running = false;
+  StreamSubscription? _networkSubscription;
 
-  void start() {
-    if (running) return;
-    running = true;
+  void initialize() {
+    _networkSubscription ??=
+        networkMonitor.onStatusChanged.listen(
+      (status) {
+        if (status == NetworkStatus.lost) {
+          _handleNetworkLost();
+        }
 
-    networkMonitor.start(
-      onAvailable: () => requestRecovery(),
-      onLost: () {},
+        if (status == NetworkStatus.available) {
+          _handleNetworkRestored();
+        }
+      },
     );
   }
 
-  Future<void> requestRecovery() async {
-    await recoveryQueue.enqueue(() async {
-      if (!stream.isWebSocketConnected()) {
-        await stream.reconnect();
-      }
-      if (!stream.hasActivePeerConnection()) {
-        await stream.recoverWebRTC();
-      }
+  void _handleNetworkLost() {
+    ConnectionStateManager.instance
+        .update(ConnectionStatus.reconnecting);
+  }
+
+  void _handleNetworkRestored() {
+    if (recoveryQueue.isRunning) {
+      return;
+    }
+
+    recoveryQueue.enqueue(() async {
+      // هنا يتم ربط Recovery الحقيقي
+      // WebRTCSessionManager.rebuildPeerConnection()
+      // StreamManager.restoreSession()
     });
   }
 
-  void stop() {
-    running = false;
-    networkMonitor.stop();
+  void dispose() {
+    _networkSubscription?.cancel();
+    _networkSubscription = null;
   }
 }
