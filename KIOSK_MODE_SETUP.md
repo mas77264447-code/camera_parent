@@ -1,40 +1,37 @@
-# Kiosk Mode الحقيقي لجهاز الطفل
+# Kiosk Mode — مساران بدون فرض Factory Reset
 
-تمت إضافة Android Lock Task Mode باستخدام Device Owner.
+المشروع الآن يدعم مسارين رسميين من Android:
 
-## ما الذي يفعله
-- يمنع الخروج الطبيعي من تطبيق الطفل إلى Home/Recents أثناء Kiosk.
-- يجعل `X` في Recent Apps غير وسيلة عادية لإزالة التطبيق من المهمة.
-- يعيد الدخول إلى Lock Task عند عودة Activity إذا كان التطبيق Device Owner ومسموحًا له.
-- يستخدم `android:lockTaskMode="if_whitelisted"`.
-- يستخدم `LOCK_TASK_FEATURE_NONE` على Android 9+ لتقييد ميزات Lock Task المتاحة.
+## 1. Device Owner — Kiosk الحقيقي
 
-## شرط أساسي
-Kiosk الحقيقي لا يعمل بمجرد Device Admin العادي. يجب أن يكون تطبيق الطفل **Device Owner**.
+إذا كان تطبيق الطفل Device Owner ومسموحًا له بـ Lock Task، يستخدم التطبيق:
+- `DevicePolicyManager.setLockTaskPackages()`
+- `LOCK_TASK_FEATURE_NONE` على Android 9+
+- إعادة الدخول تلقائيًا إلى Lock Task عند عودة Activity
+- قيود الجهاز الإضافية الموجودة في المشروع (Wi‑Fi / تثبيت التطبيقات / Factory Reset وغيرها)
 
-## اختبار التطوير عبر ADB
-على جهاز اختبار جديد/مُعاد ضبطه، وبعد تثبيت نسخة الطفل:
+هذا هو المسار الأقوى، لكنه يتطلب provisioning كـ Device Owner.
 
-```bash
-adb shell dpm set-device-owner com.example.camera_parent.child/com.example.camera_parent.DeviceAdminReceiver
-```
+## 2. بدون فورمات — Screen Pinning
 
-ثم افتح تطبيق الطفل، وتأكد أن:
+إذا لم يكن التطبيق Device Owner، لا يعرض التطبيق رسالة خطأ anymore. عند الضغط على Kiosk يستدعي `Activity.startLockTask()`، ووفق Android يدخل النظام في Screen Pinning عندما لا يكون التطبيق allowlisted.
 
-```bash
-adb shell dpm list-owners
-```
+هذا المسار:
+- لا يحتاج Factory Reset.
+- لا يحتاج Device Owner.
+- يستخدم API Android الرسمي.
+- يثبت تطبيق الطفل على الشاشة بعد تأكيد النظام.
+- لا يمنح التطبيق صلاحيات Device Owner أو قيود النظام الكاملة.
+- يمكن للمستخدم الخروج باستخدام آلية إلغاء Screen Pinning التي يعرضها Android.
 
-يعرض:
+ولا يتم إعادة تشغيل Screen Pinning تلقائيًا عند كل `onResume` حتى لا يظهر مربع تأكيد النظام باستمرار.
 
-```text
-Device Owner: admin=ComponentInfo{com.example.camera_parent.child/com.example.camera_parent.DeviceAdminReceiver}
-```
+## الاختبار
 
-> ملاحظة: تعيين Device Owner بواسطة ADB عادةً يتطلب جهازًا غير مُجهز مسبقًا بحساب/إدارة جهاز، وقد تحتاج إلى Factory Reset في جهاز الاختبار.
+1. ثبّت نسخة child الجديدة.
+2. افتح تطبيق الطفل.
+3. افتح إعداد Kiosk.
+4. إذا لم يكن Device Owner، اختر **تثبيت التطبيق**.
+5. أكمل تأكيد Android إذا ظهر.
 
-## إيقاف Kiosk في الاختبار
-من داخل التطبيق استخدم `disableKioskMode()` قبل إزالة Device Owner. ولا تعتمد على زر Home/Recents للخروج أثناء Kiosk.
-
-## مهم
-Kiosk/Lock Task لا يمنع زر الطاقة أو إعادة تشغيل الجهاز، ولا يضمن بقاء العملية ضد كل عمليات النظام/OEM. لذلك يبقى Foreground Service + إعدادات البطارية/Autostart جزءًا منفصلًا من طبقة الاعتمادية.
+إذا أردت لاحقًا تحويل الجهاز إلى Kiosk مُدار بالكامل، يمكن إعداد Device Owner على جهاز مخصص/provisioned لذلك.
