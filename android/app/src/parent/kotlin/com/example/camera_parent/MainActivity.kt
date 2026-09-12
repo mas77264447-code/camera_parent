@@ -373,7 +373,7 @@ class MainActivity : FlutterActivity() {
                         Intent(
                             this,
                             StreamForegroundService::class.java
-                        )
+                        ).setAction(StreamForegroundService.ACTION_START)
 
                     if (
                         Build.VERSION.SDK_INT >=
@@ -396,11 +396,11 @@ class MainActivity : FlutterActivity() {
 
                 "stop" -> {
 
-                    stopService(
+                    startService(
                         Intent(
                             this,
                             StreamForegroundService::class.java
-                        )
+                        ).setAction(StreamForegroundService.ACTION_STOP)
                     )
 
                     result.success(true)

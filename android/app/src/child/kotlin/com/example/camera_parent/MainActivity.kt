@@ -7,6 +7,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.app.ActivityManager
+import android.util.Log
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -30,6 +32,8 @@ class MainActivity : FlutterActivity() {
             "camera_parent/battery_optimization"
 
         private const val REQUEST_ADMIN_CODE = 4210
+        private const val KIOSK_PREFS = "camera_parent_kiosk"
+        private const val KIOSK_ENABLED = "enabled"
     }
 
 
@@ -195,50 +199,65 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
-                "enableKioskMode" -> {
+                "isKioskSupported" -> {
+                    result.success(
+                        DeviceAdminReceiver.isDeviceOwner(this) &&
+                            dpm.isLockTaskPermitted(packageName)
+                    )
+                }
 
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
-
-                        dpm.setLockTaskPackages(
-                            adminComp,
-                            arrayOf(packageName)
-                        )
-
-                        startLockTask()
-
-                        result.success(true)
-
+                "isKioskActive" -> {
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    val active = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_LOCKED
                     } else {
+                        false
+                    }
+                    result.success(active)
+                }
 
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                "isKioskEnabled" -> {
+                    result.success(getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                        .getBoolean(KIOSK_ENABLED, false))
+                }
+
+                "enableKioskMode" -> {
+                    if (!DeviceAdminReceiver.isDeviceOwner(this)) {
+                        result.error("NOT_OWNER", "يحتاج Device Owner لتفعيل Kiosk الحقيقي", null)
+                    } else {
+                        try {
+                            if (!configureKioskPolicy()) {
+                                result.error("KIOSK_NOT_PERMITTED", "النظام لم يسمح بقفل التطبيق", null)
+                                return@setMethodCallHandler
+                            }
+
+                            getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                                .edit().putBoolean(KIOSK_ENABLED, true).apply()
+                            startLockTask()
+                            Log.i("KioskMode", "Kiosk enabled by user")
+                            result.success(true)
+                        } catch (e: SecurityException) {
+                            result.error("KIOSK_SECURITY", e.message, null)
+                        } catch (e: Exception) {
+                            result.error("KIOSK_ERROR", e.message, null)
+                        }
                     }
                 }
 
                 "disableKioskMode" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
-
-                        stopLockTask()
-
-                        result.success(true)
-
+                    if (!DeviceAdminReceiver.isDeviceOwner(this)) {
+                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
                     } else {
-
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                        try {
+                            getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                                .edit().putBoolean(KIOSK_ENABLED, false).apply()
+                            stopLockTask()
+                            clearKioskRestrictions()
+                            Log.i("KioskMode", "Kiosk disabled by user")
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("KIOSK_ERROR", e.message, null)
+                        }
                     }
                 }
 
@@ -373,7 +392,7 @@ class MainActivity : FlutterActivity() {
                         Intent(
                             this,
                             StreamForegroundService::class.java
-                        )
+                        ).setAction(StreamForegroundService.ACTION_START)
 
                     if (
                         Build.VERSION.SDK_INT >=
@@ -396,11 +415,11 @@ class MainActivity : FlutterActivity() {
 
                 "stop" -> {
 
-                    stopService(
+                    startService(
                         Intent(
                             this,
                             StreamForegroundService::class.java
-                        )
+                        ).setAction(StreamForegroundService.ACTION_STOP)
                     )
 
                     result.success(true)
@@ -545,10 +564,138 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // ===== قيود Device Owner الخاصة بجهاز Kiosk =====
+    // هذه القيود تمنع المستخدم العادي من إدارة التطبيقات أو الوصول
+    // لمسارات إعدادات يمكن أن توقف التطبيق من واجهة Settings.
+    // لا تتجاوز Force Stop نفسه؛ بل تمنع المسار الطبيعي للوصول إليه.
+    private fun applyKioskRestrictions() {
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return
+
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val adminComp = DeviceAdminReceiver.getComponentName(this)
+        val um = android.os.UserManager
+
+        val restrictions = mutableListOf(
+            um.DISALLOW_APPS_CONTROL,
+            um.DISALLOW_UNINSTALL_APPS,
+            um.DISALLOW_INSTALL_APPS,
+            um.DISALLOW_INSTALL_UNKNOWN_SOURCES,
+            um.DISALLOW_FACTORY_RESET,
+            um.DISALLOW_SAFE_BOOT,
+            um.DISALLOW_ADD_USER,
+            um.DISALLOW_USER_SWITCH,
+            um.DISALLOW_MODIFY_ACCOUNTS,
+            um.DISALLOW_DEBUGGING_FEATURES
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            restrictions.add(um.DISALLOW_USB_FILE_TRANSFER)
+        }
+
+        if (Build.VERSION.SDK_INT >= 35) {
+            restrictions.add(um.DISALLOW_ADD_PRIVATE_PROFILE)
+        }
+
+        restrictions.forEach { restriction ->
+            try {
+                dpm.addUserRestriction(adminComp, restriction)
+            } catch (_: SecurityException) {
+                // بعض القيود تعتمد على إصدار Android/سياسة الجهاز.
+            } catch (_: IllegalArgumentException) {
+                // تجاهل القيود غير المدعومة على OEM معين.
+            }
+        }
+    }
+
+    private fun configureKioskPolicy(): Boolean {
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return false
+
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val adminComp = DeviceAdminReceiver.getComponentName(this)
+
+        dpm.setLockTaskPackages(adminComp, arrayOf(packageName))
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            // لا Home / Recents / Notifications / System UI / Global Actions
+            // أثناء Lock Task.
+            dpm.setLockTaskFeatures(
+                adminComp,
+                DevicePolicyManager.LOCK_TASK_FEATURE_NONE
+            )
+        }
+
+        applyKioskRestrictions()
+
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            dpm.isLockTaskPermitted(packageName)
+    }
+
+    private fun clearKioskRestrictions() {
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return
+
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val adminComp = DeviceAdminReceiver.getComponentName(this)
+        val um = android.os.UserManager
+
+        val restrictions = mutableListOf(
+            um.DISALLOW_APPS_CONTROL,
+            um.DISALLOW_UNINSTALL_APPS,
+            um.DISALLOW_INSTALL_APPS,
+            um.DISALLOW_INSTALL_UNKNOWN_SOURCES,
+            um.DISALLOW_FACTORY_RESET,
+            um.DISALLOW_SAFE_BOOT,
+            um.DISALLOW_ADD_USER,
+            um.DISALLOW_USER_SWITCH,
+            um.DISALLOW_MODIFY_ACCOUNTS,
+            um.DISALLOW_DEBUGGING_FEATURES
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            restrictions.add(um.DISALLOW_USB_FILE_TRANSFER)
+        }
+        if (Build.VERSION.SDK_INT >= 35) {
+            restrictions.add(um.DISALLOW_ADD_PRIVATE_PROFILE)
+        }
+
+        restrictions.forEach { restriction ->
+            try {
+                dpm.clearUserRestriction(adminComp, restriction)
+            } catch (_: Exception) {
+                // Ignore unsupported restrictions.
+            }
+        }
+    }
+
+    // ===== إعادة الدخول إلى Kiosk عند عودة Activity =====
+    private fun ensureKioskMode() {
+        val requested = getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+            .getBoolean(KIOSK_ENABLED, false)
+        if (!requested) return
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return
+
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!configureKioskPolicy()) return
+
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val locked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_LOCKED
+        } else {
+            false
+        }
+
+        if (!locked) {
+            try {
+                startLockTask()
+            } catch (_: Exception) {
+                // سيحاول النظام مرة أخرى عند onResume التالية.
+            }
+        }
+    }
+
     // ===== معالجة دورة حياة الـ Activity =====
     override fun onResume() {
         super.onResume()
-        // التأكد من أن الواجهة نشطة
+        ensureKioskMode()
     }
 
     override fun onPause() {

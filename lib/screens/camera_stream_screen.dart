@@ -68,6 +68,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
   bool _disposed = false;
+  bool _wsConnecting = false;
   final Set<String> _recoveringViewers = <String>{};
   final Set<String> _intentionalDisconnects = <String>{};
 
@@ -216,6 +217,96 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   // تجهيز الخدمة والاتصال بالسيرفر كـ broadcaster - من غير ما نلتقط أي
   // مصدر بث لسه. الالتقاط الفعلي (كاميرا/شاشة) بيتأجل لحد ما يوصل طلب
   // اتصال متوافق عليه من الوالد (شوف _handleViewerRequest).
+  Future<void> _showKioskSettings() async {
+    final supported = await DeviceAdminService.isKioskSupported();
+    final active = await DeviceAdminService.isKioskActive();
+    final enabled = await DeviceAdminService.isKioskEnabled();
+
+    if (!mounted) return;
+
+    if (!supported) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Kiosk Mode'),
+          content: const Text(
+            'وضع Kiosk الحقيقي غير جاهز على هذا الجهاز.\n\n'
+            'يجب إعداد تطبيق الطفل كـ Device Owner أولاً.\n'
+            'بعدها سيظهر خيار التفعيل هنا ويعمل عبر نظام Android الرسمي.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('حسنًا'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final shouldEnable = !enabled && !active;
+    if (!shouldEnable) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('إلغاء Kiosk Mode؟'),
+          content: const Text(
+            'سيتم السماح بالخروج من التطبيق واستخدام Home وRecent Apps مرة أخرى.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إبقاء Kiosk'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('إلغاء Kiosk'),
+            ),
+          ],
+        ),
+      ) ?? false;
+
+      if (!confirmed) return;
+
+      final ok = await DeviceAdminService.disableKioskMode();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'تم إلغاء Kiosk Mode' : 'تعذر إلغاء Kiosk Mode')),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تفعيل Kiosk Mode؟'),
+        content: const Text(
+          'سيثبت تطبيق الطفل في الشاشة ويمنع الخروج العادي إلى Home وRecent Apps.\n\n'
+          'يمكن إلغاء الوضع لاحقًا من هذا الإعداد عندما يكون الجهاز مُدارًا رسميًا.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('تفعيل Kiosk'),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (!confirmed) return;
+
+    final ok = await DeviceAdminService.enableKioskMode();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? 'تم تفعيل Kiosk Mode' : 'تعذر تفعيل Kiosk Mode')),
+    );
+  }
+
   Future<void> _startSignaling() async {
     setState(() {
       _error = null;
@@ -344,6 +435,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Future<void> _connectToWebSocket() async {
+    if (_disposed || _wsConnecting) return;
+    _wsConnecting = true;
+
     try {
       // نفس عنوان السيرفر المستخدم في pairing_screen.dart وقت الاقتران -
       // مفيش داعي لتخزينه في SharedPreferences تحت اسم منفصل ("serverUrl")
@@ -387,13 +481,17 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       );
 
       _reconnectAttempts = 0;
-      setState(() => _status = 'متصل بالسيرفر');
+      if (!_disposed) {
+        setState(() => _status = 'متصل بالسيرفر');
+      }
       debugPrint('[WS] connected; approved viewers will be re-offered by the server');
     } catch (e) {
       if (!_disposed) {
         setState(() => _status = 'فشل الاتصال بالسيرفر');
         _scheduleReconnect();
       }
+    } finally {
+      _wsConnecting = false;
     }
   }
 
@@ -1020,6 +1118,11 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
               icon: const Icon(Icons.cameraswitch),
               onPressed: (_ready && !_broadcastScreen && _localStream != null) ? _switchCamera : null,
               tooltip: _broadcastScreen ? "غير متاح أثناء بث الشاشة" : "تبديل الكاميرا",
+            ),
+            IconButton(
+              icon: const Icon(Icons.lock_outline),
+              tooltip: "إعداد Kiosk Mode",
+              onPressed: _showKioskSettings,
             ),
             IconButton(
               icon: const Icon(Icons.settings),
