@@ -209,6 +209,25 @@ function generatePairingCode() {
 const PAIRING_CODE_TTL_SECONDS = 5 * 60;
 
 // ------------------------------------------------------------------
+// Password Hashing (scrypt, salted)
+// ------------------------------------------------------------------
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString("hex");
+}
+
+function verifyPassword(password, salt, expectedHash) {
+  try {
+    const candidate = hashPassword(password, salt);
+    const a = Buffer.from(candidate, "hex");
+    const b = Buffer.from(expectedHash, "hex");
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch (e) {
+    return false;
+  }
+}
+
+// ------------------------------------------------------------------
 // Pairing System
 // ------------------------------------------------------------------
 app.post("/pairing/create", requireAdminToken, async (req, res) => {
@@ -276,6 +295,130 @@ app.post("/pairing/claim", async (req, res) => {
     })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
+
+  res.json({
+    data: {
+      device_token: deviceToken,
+      session_id: sessionId,
+      device_name: deviceName,
+    },
+  });
+});
+
+// ------------------------------------------------------------------
+// Username/Password Registration (permanent credentials, no admin
+// pairing-code needed). أول مرة تدخل بيوزر وباسورد جدد بيتسجل جهاز
+// جديد. لو نفس اليوزر موجود قبل كده، لازم نفس الباسورد وبيرجعلك نفس
+// الـ device_token/session_id القدام (مفيد لو التطبيق اتمسح وعايز
+// ترجع لنفس الجهاز من غير كود جديد من الوالد).
+// ------------------------------------------------------------------
+app.post("/pairing/register", async (req, res) => {
+  const username = (
+    req.body && req.body.username ? String(req.body.username).trim() : ""
+  ).toLowerCase();
+  const password =
+    (req.body && req.body.password ? String(req.body.password) : "");
+  const deviceName =
+    (req.body &&
+      req.body.device_name &&
+      String(req.body.device_name).trim()) ||
+    "جهاز غير مسمى";
+  const code = (req.body && req.body.code ? String(req.body.code) : "").trim();
+
+  if (!username || !password) {
+    res.status(400).json({ error: "لازم تدخل اسم المستخدم وكلمة المرور." });
+    return;
+  }
+  if (password.length < 4) {
+    res.status(400).json({ error: "كلمة المرور لازم تكون 4 أحرف على الأقل." });
+    return;
+  }
+
+  const credKey = `credentials:${username}`;
+  const raw = await redis.get(credKey);
+
+  if (raw) {
+    // اليوزر ده متسجل قبل كده - تحقق من الباسورد ورجّع نفس الجلسة
+    // (مش محتاجين كود هنا؛ الكود مطلوب أول مرة بس وقت إنشاء الحساب)
+    const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const ok = verifyPassword(password, entry.salt, entry.passwordHash);
+
+    if (!ok) {
+      res
+        .status(401)
+        .json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة." });
+      return;
+    }
+
+    res.json({
+      data: {
+        device_token: entry.deviceToken,
+        session_id: entry.sessionId,
+        device_name: entry.deviceName,
+      },
+    });
+    return;
+  }
+
+  // يوزر جديد - لازم كود صادر من تطبيق الوالد (شاشة "إضافة جهاز") عشان
+  // نتأكد إن الوالد فعلاً هو اللي بيوافق على ربط الجهاز ده بحسابه.
+  if (!code) {
+    res
+      .status(400)
+      .json({ error: "لازم كود من تطبيق الوالد لأول تسجيل دخول." });
+    return;
+  }
+
+  const pairingRaw = await redis.get(`pairing:${code}`);
+  if (!pairingRaw) {
+    res
+      .status(400)
+      .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
+    return;
+  }
+  // الكود يُستخدم مرة واحدة بس
+  await redis.del(`pairing:${code}`);
+
+  const pairingEntry =
+    typeof pairingRaw === "string" ? JSON.parse(pairingRaw) : pairingRaw;
+  const ownerToken = pairingEntry.ownerToken;
+
+  const salt = crypto.randomBytes(16).toString("hex");
+  const passwordHash = hashPassword(password, salt);
+
+  const sessionId = crypto.randomBytes(16).toString("hex");
+  const deviceToken = crypto.randomBytes(24).toString("hex");
+
+  const sessionData = {
+    name: deviceName,
+    createdAt: Date.now(),
+    ownerToken,
+    deviceToken,
+  };
+
+  await redis.set(`session:${sessionId}`, JSON.stringify(sessionData));
+  await redis.set(
+    `device:${deviceToken}`,
+    JSON.stringify({
+      sessionId,
+      ownerToken,
+      deviceName,
+      pairedAt: Date.now(),
+    })
+  );
+  await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
+
+  await redis.set(
+    credKey,
+    JSON.stringify({
+      salt,
+      passwordHash,
+      sessionId,
+      deviceToken,
+      deviceName,
+      createdAt: Date.now(),
+    })
+  );
 
   res.json({
     data: {
@@ -390,11 +533,18 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
 // ------------------------------------------------------------------
 wss.on("connection", (ws) => {
   const clientId = String(nextClientId++);
-  clients[clientId] = { ws, sessionId: null, role: null };
+  clients[clientId] = {
+    ws,
+    sessionId: null,
+    role: null,
+    lastMessageAt: Date.now(),
+  };
 
   ws.isAlive = true;
   ws.on("pong", () => {
     ws.isAlive = true;
+    const c = clients[clientId];
+    if (c) c.lastMessageAt = Date.now();
   });
 
   ws.on("message", async (raw) => {
@@ -407,6 +557,13 @@ wss.on("connection", (ws) => {
 
     const client = clients[clientId];
     if (!client) return;
+    client.lastMessageAt = Date.now();
+
+    // ------ Ping / Pong (app-level, keeps NAT/proxy connections alive) ------
+    if (msg.type === "ping") {
+      send(clientId, { type: "pong", timestamp: msg.timestamp || Date.now() });
+      return;
+    }
 
     // ------ Register Broadcaster ------
     if (msg.type === "register") {
@@ -447,9 +604,15 @@ wss.on("connection", (ws) => {
               type: "viewer-joined",
               viewerId,
               name: info.name,
+              source: info.source,
             });
           } else {
-            send(clientId, { type: "join-request", viewerId, name: info.name });
+            send(clientId, {
+              type: "join-request",
+              viewerId,
+              name: info.name,
+              source: info.source,
+            });
           }
         });
         return;
@@ -477,22 +640,32 @@ wss.on("connection", (ws) => {
         client.role = role;
         client.callerName = msg.name || "الوالد";
 
+        // نوع البث المطلوب من الوالد: "camera" أو "screen". أي قيمة
+        // تانية أو مفقودة بترجع "camera" افتراضيًا.
+        const requestedSource = msg.requestedSource === "screen" ? "screen" : "camera";
+
         const liveSession = getLive(session);
         liveSession.viewers.set(clientId, {
           name: client.callerName,
-          approved: true,
+          // approved بتبقى false لحد ما صاحب الكاميرا (الطفل) يوافق
+          // صراحةً على الطلب ده - كده كل اتصال محتاج موافقة فعلية.
+          approved: false,
+          source: requestedSource,
         });
 
         console.log(
-          `[ws] viewer registered: client=${clientId} session=${session} broadcasterOnline=${!!liveSession.broadcaster}`
+          `[ws] viewer registered: client=${clientId} session=${session} broadcasterOnline=${!!liveSession.broadcaster} source=${requestedSource}`
         );
 
         if (liveSession.broadcaster) {
           send(liveSession.broadcaster, {
-            type: "viewer-joined",
+            type: "join-request",
             viewerId: clientId,
             name: client.callerName,
+            source: requestedSource,
           });
+        } else {
+          send(clientId, { type: "await-approval" });
         }
         return;
       }
@@ -706,17 +879,33 @@ wss.on("connection", (ws) => {
 // ------------------------------------------------------------------
 // Heartbeat
 // ------------------------------------------------------------------
+const HEARTBEAT_INTERVAL = 10000; // 10s بدل 15s - يكتشف الانقطاع أسرع
+const WS_IDLE_TIMEOUT = 35000; // لو مفيش أي رسالة/pong خلال 35 ثانية، اقفل الاتصال
+
 const heartbeatInterval = setInterval(() => {
+  const now = Date.now();
+
   wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) {
+    const entry = Object.entries(clients).find(([, c]) => c.ws === ws);
+    const clientId = entry ? entry[0] : null;
+    const client = clientId ? clients[clientId] : null;
+
+    if (client && now - client.lastMessageAt > WS_IDLE_TIMEOUT) {
+      console.log(`[ws] idle timeout: client=${clientId}`);
       return ws.terminate();
     }
+
+    if (ws.isAlive === false) {
+      console.log(`[ws] no pong received: client=${clientId ?? "?"}`);
+      return ws.terminate();
+    }
+
     ws.isAlive = false;
     try {
       ws.ping();
     } catch (_) {}
   });
-}, 15000);
+}, HEARTBEAT_INTERVAL);
 
 wss.on("close", () => clearInterval(heartbeatInterval));
 
@@ -726,7 +915,13 @@ wss.on("close", () => clearInterval(heartbeatInterval));
 let _warnedNoPrivateTurn = false;
 
 function getIceServers() {
-  const stun = { urls: "stun:stun.l.google.com:19302" };
+  const stunServers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
+  ];
 
   const turnUrls = (process.env.TURN_URLS || "").trim();
 
@@ -739,7 +934,10 @@ function getIceServers() {
       .map((u) => u.trim())
       .filter(Boolean);
 
-    return [stun, ...urls.map((urls_) => ({ urls: urls_, username, credential }))];
+    return [
+      ...stunServers,
+      ...urls.map((urls_) => ({ urls: urls_, username, credential })),
+    ];
   }
 
   if (!_warnedNoPrivateTurn) {
@@ -752,8 +950,9 @@ function getIceServers() {
     );
   }
 
+  // openrelay كـ fallback أخير فقط لو مفيش TURN_URLS متظبط
   return [
-    stun,
+    ...stunServers,
     {
       urls: "turn:openrelay.metered.ca:80",
       username: "openrelayproject",
@@ -774,6 +973,26 @@ function getIceServers() {
 
 app.get("/ice-servers", (req, res) => {
   res.json({ data: getIceServers() });
+});
+
+// نقطة تشخيص سريعة لمعرفة حالة الاتصالات الحية (Broadcaster/Viewers)
+app.get("/stats", (req, res) => {
+  const now = Date.now();
+  const clientDetails = Object.entries(clients).map(([id, c]) => ({
+    id,
+    role: c.role,
+    sessionId: c.sessionId ? c.sessionId.slice(0, 8) + "..." : null,
+    idleSeconds: Math.round((now - (c.lastMessageAt || now)) / 1000),
+    wsState: c.ws?.readyState,
+  }));
+
+  res.json({
+    totalClients: Object.keys(clients).length,
+    activeSessions: Object.keys(live).length,
+    clients: clientDetails,
+    uptimeSeconds: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.get("/camera/view", (req, res) => {
@@ -898,7 +1117,7 @@ app.get("/dashboard", requireAdminToken, (req, res) => {
             ws = new WebSocket(wsProto + "://" + location.host + "/signal");
 
             ws.onopen = () => {
-              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, adminToken: dashboardToken }));
+              ws.send(JSON.stringify({ type: "register", role: "viewer", session: sessionId, adminToken: dashboardToken, requestedSource: "camera" }));
             };
 
             ws.onmessage = async (event) => {

@@ -66,7 +66,34 @@ class DeviceAdminService {
 
   // ─── Device Owner فقط (يتطلب ADB + Factory Reset) ────
 
-  /// وضع Kiosk: يثبّت التطبيق في الشاشة، المستخدم مايقدرش يخرج منه
+  /// هل الجهاز مهيأ كـ Device Owner ومسموح للتطبيق باستخدام Lock Task؟
+  static Future<bool> isKioskSupported() async {
+    try {
+      return await _channel.invokeMethod("isKioskSupported") ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// هل Lock Task/Kiosk يعمل حاليًا؟
+  static Future<bool> isKioskActive() async {
+    try {
+      return await _channel.invokeMethod("isKioskActive") ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// هل المستخدم طلب إبقاء Kiosk مفعلاً بعد إعادة فتح التطبيق؟
+  static Future<bool> isKioskEnabled() async {
+    try {
+      return await _channel.invokeMethod("isKioskEnabled") ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// وضع Kiosk الحقيقي (Lock Task): يثبت التطبيق في الشاشة.
   static Future<bool> enableKioskMode() async {
     try {
       return await _channel.invokeMethod("enableKioskMode") ?? false;
