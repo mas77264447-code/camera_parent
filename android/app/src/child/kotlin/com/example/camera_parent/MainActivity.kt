@@ -200,16 +200,54 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "isKioskSupported" -> {
-                    result.success(
-                        DeviceAdminReceiver.isDeviceOwner(this) &&
+                    // Android الرسمي يسمح للتطبيق باستدعاء startLockTask() من
+                    // API 21. إذا لم يكن التطبيق Device Owner/allowlisted،
+                    // يتحول الاستدعاء إلى Screen Pinning بدل Kiosk المُدار.
+                    result.success(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+                }
+
+                "getKioskStatus" -> {
+                    val owner = DeviceAdminReceiver.isDeviceOwner(this)
+                    val permitted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
                             dpm.isLockTaskPermitted(packageName)
+                        } catch (_: Exception) {
+                            false
+                        }
+                    } else {
+                        owner
+                    }
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    val active = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                    } else {
+                        false
+                    }
+                    val enabled = getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                        .getBoolean(KIOSK_ENABLED, false)
+                    val mode = when {
+                        owner && permitted -> "device_owner"
+                        active -> "screen_pinning"
+                        enabled -> "screen_pinning_ready"
+                        else -> "screen_pinning"
+                    }
+
+                    result.success(
+                        mapOf(
+                            "supported" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP),
+                            "deviceOwner" to owner,
+                            "lockTaskPermitted" to permitted,
+                            "active" to active,
+                            "enabled" to enabled,
+                            "mode" to mode,
+                        )
                     )
                 }
 
                 "isKioskActive" -> {
                     val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                     val active = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_LOCKED
+                        am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
                     } else {
                         false
                     }
@@ -217,47 +255,82 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "isKioskEnabled" -> {
-                    result.success(getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
-                        .getBoolean(KIOSK_ENABLED, false))
+                    result.success(
+                        getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                            .getBoolean(KIOSK_ENABLED, false)
+                    )
                 }
 
                 "enableKioskMode" -> {
-                    if (!DeviceAdminReceiver.isDeviceOwner(this)) {
-                        result.error("NOT_OWNER", "يحتاج Device Owner لتفعيل Kiosk الحقيقي", null)
-                    } else {
-                        try {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+                        result.error("KIOSK_UNSUPPORTED", "هذا الإصدار من Android لا يدعم Lock Task", null)
+                        return@setMethodCallHandler
+                    }
+
+                    val owner = DeviceAdminReceiver.isDeviceOwner(this)
+
+                    try {
+                        if (owner) {
+                            // المسار الكامل: Device Owner + Lock Task مُدار.
                             if (!configureKioskPolicy()) {
-                                result.error("KIOSK_NOT_PERMITTED", "النظام لم يسمح بقفل التطبيق", null)
+                                result.error(
+                                    "KIOSK_NOT_PERMITTED",
+                                    "التطبيق أصبح Device Owner لكن النظام لم يسمح بـ Lock Task",
+                                    null
+                                )
                                 return@setMethodCallHandler
                             }
-
-                            getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
-                                .edit().putBoolean(KIOSK_ENABLED, true).apply()
-                            startLockTask()
-                            Log.i("KioskMode", "Kiosk enabled by user")
-                            result.success(true)
-                        } catch (e: SecurityException) {
-                            result.error("KIOSK_SECURITY", e.message, null)
-                        } catch (e: Exception) {
-                            result.error("KIOSK_ERROR", e.message, null)
+                        } else {
+                            // المسار البديل بدون فورمات: Android يدخل Screen Pinning
+                            // عند استدعاء startLockTask() من تطبيق غير allowlisted.
+                            Log.i(
+                                "KioskMode",
+                                "Device Owner غير موجود؛ استخدام Screen Pinning كبديل رسمي"
+                            )
                         }
+
+                        getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                            .edit()
+                            .putBoolean(KIOSK_ENABLED, true)
+                            .apply()
+
+                        // يجب استدعاؤه والـ Activity في الواجهة، وهذا النداء يأتي
+                        // من MethodChannel أثناء استخدام الشاشة بالفعل.
+                        startLockTask()
+
+                        Log.i(
+                            "KioskMode",
+                            if (owner) "Managed Lock Task enabled" else "Screen Pinning requested"
+                        )
+                        result.success(true)
+                    } catch (e: SecurityException) {
+                        result.error("KIOSK_SECURITY", e.message, null)
+                    } catch (e: IllegalStateException) {
+                        result.error("KIOSK_NOT_FOREGROUND", e.message, null)
+                    } catch (e: Exception) {
+                        result.error("KIOSK_ERROR", e.message, null)
                     }
                 }
 
                 "disableKioskMode" -> {
-                    if (!DeviceAdminReceiver.isDeviceOwner(this)) {
-                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
-                    } else {
-                        try {
-                            getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
-                                .edit().putBoolean(KIOSK_ENABLED, false).apply()
-                            stopLockTask()
+                    try {
+                        getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                            .edit()
+                            .putBoolean(KIOSK_ENABLED, false)
+                            .apply()
+
+                        // يعمل أيضًا مع Screen Pinning. لا نحتاج Device Owner
+                        // لإيقاف Lock Task الذي بدأه التطبيق نفسه.
+                        stopLockTask()
+
+                        if (DeviceAdminReceiver.isDeviceOwner(this)) {
                             clearKioskRestrictions()
-                            Log.i("KioskMode", "Kiosk disabled by user")
-                            result.success(true)
-                        } catch (e: Exception) {
-                            result.error("KIOSK_ERROR", e.message, null)
                         }
+
+                        Log.i("KioskMode", "Kiosk/Screen Pinning disabled by user")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("KIOSK_ERROR", e.message, null)
                     }
                 }
 
@@ -666,14 +739,17 @@ class MainActivity : FlutterActivity() {
         val requested = getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
             .getBoolean(KIOSK_ENABLED, false)
         if (!requested) return
+
+        // Device Owner: يمكن إعادة الدخول تلقائيًا لأن السياسة مُدارة رسميًا.
+        // Screen Pinning: لا نعيد استدعاء startLockTask() تلقائيًا حتى لا يظهر
+        // مربع تأكيد النظام كل مرة تعود فيها Activity إلى الواجهة.
         if (!DeviceAdminReceiver.isDeviceOwner(this)) return
 
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         if (!configureKioskPolicy()) return
 
         val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val locked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_LOCKED
+            am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
         } else {
             false
         }

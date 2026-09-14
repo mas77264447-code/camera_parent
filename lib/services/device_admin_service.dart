@@ -64,52 +64,75 @@ class DeviceAdminService {
     } catch (_) {}
   }
 
-  // ─── Device Owner فقط (يتطلب ADB + Factory Reset) ────
+  // ─── Kiosk / Lock Task ─────────────────────────────────
 
-  /// هل الجهاز مهيأ كـ Device Owner ومسموح للتطبيق باستخدام Lock Task؟
+  /// حالة Kiosk الحالية. يدعم مسارين:
+  /// 1) Device Owner = Lock Task مُدار بالكامل.
+  /// 2) بدون Device Owner = Screen Pinning الرسمي من Android، بدون فورمات.
+  static Future<Map<String, dynamic>> getKioskStatus() async {
+    try {
+      final value = await _channel.invokeMethod<dynamic>('getKioskStatus');
+      if (value is Map) {
+        return Map<String, dynamic>.from(value);
+      }
+    } catch (_) {}
+    return const <String, dynamic>{
+      'supported': false,
+      'deviceOwner': false,
+      'lockTaskPermitted': false,
+      'active': false,
+      'enabled': false,
+      'mode': 'unsupported',
+    };
+  }
+
+  /// هل يمكن تشغيل Lock Task / Screen Pinning على هذا الجهاز؟
   static Future<bool> isKioskSupported() async {
     try {
-      return await _channel.invokeMethod("isKioskSupported") ?? false;
+      return await _channel.invokeMethod('isKioskSupported') ?? false;
     } catch (_) {
       return false;
     }
   }
 
-  /// هل Lock Task/Kiosk يعمل حاليًا؟
+  /// هل Lock Task أو Screen Pinning يعمل حاليًا؟
   static Future<bool> isKioskActive() async {
     try {
-      return await _channel.invokeMethod("isKioskActive") ?? false;
+      return await _channel.invokeMethod('isKioskActive') ?? false;
     } catch (_) {
       return false;
     }
   }
 
-  /// هل المستخدم طلب إبقاء Kiosk مفعلاً بعد إعادة فتح التطبيق؟
+  /// هل تم طلب إبقاء الوضع مفعلاً؟
   static Future<bool> isKioskEnabled() async {
     try {
-      return await _channel.invokeMethod("isKioskEnabled") ?? false;
+      return await _channel.invokeMethod('isKioskEnabled') ?? false;
     } catch (_) {
       return false;
     }
   }
 
-  /// وضع Kiosk الحقيقي (Lock Task): يثبت التطبيق في الشاشة.
+  /// تشغيل Kiosk المُدار إذا كان Device Owner، وإلا تشغيل Screen Pinning.
   static Future<bool> enableKioskMode() async {
     try {
-      return await _channel.invokeMethod("enableKioskMode") ?? false;
+      return await _channel.invokeMethod('enableKioskMode') ?? false;
     } on PlatformException catch (e) {
-      if (e.code == "NOT_OWNER") return false;
+      if (e.code == 'KIOSK_UNSUPPORTED' ||
+          e.code == 'KIOSK_NOT_FOREGROUND' ||
+          e.code == 'KIOSK_SECURITY') {
+        return false;
+      }
       rethrow;
     }
   }
 
-  /// إيقاف وضع Kiosk
+  /// إيقاف Kiosk/Screen Pinning الذي بدأه التطبيق.
   static Future<bool> disableKioskMode() async {
     try {
-      return await _channel.invokeMethod("disableKioskMode") ?? false;
-    } on PlatformException catch (e) {
-      if (e.code == "NOT_OWNER") return false;
-      rethrow;
+      return await _channel.invokeMethod('disableKioskMode') ?? false;
+    } catch (_) {
+      return false;
     }
   }
 
