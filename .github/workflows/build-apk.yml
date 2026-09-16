@@ -1,0 +1,115 @@
+name: Build Android APKs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.flavor }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        flavor: [parent, child]
+        include:
+          - flavor: parent
+            define: IS_CHILD_BUILD=false
+            artifact: camera-parent-app-apk
+          - flavor: child
+            define: IS_CHILD_BUILD=true
+            artifact: camera-child-app-apk
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Flutter 3.44.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      # Dependency resolution is a hard gate. Any failure stops this job immediately.
+      - name: Resolve Flutter dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter --version
+          flutter pub get
+          test -s pubspec.lock
+          # Flutter may not create Android local.properties in every CI setup.
+          # Generate it explicitly because android/settings.gradle.kts requires it.
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android/local.properties
+          printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT" >> android/local.properties
+          test -s android/local.properties
+
+      # Toolchain/wrapper checks are also hard gates before analysis/build.
+      - name: Verify toolchain and Android wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          test -x android/gradlew
+          test -s android/gradle/wrapper/gradle-wrapper.jar
+          test -s android/gradle/wrapper/gradle-wrapper.properties
+          test -s android/local.properties
+          cd android
+          ./gradlew --version
+
+      - name: Verify Flutter/Android configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'include(":app")' android/settings.gradle.kts
+          grep -q 'dev.flutter.flutter-gradle-plugin' android/app/build.gradle.kts
+
+      # This is a hard gate. If flutter analyze returns non-zero, no APK build runs.
+      - name: Analyze Dart (hard gate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze
+
+      # Run tests before the APK build. A failing test also prevents the build.
+      - name: Run Flutter tests (hard gate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test
+
+      - name: Build ${{ matrix.flavor }} APK
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx3g
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --release \
+            --flavor "${{ matrix.flavor }}" \
+            --dart-define="${{ matrix.define }}"
+
+      - name: Verify APK exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "build/app/outputs/flutter-apk/app-${{ matrix.flavor }}-release.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/app/outputs/flutter-apk/app-${{ matrix.flavor }}-release.apk
+          if-no-files-found: error
+          retention-days: 14

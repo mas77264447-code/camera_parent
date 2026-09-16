@@ -1,0 +1,311 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/camera_service.dart';
+import '../services/secure_store.dart';
+import 'add_device_screen.dart';
+import 'device_connection_screen.dart';
+import 'device_files_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  String? _adminToken;
+  bool _loading = true;
+  String? _error;
+  List<Map<String, dynamic>> _devices = [];
+  Timer? _refreshTimer;
+  final _recoveryController = TextEditingController();
+  bool _recoveryLoading = false;
+  String? _recoveryError;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    _recoveryController.dispose();
+    super.dispose();
+  }
+
+  // لو الـ claim التلقائي فشل (السيرفر متبنّى بالفعل من نسخة تانية من
+  // التطبيق فقدت بياناتها)، بنسمح بإدخال admin_token يدوي - نفس القيمة
+  // اللي بتتطبع في لوج السيرفر عند بدء التشغيل. لو اتحقق منه بنجاح،
+  // نحفظه محليًا ونكمل عادي من غير ما نحتاج نمسح أي حاجة على السيرفر.
+  Future<void> _tryManualRecovery() async {
+    final token = _recoveryController.text.trim();
+    if (token.isEmpty) {
+      setState(() => _recoveryError = 'الصق التوكن هنا الأول');
+      return;
+    }
+
+    setState(() {
+      _recoveryLoading = true;
+      _recoveryError = null;
+    });
+
+    final valid = await CameraService.verifyAdminToken(token);
+
+    if (!valid) {
+      setState(() {
+        _recoveryLoading = false;
+        _recoveryError = 'التوكن غير صحيح';
+      });
+      return;
+    }
+
+    await SecureStore.write('admin_token', token);
+
+    setState(() {
+      _adminToken = token;
+      _error = null;
+      _loading = false;
+      _recoveryLoading = false;
+    });
+
+    await _loadDevices();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadDevices());
+  }
+
+  Future<void> _bootstrap() async {
+    var token = await SecureStore.read('admin_token');
+
+    if (token == null) {
+      setState(() {
+        _error = 'أدخل ADMIN_TOKEN الذي ضبطه صاحب السيرفر في إعدادات Render.';
+        _loading = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _adminToken = token;
+      _loading = false;
+    });
+
+    await _loadDevices();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadDevices());
+  }
+
+  Future<void> _loadDevices() async {
+    if (_adminToken == null) return;
+    try {
+      final response = await http.get(
+        Uri.parse('${CameraService.server}/camera/sessions'),
+        headers: {'X-Admin-Token': _adminToken!},
+      );
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        final list = (body['data'] as List).cast<Map<String, dynamic>>();
+        if (mounted) setState(() => _devices = list);
+      }
+    } catch (_) {}
+  }
+
+  void _openAddDevice() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => AddDeviceScreen(adminToken: _adminToken!)),
+    ).then((_) => _loadDevices());
+  }
+
+  void _openDevice(Map<String, dynamic> device) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DeviceConnectionScreen(
+          sessionId: device['session_id'],
+          name: device['name'],
+          adminToken: _adminToken!,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmForget(Map<String, dynamic> device) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('نسيان هذا الجهاز'),
+        content: Text(
+          'هيتقطع الاتصال (لو شغال دلوقتي)، ولازم اقتران جديد بكود عشان '
+          '"${device['name']}" يشتغل تاني. متأكد؟',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('نسيان الجهاز', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && _adminToken != null) {
+      await CameraService.forgetDevice(device['session_id'], _adminToken!);
+      await _loadDevices();
+    }
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    if (_error != null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(_error!, textAlign: TextAlign.center),
+                const SizedBox(height: 24),
+                const Divider(),
+                const SizedBox(height: 8),
+                const Text(
+                  'استرجاع الاقتران',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'لو ده جهازك الأصلي وفقدت بيانات التطبيق بس، الصق هنا '
+                  'الـ ADMIN_TOKEN اللي طبعته من لوج السيرفر عند تشغيله '
+                  '(Render Logs) للرجوع لنفس الحساب من غير اقتران جديد.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _recoveryController,
+                  decoration: const InputDecoration(
+                    labelText: 'admin_token',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                if (_recoveryError != null) ...[
+                  const SizedBox(height: 6),
+                  Text(_recoveryError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                ],
+                const SizedBox(height: 12),
+                ElevatedButton(
+                  onPressed: _recoveryLoading ? null : _tryManualRecovery,
+                  child: _recoveryLoading
+                      ? const SizedBox(
+                          height: 18, width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('استرجاع'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xfff1f5ff),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('أجهزة الأطفال المقترنة',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  ElevatedButton.icon(
+                    onPressed: _openAddDevice,
+                    icon: const Icon(Icons.add),
+                    label: const Text('إضافة جهاز'),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: _devices.isEmpty
+                  ? const Center(child: Text('لا توجد أجهزة مقترنة بعد'))
+                  : Column(
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: Text(
+                              'اضغط ضغطة طويلة على أي جهاز لنسيانه',
+                              style: TextStyle(fontSize: 11, color: Colors.black45),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            itemCount: _devices.length,
+                            itemBuilder: (context, i) {
+                              final d = _devices[i];
+                              final online = d['online'] == true;
+                              return Card(
+                                child: ListTile(
+                                  leading: Icon(Icons.circle,
+                                      size: 12, color: online ? Colors.green : Colors.grey),
+                                  title: Text(d['name'] ?? ''),
+                                  subtitle: Text(online ? 'متصل الآن' : 'غير متصل'),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.photo_library_outlined),
+                                        tooltip: 'المعرض',
+                                        onPressed: online
+                                            ? () {
+                                                Navigator.push(
+                                                  context,
+                                                  MaterialPageRoute(
+                                                    builder: (_) => DeviceFilesScreen(
+                                                      sessionId: d['session_id'],
+                                                      name: d['name'] ?? '',
+                                                      adminToken: _adminToken!,
+                                                    ),
+                                                  ),
+                                                );
+                                              }
+                                            : null,
+                                      ),
+                                      const Icon(Icons.chevron_left),
+                                    ],
+                                  ),
+                                  onTap: online ? () => _openDevice(d) : null,
+                                  onLongPress: () => _confirmForget(d),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

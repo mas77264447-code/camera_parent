@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# Gradle wrapper launcher. Keep this file in source control so Android Studio,
+# GitHub Actions and local Gradle builds use the project's pinned wrapper.
+APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+if [ ! -f "$CLASSPATH" ]; then
+  echo "Gradle wrapper JAR not found: $CLASSPATH" >&2
+  exit 1
+fi
+
+exec java ${JAVA_OPTS:-} ${GRADLE_OPTS:-}   -classpath "$CLASSPATH"   org.gradle.wrapper.GradleWrapperMain "$@"
