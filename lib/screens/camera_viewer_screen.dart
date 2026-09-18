@@ -110,6 +110,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         title: const Text("اختر مصدر البث"),
         content: const Text("هل تريد بث الكاميرا أم مشاركة شاشة الجهاز؟"),
         actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh, color: Colors.orange),
+              tooltip: 'إعادة تشغيل الجهاز',
+              onPressed: _sendWakeCommand,
+            ),
           TextButton(
             onPressed: () => Navigator.pop(context, "camera"),
             child: const Text("📷 الكاميرا"),
@@ -553,6 +558,30 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     } catch (_) {}
     _remoteRenderer.dispose();
     super.dispose();
+  }
+
+  void _sendWakeCommand() {
+    if (_ws == null || _ws!.readyState != WebSocket.open) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('الاتصال بالسيرفر غير جاهز'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    try {
+      _ws!.add(jsonEncode({'type': 'wake'}));
+      setState(() => _status = 'تم إرسال أمر الإيقاظ...');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✅ تم إرسال أمر إعادة التشغيل'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      debugPrint('[Wake] error: $e');
+    }
   }
 
   @override

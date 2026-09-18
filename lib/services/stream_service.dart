@@ -300,6 +300,18 @@ class StreamService {
           _canRetry = false;
           break;
         case 'pong':
+        case 'wake':
+          debugPrint('[StreamService] wake received from viewer');
+          await ensureHealthy();
+          if (_ws != null && _ws!.readyState == WebSocket.open) {
+            try {
+              _ws!.add(jsonEncode({
+                'type': 'ping',
+                'timestamp': DateTime.now().millisecondsSinceEpoch,
+              }));
+            } catch (_) {}
+          }
+          break;
           break;
         case 'permission-request':
           _handlePermissionRequest(data);

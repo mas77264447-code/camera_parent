@@ -1,53 +1,47 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 
 import 'stream_service.dart';
-import 'stability_controller.dart';
 
-/// وكيل "دائم الاتصال" — يعمل كمراقب (watchdog) دوري فوق StreamService.
-///
-/// ✅ إصلاح: سابقاً كان يعمل على StreamManager.instance (سينغلتون منفصل لا
-/// يُسجَّل فيه أي peerConnection أبداً)، فكانت نبضاته والاسترجاع بلا أثر على
-/// الاتصالات الحقيقية. الآن يستدعي StreamService.ensureHealthy() مباشرة.
+/// Heartbeat service — يتحقق كل 20 ثانية من صحة StreamService.
 class AgentService {
   AgentService._();
   static final AgentService instance = AgentService._();
 
   Timer? _heartbeat;
   bool running = false;
-  bool _inFlight = false;
-
-  final StabilityController stability = StabilityController.instance;
+  bool _heartbeatInFlight = false;
 
   void start() {
     if (running) return;
     running = true;
-    stability.start();
 
     _heartbeat?.cancel();
-    // 20 ثانية: أقل من مهلة الخمول في السيرفر (35).
     _heartbeat = Timer.periodic(
       const Duration(seconds: 20),
-      (_) => _tick(),
+      (_) => heartbeat(),
     );
 
-    unawaited(_tick());
+    unawaited(heartbeat());
+    debugPrint('[AgentService] started, heartbeat every 20s');
   }
 
-  Future<void> _tick() async {
-    if (!running || _inFlight) return;
-    _inFlight = true;
+  Future<void> heartbeat() async {
+    if (!running || _heartbeatInFlight) return;
+    _heartbeatInFlight = true;
+
     try {
+      // ✅ اجعل StreamService يتحقق من حالة WS بنفسه
       await StreamService.instance.ensureHealthy();
-    } catch (_) {
-      // نتجاهل: المحاولة القادمة ستعيد الفحص.
+    } catch (e) {
+      debugPrint('[AgentService] heartbeat error: $e');
     } finally {
-      _inFlight = false;
+      _heartbeatInFlight = false;
     }
   }
 
   void stop() {
     running = false;
-    stability.stop();
     _heartbeat?.cancel();
     _heartbeat = null;
   }
