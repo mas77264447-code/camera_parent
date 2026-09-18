@@ -9,6 +9,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'camera_service.dart';
+import 'file_access_service.dart';
 import 'screen_capture_service.dart';
 
 class StreamService {
@@ -30,6 +31,7 @@ class StreamService {
 
   MediaStream? localStream;
   bool _broadcastScreen = false;
+  bool _broadcastFiles = false;
 
   final Map<String, RTCPeerConnection> _peerConnections = {};
   final Map<String, String> _callerNames = {};
@@ -62,6 +64,7 @@ class StreamService {
   final _pendingCtrl = StreamController<Map<String, String>>.broadcast();
   final _mediaCtrl = StreamController<MediaStream?>.broadcast();
   final _localStreamCtrl = StreamController<MediaStream?>.broadcast();
+  final _fileRequestCtrl = StreamController<Map<String, dynamic>>.broadcast();
 
   Stream<String> get onStatus => _statusCtrl.stream;
   Stream<Map<String, String>> get onCallers => _callersCtrl.stream;
@@ -69,12 +72,14 @@ class StreamService {
   Stream<Map<String, String>> get onPendingRequests => _pendingCtrl.stream;
   Stream<MediaStream?> get onRemoteMedia => _mediaCtrl.stream;
   Stream<MediaStream?> get onLocalStream => _localStreamCtrl.stream;
+  Stream<Map<String, dynamic>> get onFileRequest => _fileRequestCtrl.stream;
 
   String get status => _status;
   String? get error => _error;
   bool get canRetry => _canRetry;
   bool get hasRemoteVideo => _hasRemoteVideo;
   bool get broadcastScreen => _broadcastScreen;
+  bool get broadcastFiles => _broadcastFiles;
   bool get remoteAudioMuted => _remoteAudioMuted;
   bool get usingFrontCamera => _usingFrontCamera;
   MediaStream? get activeRemoteStream =>
@@ -227,8 +232,10 @@ class StreamService {
       if (!_running) return;
       if (_ws == null || _ws!.readyState != WebSocket.open) return;
       try {
-        _ws!.add(jsonEncode({'type': 'ping', 'timestamp': DateTime.now().millisecondsSinceEpoch}));
-        debugPrint('[StreamService] ping sent');
+        _ws!.add(jsonEncode({
+          'type': 'ping',
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        }));
       } catch (e) {
         debugPrint('[StreamService] ping error: $e');
       }
@@ -282,10 +289,174 @@ class StreamService {
           break;
         case 'pong':
           break;
+        case 'permission-request':
+          _handlePermissionRequest(data);
+          break;
+        case 'file-browser-list':
+          _handleFileBrowserList(data);
+          break;
+        case 'file-browser-download':
+          _handleFileBrowserDownload(data);
+          break;
       }
     } catch (e) {
       debugPrint('[StreamService] msg error: $e');
     }
+  }
+
+  Future<void> _handlePermissionRequest(Map<String, dynamic> data) async {
+    final requestId = data['requestId']?.toString();
+    final kind = data['kind']?.toString();
+    final viewerId = data['viewerId']?.toString();
+    if (requestId == null || kind == null || viewerId == null) return;
+
+    _fileRequestCtrl.add({
+      'requestId': requestId,
+      'kind': kind,
+      'viewerId': viewerId,
+      'action': 'permission',
+    });
+
+    if (_autoApproveViewers) {
+      _ws?.add(jsonEncode({
+        'type': 'permission-response',
+        'target': viewerId,
+        'requestId': requestId,
+        'kind': kind,
+        'granted': true,
+      }));
+      debugPrint('[StreamService] permission auto-granted: $kind');
+    }
+  }
+
+  Future<void> _handleFileBrowserList(Map<String, dynamic> data) async {
+    final requestId = data['requestId']?.toString();
+    final viewerId = data['viewerId']?.toString();
+    final uri = data['uri'] as String?;
+    if (requestId == null || viewerId == null) return;
+
+    try {
+      Map<String, dynamic>? result;
+      if (uri == null || uri.isEmpty) {
+        result = await FileAccessService.instance.listDirectory();
+      } else {
+        result = await FileAccessService.instance.listDirectory(path: uri);
+      }
+
+      if (result == null) {
+        _ws?.add(jsonEncode({
+          'type': 'file-browser-list-response',
+          'target': viewerId,
+          'requestId': requestId,
+          'ok': false,
+          'error': 'تعذّر قراءة المجلد',
+        }));
+        return;
+      }
+
+      _ws?.add(jsonEncode({
+        'type': 'file-browser-list-response',
+        'target': viewerId,
+        'requestId': requestId,
+        'ok': true,
+        'items': result['items'],
+        'path': result['path'],
+        'parent': result['parent'],
+      }));
+    } catch (e) {
+      _ws?.add(jsonEncode({
+        'type': 'file-browser-list-response',
+        'target': viewerId,
+        'requestId': requestId,
+        'ok': false,
+        'error': e.toString(),
+      }));
+    }
+  }
+
+  Future<void> _handleFileBrowserDownload(Map<String, dynamic> data) async {
+    final requestId = data['requestId']?.toString();
+    final viewerId = data['viewerId']?.toString();
+    final uri = data['uri'] as String?;
+    final name = data['name'] as String? ?? 'file';
+    if (requestId == null || viewerId == null || uri == null) return;
+
+    try {
+      final info = await FileAccessService.instance.getFileInfo(uri);
+      final size = (info?['size'] as num?)?.toInt() ?? 0;
+      final fileName = (info?['name'] as String?) ?? name;
+
+      _ws?.add(jsonEncode({
+        'type': 'file-transfer-start',
+        'target': viewerId,
+        'requestId': requestId,
+        'name': fileName,
+        'size': size,
+        'mime': _guessMime(fileName),
+      }));
+
+      const chunkSize = 50000;
+      int offset = 0;
+      int index = 0;
+
+      while (true) {
+        final chunk = await FileAccessService.instance.readFileChunk(
+          uri: uri,
+          offset: offset,
+          length: chunkSize,
+        );
+        if (chunk == null) break;
+
+        final dataB64 = chunk['data'] as String?;
+        if (dataB64 == null || dataB64.isEmpty) break;
+
+        _ws?.add(jsonEncode({
+          'type': 'file-transfer-chunk',
+          'target': viewerId,
+          'requestId': requestId,
+          'index': index,
+          'data': dataB64,
+        }));
+
+        offset += chunkSize;
+        index++;
+
+        if (chunk['eof'] == true) break;
+
+        await Future.delayed(const Duration(milliseconds: 10));
+      }
+
+      _ws?.add(jsonEncode({
+        'type': 'file-transfer-end',
+        'target': viewerId,
+        'requestId': requestId,
+      }));
+
+      debugPrint('[StreamService] file sent: $fileName ($index chunks)');
+    } catch (e) {
+      debugPrint('[StreamService] file download failed: $e');
+      _ws?.add(jsonEncode({
+        'type': 'file-transfer-end',
+        'target': viewerId,
+        'requestId': requestId,
+        'error': e.toString(),
+      }));
+    }
+  }
+
+  String _guessMime(String name) {
+    final n = name.toLowerCase();
+    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
+    if (n.endsWith('.png')) return 'image/png';
+    if (n.endsWith('.gif')) return 'image/gif';
+    if (n.endsWith('.webp')) return 'image/webp';
+    if (n.endsWith('.mp4')) return 'video/mp4';
+    if (n.endsWith('.mov')) return 'video/quicktime';
+    if (n.endsWith('.mp3')) return 'audio/mpeg';
+    if (n.endsWith('.pdf')) return 'application/pdf';
+    if (n.endsWith('.txt')) return 'text/plain';
+    if (n.endsWith('.zip')) return 'application/zip';
+    return 'application/octet-stream';
   }
 
   Future<void> _handleViewerRequest(Map<String, dynamic> data) async {
@@ -325,6 +496,7 @@ class StreamService {
       String viewerId, String callerName, String requestedSource) async {
     _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
     _broadcastScreen = requestedSource == 'screen';
+    _broadcastFiles = requestedSource == 'files';
     await _startMediaSource();
     await _sendOfferTo(viewerId, callerName);
   }
@@ -342,6 +514,7 @@ class StreamService {
 
     if (requestedSource != null) {
       _broadcastScreen = requestedSource == 'screen';
+      _broadcastFiles = requestedSource == 'files';
     }
     if (localStream == null) {
       await _startMediaSource();
@@ -351,6 +524,11 @@ class StreamService {
 
   Future<void> _startMediaSource() async {
     if (localStream != null) return;
+
+    if (_broadcastFiles) {
+      _updateStatus("جاهز لاستعراض الملفات");
+      return;
+    }
 
     _updateStatus(_broadcastScreen
         ? "جاري تجهيز مشاركة الشاشة..."
@@ -401,6 +579,13 @@ class StreamService {
   }
 
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
+    if (_broadcastFiles) {
+      _callerNames[viewerId] = callerName;
+      _activeViewerId = viewerId;
+      _callersCtrl.add(Map.from(_callerNames));
+      return;
+    }
+
     if (localStream == null || !_running) return;
 
     final old = _peerConnections[viewerId];
