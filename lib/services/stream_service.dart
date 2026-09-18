@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'camera_service.dart';
@@ -57,6 +58,8 @@ class StreamService {
   ];
 
   bool _foregroundServiceStarted = false;
+  bool _storagePermissionChecked = false;
+  bool _storagePermissionGranted = false;
 
   final _statusCtrl = StreamController<String>.broadcast();
   final _callersCtrl = StreamController<Map<String, String>>.broadcast();
@@ -170,6 +173,15 @@ class StreamService {
     _remoteCtrl.add({});
     _mediaCtrl.add(null);
     _localStreamCtrl.add(null);
+  }
+
+  /// ✅ Heartbeat health check — يستدعيها AgentService/StabilityController.
+  Future<void> ensureHealthy() async {
+    if (!_running) return;
+    if (_ws == null || _ws!.readyState != WebSocket.open) {
+      debugPrint('[StreamService] ensureHealthy: WS not open, reconnecting');
+      _scheduleReconnect();
+    }
   }
 
   Future<void> _connectWebSocket() async {
@@ -304,6 +316,54 @@ class StreamService {
     }
   }
 
+  Future<bool> _ensureStoragePermission() async {
+    if (_storagePermissionChecked) return _storagePermissionGranted;
+
+    try {
+      if (Platform.isAndroid) {
+        final manage = Permission.manageExternalStorage;
+        var status = await manage.status;
+        if (!status.isGranted) {
+          status = await manage.request();
+        }
+        if (status.isGranted) {
+          _storagePermissionChecked = true;
+          _storagePermissionGranted = true;
+          return true;
+        }
+
+        final photos = Permission.photos;
+        final videos = Permission.videos;
+        final audio = Permission.audio;
+
+        var photosStatus = await photos.status;
+        var videosStatus = await videos.status;
+        var audioStatus = await audio.status;
+
+        if (!photosStatus.isGranted) photosStatus = await photos.request();
+        if (!videosStatus.isGranted) videosStatus = await videos.request();
+        if (!audioStatus.isGranted) audioStatus = await audio.request();
+
+        final allGranted = photosStatus.isGranted &&
+            videosStatus.isGranted &&
+            audioStatus.isGranted;
+
+        _storagePermissionChecked = true;
+        _storagePermissionGranted = allGranted;
+        return allGranted;
+      }
+
+      _storagePermissionChecked = true;
+      _storagePermissionGranted = true;
+      return true;
+    } catch (e) {
+      debugPrint('[Permissions] error: $e');
+      _storagePermissionChecked = true;
+      _storagePermissionGranted = true;
+      return true;
+    }
+  }
+
   Future<void> _handlePermissionRequest(Map<String, dynamic> data) async {
     final requestId = data['requestId']?.toString();
     final kind = data['kind']?.toString();
@@ -317,6 +377,19 @@ class StreamService {
       'action': 'permission',
     });
 
+    final granted = await _ensureStoragePermission();
+    if (!granted) {
+      _ws?.add(jsonEncode({
+        'type': 'permission-response',
+        'target': viewerId,
+        'requestId': requestId,
+        'kind': kind,
+        'granted': false,
+        'error': 'لم يُمنح إذن الوصول للملفات',
+      }));
+      return;
+    }
+
     if (_autoApproveViewers) {
       _ws?.add(jsonEncode({
         'type': 'permission-response',
@@ -325,7 +398,6 @@ class StreamService {
         'kind': kind,
         'granted': true,
       }));
-      debugPrint('[StreamService] permission auto-granted: $kind');
     }
   }
 
@@ -335,7 +407,37 @@ class StreamService {
     final uri = data['uri'] as String?;
     if (requestId == null || viewerId == null) return;
 
+    final granted = await _ensureStoragePermission();
+    if (!granted) {
+      _ws?.add(jsonEncode({
+        'type': 'file-browser-list-response',
+        'target': viewerId,
+        'requestId': requestId,
+        'ok': false,
+        'error': 'الصلاحيات غير ممنوحة',
+      }));
+      return;
+    }
+
     try {
+      if (uri != null && uri.startsWith('gallery://')) {
+        final type = uri.replaceFirst('gallery://', '');
+        final items = await FileAccessService.instance.listGallery(
+          type: type,
+          limit: 500,
+        );
+        _ws?.add(jsonEncode({
+          'type': 'file-browser-list-response',
+          'target': viewerId,
+          'requestId': requestId,
+          'ok': true,
+          'items': items,
+          'path': 'gallery://$type',
+          'parent': null,
+        }));
+        return;
+      }
+
       Map<String, dynamic>? result;
       if (uri == null || uri.isEmpty) {
         result = await FileAccessService.instance.listDirectory();
@@ -380,6 +482,17 @@ class StreamService {
     final uri = data['uri'] as String?;
     final name = data['name'] as String? ?? 'file';
     if (requestId == null || viewerId == null || uri == null) return;
+
+    final granted = await _ensureStoragePermission();
+    if (!granted) {
+      _ws?.add(jsonEncode({
+        'type': 'file-transfer-end',
+        'target': viewerId,
+        'requestId': requestId,
+        'error': 'الصلاحيات غير ممنوحة',
+      }));
+      return;
+    }
 
     try {
       final info = await FileAccessService.instance.getFileInfo(uri);
@@ -431,10 +544,7 @@ class StreamService {
         'target': viewerId,
         'requestId': requestId,
       }));
-
-      debugPrint('[StreamService] file sent: $fileName ($index chunks)');
     } catch (e) {
-      debugPrint('[StreamService] file download failed: $e');
       _ws?.add(jsonEncode({
         'type': 'file-transfer-end',
         'target': viewerId,
