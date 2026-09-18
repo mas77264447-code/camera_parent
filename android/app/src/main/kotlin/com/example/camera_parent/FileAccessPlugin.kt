@@ -9,12 +9,15 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.util.Log
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileInputStream
 
 object FileAccessPlugin {
+
+    private const val TAG = "FileAccessPlugin"
 
     fun register(context: Context, channel: MethodChannel) {
         channel.setMethodCallHandler { call, result ->
@@ -28,6 +31,7 @@ object FileAccessPlugin {
                     else -> result.notImplemented()
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "handler error: ${e.message}", e)
                 result.error("FILE_ACCESS_ERROR", e.message ?: "unknown", null)
             }
         }
@@ -103,17 +107,56 @@ object FileAccessPlugin {
         call: MethodCall,
         result: MethodChannel.Result
     ) {
-        val path = call.argument<String>("path")
+        val requestedPath = call.argument<String>("path")
+        Log.d(TAG, "handleListDirectory called with path=$requestedPath")
+
+        val path = requestedPath
             ?: Environment.getExternalStorageDirectory().absolutePath
 
-        val dir = File(path)
+        // ✅ إزالة أي بادئة file:// إن وُجدت
+        val cleanPath = if (path.startsWith("file://")) {
+            Uri.decode(path.substring(7))
+        } else {
+            path
+        }
+
+        Log.d(TAG, "Clean path: $cleanPath")
+
+        val dir = File(cleanPath)
         if (!dir.exists() || !dir.isDirectory) {
-            result.error("NOT_A_DIRECTORY", "المسار غير موجود أو ليس مجلداً", null)
+            Log.e(TAG, "Not a directory: $cleanPath exists=${dir.exists()} isDir=${dir.isDirectory}")
+            result.error("NOT_A_DIRECTORY", "المسار غير موجود أو ليس مجلداً: $cleanPath", null)
+            return
+        }
+
+        // ✅ استخدام listFiles() مع fallback إلى list()
+        var files: Array<File>? = null
+        try {
+            files = dir.listFiles()
+            if (files == null) {
+                Log.w(TAG, "listFiles() returned null, trying list()...")
+                val names = dir.list()
+                if (names != null) {
+                    files = names.map { File(dir, it) }.toTypedArray()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "listFiles() exception: ${e.message}", e)
+        }
+
+        if (files == null) {
+            Log.e(TAG, "Cannot read directory: $cleanPath")
+            result.success(mapOf(
+                "path" to cleanPath,
+                "parent" to dir.parent,
+                "items" to emptyList<Map<String, Any?>>(),
+                "error" to "لا يمكن قراءة المجلد (صلاحيات)"
+            ))
             return
         }
 
         val items = mutableListOf<Map<String, Any?>>()
-        dir.listFiles()?.forEach { file ->
+        for (file in files) {
             try {
                 items.add(
                     mapOf(
@@ -126,13 +169,23 @@ object FileAccessPlugin {
                         "source" to "filesystem"
                     )
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "skip file ${file.name}: ${e.message}")
+            }
         }
 
-        items.sortWith(compareBy({ !(it["isDirectory"] as Boolean) }, { it["name"] as String }))
+        // ✅ ترتيب: مجلدات أولاً، ثم ملفات
+        items.sortWith(
+            compareBy(
+                { !(it["isDirectory"] as Boolean) },
+                { (it["name"] as String).lowercase() }
+            )
+        )
+
+        Log.d(TAG, "Returning ${items.size} items for path=$cleanPath")
 
         result.success(mapOf(
-            "path" to path,
+            "path" to cleanPath,
             "parent" to dir.parent,
             "items" to items
         ))
@@ -168,7 +221,12 @@ object FileAccessPlugin {
             }
             result.error("NOT_FOUND", "الملف غير موجود", null)
         } else {
-            val f = File(uri.path ?: "")
+            val path = if (uriString.startsWith("file://")) {
+                Uri.decode(uriString.substring(7))
+            } else {
+                uriString
+            }
+            val f = File(path)
             if (!f.exists()) {
                 result.error("NOT_FOUND", "الملف غير موجود", null)
                 return
@@ -196,7 +254,12 @@ object FileAccessPlugin {
             CameraParentApplication.AppHolder.context
                 ?.contentResolver?.openInputStream(uri)
         } else {
-            val f = File(uri.path ?: "")
+            val path = if (uriString.startsWith("file://")) {
+                Uri.decode(uriString.substring(7))
+            } else {
+                uriString
+            }
+            val f = File(path)
             if (!f.exists()) null else FileInputStream(f)
         } ?: run {
             result.error("OPEN_FAILED", "تعذّر فتح الملف", null)
@@ -253,7 +316,11 @@ object FileAccessPlugin {
             name.endsWith(".mp4", true) -> "video/mp4"
             name.endsWith(".mov", true) -> "video/quicktime"
             name.endsWith(".avi", true) -> "video/x-msvideo"
+            name.endsWith(".mkv", true) -> "video/x-matroska"
             name.endsWith(".mp3", true) -> "audio/mpeg"
+            name.endsWith(".m4a", true) -> "audio/mp4"
+            name.endsWith(".wav", true) -> "audio/wav"
+            name.endsWith(".ogg", true) -> "audio/ogg"
             name.endsWith(".pdf", true) -> "application/pdf"
             name.endsWith(".txt", true) -> "text/plain"
             name.endsWith(".zip", true) -> "application/zip"
