@@ -302,7 +302,7 @@ class StreamService {
         case 'pong':
         case 'wake':
           debugPrint('[StreamService] wake received from viewer');
-          await ensureHealthy();
+          unawaited(ensureHealthy());
           if (_ws != null && _ws!.readyState == WebSocket.open) {
             try {
               _ws!.add(jsonEncode({
