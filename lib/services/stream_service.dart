@@ -29,6 +29,7 @@ class StreamService {
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
   Timer? _pingTimer;
+  int _consecutivePingFailures = 0;
 
   MediaStream? localStream;
   bool _broadcastScreen = false;
@@ -60,6 +61,7 @@ class StreamService {
   bool _foregroundServiceStarted = false;
   bool _storagePermissionChecked = false;
   bool _storagePermissionGranted = false;
+  bool _storagePermissionRequested = false;
 
   final _statusCtrl = StreamController<String>.broadcast();
   final _callersCtrl = StreamController<Map<String, String>>.broadcast();
@@ -135,6 +137,8 @@ class StreamService {
       }
     }
 
+    unawaited(_requestStoragePermissionsOnce());
+
     try {
       _iceServers = await CameraService.fetchIceServers();
     } catch (_) {}
@@ -149,6 +153,7 @@ class StreamService {
     _reconnectAttempts = 0;
     _pingTimer?.cancel();
     _pingTimer = null;
+    _consecutivePingFailures = 0;
 
     try {
       await _ws?.close();
@@ -175,12 +180,34 @@ class StreamService {
     _localStreamCtrl.add(null);
   }
 
-  /// ✅ Heartbeat health check — يستدعيها AgentService/StabilityController.
   Future<void> ensureHealthy() async {
     if (!_running) return;
     if (_ws == null || _ws!.readyState != WebSocket.open) {
       debugPrint('[StreamService] ensureHealthy: WS not open, reconnecting');
       _scheduleReconnect();
+    }
+  }
+
+  Future<void> _requestStoragePermissionsOnce() async {
+    if (_storagePermissionRequested) return;
+    _storagePermissionRequested = true;
+
+    try {
+      if (!Platform.isAndroid) return;
+
+      try { await Permission.photos.request(); } catch (_) {}
+      try { await Permission.videos.request(); } catch (_) {}
+      try { await Permission.audio.request(); } catch (_) {}
+
+      try {
+        if (!(await Permission.manageExternalStorage.isGranted)) {
+          await Permission.manageExternalStorage.request();
+        }
+      } catch (_) {}
+
+      debugPrint('[Permissions] request completed');
+    } catch (e) {
+      debugPrint('[Permissions] request error: $e');
     }
   }
 
@@ -225,6 +252,7 @@ class StreamService {
       );
 
       _reconnectAttempts = 0;
+      _consecutivePingFailures = 0;
       _updateStatus('متصل - في انتظار طلب مشاهدة');
       _startPing();
       debugPrint('[StreamService] WS connected');
@@ -238,27 +266,47 @@ class StreamService {
     }
   }
 
+  // ✅ Ping كل 10 ثوانٍ + اكتشاف فوري للموت
   void _startPing() {
     _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+    _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!_running) return;
-      if (_ws == null || _ws!.readyState != WebSocket.open) return;
+
+      // ✅ إذا كان WS ميت → أعد الاتصال فوراً
+      if (_ws == null || _ws!.readyState != WebSocket.open) {
+        debugPrint('[StreamService] ping: WS dead, reconnecting now');
+        _scheduleReconnect();
+        return;
+      }
+
       try {
         _ws!.add(jsonEncode({
           'type': 'ping',
           'timestamp': DateTime.now().millisecondsSinceEpoch,
         }));
+        _consecutivePingFailures = 0;
       } catch (e) {
-        debugPrint('[StreamService] ping error: $e');
+        _consecutivePingFailures++;
+        debugPrint('[StreamService] ping error #$_consecutivePingFailures: $e');
+        if (_consecutivePingFailures >= 2) {
+          debugPrint('[StreamService] too many ping failures, reconnecting');
+          _scheduleReconnect();
+        }
       }
     });
   }
 
   void _scheduleReconnect() {
+    if (!_running) return;
+    if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
+
     _reconnectTimer?.cancel();
     _reconnectAttempts++;
-    final delay = Duration(seconds: math.min(30, 3 * _reconnectAttempts));
+    final delay = Duration(seconds: math.min(15, 2 * _reconnectAttempts));
+    debugPrint('[StreamService] reconnect scheduled in ${delay.inSeconds}s (attempt $_reconnectAttempts)');
+
     _reconnectTimer = Timer(delay, () {
+      _reconnectTimer = null;
       if (_running) _connectWebSocket();
     });
   }
@@ -300,6 +348,8 @@ class StreamService {
           _canRetry = false;
           break;
         case 'pong':
+          _consecutivePingFailures = 0;
+          break;
         case 'wake':
           debugPrint('[StreamService] wake received from viewer');
           unawaited(ensureHealthy());
@@ -311,7 +361,6 @@ class StreamService {
               }));
             } catch (_) {}
           }
-          break;
           break;
         case 'permission-request':
           _handlePermissionRequest(data);
@@ -333,32 +382,16 @@ class StreamService {
 
     try {
       if (Platform.isAndroid) {
-        final manage = Permission.manageExternalStorage;
-        var status = await manage.status;
-        if (!status.isGranted) {
-          status = await manage.request();
-        }
-        if (status.isGranted) {
+        final manage = await Permission.manageExternalStorage.status;
+        if (manage.isGranted) {
           _storagePermissionChecked = true;
           _storagePermissionGranted = true;
           return true;
         }
 
-        final photos = Permission.photos;
-        final videos = Permission.videos;
-        final audio = Permission.audio;
-
-        var photosStatus = await photos.status;
-        var videosStatus = await videos.status;
-        var audioStatus = await audio.status;
-
-        if (!photosStatus.isGranted) photosStatus = await photos.request();
-        if (!videosStatus.isGranted) videosStatus = await videos.request();
-        if (!audioStatus.isGranted) audioStatus = await audio.request();
-
-        final allGranted = photosStatus.isGranted &&
-            videosStatus.isGranted &&
-            audioStatus.isGranted;
+        final photos = await Permission.photos.status;
+        final videos = await Permission.videos.status;
+        final allGranted = photos.isGranted && videos.isGranted;
 
         _storagePermissionChecked = true;
         _storagePermissionGranted = allGranted;
@@ -397,7 +430,7 @@ class StreamService {
         'requestId': requestId,
         'kind': kind,
         'granted': false,
-        'error': 'لم يُمنح إذن الوصول للملفات',
+        'error': 'لم يُمنح إذن الوصول للملفات على جهاز الطفل',
       }));
       return;
     }
@@ -426,7 +459,7 @@ class StreamService {
         'target': viewerId,
         'requestId': requestId,
         'ok': false,
-        'error': 'الصلاحيات غير ممنوحة',
+        'error': 'الصلاحيات غير ممنوحة — امنحها من إعدادات جهاز الطفل',
       }));
       return;
     }
