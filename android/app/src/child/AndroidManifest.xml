@@ -9,4 +9,21 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application>
+
+        <receiver
+            android:name=".ServiceWatchdogReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.camera_parent.WATCHDOG" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
 </manifest>
