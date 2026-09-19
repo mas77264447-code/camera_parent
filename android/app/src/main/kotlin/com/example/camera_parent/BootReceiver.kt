@@ -24,6 +24,10 @@ class BootReceiver : BroadcastReceiver() {
             } else {
                 context.startService(service)
             }
+
+            // ✅ جدول watchdog بعد الإقلاع بـ 60 ثانية
+            ServiceWatchdog.scheduleNext(context, 60_000L)
+
         } catch (e: Exception) {
             Log.w("CameraParent", "Unable to restore foreground service after boot", e)
         }
