@@ -165,7 +165,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
-  // ✅ زر الإيقاظ — يفتح WS مؤقت، يرسل wake، ثم يُغلق.
+  // ✅ زر الإيقاظ — ينتظر رد السيرفر الفعلي بدل افتراض النجاح
   Future<void> _sendWakeCommand(String sessionId) async {
     if (_adminToken == null) return;
     if (_wakingSessions.contains(sessionId)) return;
@@ -173,7 +173,9 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _wakingSessions.add(sessionId));
 
     WebSocket? ws;
-    bool success = false;
+    String result = 'failed';
+    final completer = Completer<String>();
+
     try {
       final wsUrl = CameraService.server
               .replaceFirst("https://", "wss://")
@@ -183,7 +185,27 @@ class _HomeScreenState extends State<HomeScreen> {
       ws = await WebSocket.connect(wsUrl)
           .timeout(const Duration(seconds: 10));
 
-      // register as viewer for this session
+      ws.listen(
+        (raw) {
+          try {
+            final msg = jsonDecode(raw as String);
+            final type = msg['type'] as String?;
+            if (type == 'wake-sent' && !completer.isCompleted) {
+              completer.complete('sent');
+            } else if (type == 'wake-failed' && !completer.isCompleted) {
+              completer.complete('failed');
+            }
+          } catch (_) {}
+        },
+        onError: (_) {
+          if (!completer.isCompleted) completer.complete('failed');
+        },
+        onDone: () {
+          if (!completer.isCompleted) completer.complete('failed');
+        },
+        cancelOnError: true,
+      );
+
       ws.add(jsonEncode({
         'type': 'register',
         'role': 'viewer',
@@ -193,37 +215,46 @@ class _HomeScreenState extends State<HomeScreen> {
         'requestedSource': 'files',
       }));
 
-      // انتظر قليلاً حتى يتسجل
-      await Future.delayed(const Duration(milliseconds: 600));
+      await Future.delayed(const Duration(milliseconds: 500));
 
-      // أرسل wake
       ws.add(jsonEncode({'type': 'wake'}));
 
-      // انتظر الرد
-      await Future.delayed(const Duration(milliseconds: 1200));
-      success = true;
+      result = await completer.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => 'failed',
+      );
     } catch (e) {
       debugPrint('[Wake] error: $e');
+      result = 'failed';
     } finally {
       try {
         await ws?.close();
       } catch (_) {}
+
       if (mounted) {
         setState(() => _wakingSessions.remove(sessionId));
+
+        String text;
+        Color bg;
+        if (result == 'sent') {
+          text = '✅ تم إرسال الأمر — سيستجيب خلال ثوانٍ';
+          bg = Colors.green;
+        } else {
+          text =
+              '❌ الجهاز غير متصل بالسيرفر — يلزم فتح التطبيق على جهاز الطفل';
+          bg = Colors.red;
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              success
-                  ? '✅ تم إرسال أمر الإيقاظ للجهاز'
-                  : '❌ فشل إرسال الأمر — تحقق من الشبكة',
-            ),
-            backgroundColor: success ? Colors.green : Colors.red,
-            duration: const Duration(seconds: 2),
+            content: Text(text),
+            backgroundColor: bg,
+            duration: const Duration(seconds: 4),
           ),
         );
-        if (success) {
-          // refresh بعد 3 ثواني
-          Future.delayed(const Duration(seconds: 3), _loadDevices);
+
+        if (result == 'sent') {
+          Future.delayed(const Duration(seconds: 4), _loadDevices);
         }
       }
     }
@@ -460,7 +491,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                   trailing: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      // ✅ زر الإيقاظ — يظهر فقط عندما يكون الجهاز غير متصل
                                       if (!online)
                                         IconButton(
                                           icon: isWaking
@@ -475,7 +505,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                                   Icons.refresh,
                                                   color: Colors.orange,
                                                 ),
-                                          tooltip: 'إعادة تشغيل الجهاز',
+                                          tooltip: 'إرسال أمر إيقاظ للجهاز',
                                           onPressed: isWaking
                                               ? null
                                               : () =>
