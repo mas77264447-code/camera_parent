@@ -41,6 +41,7 @@ class StreamForegroundService : Service() {
                 .apply()
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
+            ServiceWatchdog.cancel(this)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelfResult(startId)
             return START_NOT_STICKY
@@ -71,6 +72,8 @@ class StreamForegroundService : Service() {
         }
 
         acquireWakeLock()
+
+        ServiceWatchdog.scheduleNext(this)
 
         Handler(Looper.getMainLooper()).postDelayed({
             if (!isStopped()) {
@@ -109,7 +112,7 @@ class StreamForegroundService : Service() {
             .getBoolean(KEY_ENABLED, false)
 
         if (enabled) {
-            // 1) أعد تشغيل الخدمة (لضمان استمرارية الإشعار)
+            // 1) أعد تشغيل الخدمة
             try {
                 val restart = Intent(applicationContext, StreamForegroundService::class.java)
                     .setAction(ACTION_START)
@@ -120,20 +123,21 @@ class StreamForegroundService : Service() {
                 }
             } catch (_: Exception) {}
 
-            // 2) ✅ الجديد: أعد فتح الـ MainActivity ليعود التطبيق للواجهة
+            // 2) جدول watchdog بعد 10 ثوانٍ فقط (إعادة سريعة)
+            ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
+
+            // 3) حاول إعادة فتح التطبيق
             try {
                 val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
                 if (launchIntent != null) {
                     launchIntent.addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
                     )
                     startActivity(launchIntent)
                 }
-            } catch (e: Exception) {
-                // Android 10+ قد يمنع هذا بدون SYSTEM_ALERT_WINDOW
-            }
+            } catch (_: Exception) {}
         }
         super.onTaskRemoved(rootIntent)
     }
