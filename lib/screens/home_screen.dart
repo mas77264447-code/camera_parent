@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -21,11 +23,12 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, dynamic>> _devices = [];
   Timer? _refreshTimer;
 
-  // Login form
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _authLoading = false;
   String? _authError;
+
+  final Set<String> _wakingSessions = <String>{};
 
   @override
   void initState() {
@@ -44,17 +47,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('admin_token');
-
     if (token == null || token.isEmpty) {
       setState(() => _loading = false);
       return;
     }
-
     setState(() {
       _adminToken = token;
       _loading = false;
     });
-
     await _loadDevices();
     _startRefreshTimer();
   }
@@ -165,8 +165,71 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
+  // ✅ زر الإيقاظ — يفتح WS مؤقت، يرسل wake، ثم يُغلق.
+  Future<void> _sendWakeCommand(String sessionId) async {
+    if (_adminToken == null) return;
+    if (_wakingSessions.contains(sessionId)) return;
+
+    setState(() => _wakingSessions.add(sessionId));
+
+    WebSocket? ws;
+    bool success = false;
+    try {
+      final wsUrl = CameraService.server
+              .replaceFirst("https://", "wss://")
+              .replaceFirst("http://", "ws://") +
+          "/signal";
+
+      ws = await WebSocket.connect(wsUrl)
+          .timeout(const Duration(seconds: 10));
+
+      // register as viewer for this session
+      ws.add(jsonEncode({
+        'type': 'register',
+        'role': 'viewer',
+        'session': sessionId,
+        'adminToken': _adminToken,
+        'name': 'الوالد',
+        'requestedSource': 'files',
+      }));
+
+      // انتظر قليلاً حتى يتسجل
+      await Future.delayed(const Duration(milliseconds: 600));
+
+      // أرسل wake
+      ws.add(jsonEncode({'type': 'wake'}));
+
+      // انتظر الرد
+      await Future.delayed(const Duration(milliseconds: 1200));
+      success = true;
+    } catch (e) {
+      debugPrint('[Wake] error: $e');
+    } finally {
+      try {
+        await ws?.close();
+      } catch (_) {}
+      if (mounted) {
+        setState(() => _wakingSessions.remove(sessionId));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              success
+                  ? '✅ تم إرسال أمر الإيقاظ للجهاز'
+                  : '❌ فشل إرسال الأمر — تحقق من الشبكة',
+            ),
+            backgroundColor: success ? Colors.green : Colors.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        if (success) {
+          // refresh بعد 3 ثواني
+          Future.delayed(const Duration(seconds: 3), _loadDevices);
+        }
+      }
+    }
+  }
+
   void _openAddDevice() {
-    // ✅ الإصلاح: تحقق من _adminToken قبل الفتح (كان يسبب crash)
     if (_adminToken == null) return;
     Navigator.push(
       context,
@@ -377,6 +440,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             itemBuilder: (context, i) {
                               final d = _devices[i];
                               final online = d['online'] == true;
+                              final sessionId =
+                                  d['session_id']?.toString() ?? '';
+                              final isWaking =
+                                  _wakingSessions.contains(sessionId);
+
                               return Card(
                                 child: ListTile(
                                   leading: Icon(
@@ -389,11 +457,34 @@ class _HomeScreenState extends State<HomeScreen> {
                                   title: Text(d['name'] ?? ''),
                                   subtitle: Text(
                                       online ? 'متصل الآن' : 'غير متصل'),
-                                  trailing:
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      // ✅ زر الإيقاظ — يظهر فقط عندما يكون الجهاز غير متصل
+                                      if (!online)
+                                        IconButton(
+                                          icon: isWaking
+                                              ? const SizedBox(
+                                                  height: 18,
+                                                  width: 18,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                          strokeWidth: 2),
+                                                )
+                                              : const Icon(
+                                                  Icons.refresh,
+                                                  color: Colors.orange,
+                                                ),
+                                          tooltip: 'إعادة تشغيل الجهاز',
+                                          onPressed: isWaking
+                                              ? null
+                                              : () =>
+                                                  _sendWakeCommand(sessionId),
+                                        ),
                                       const Icon(Icons.chevron_left),
-                                  onTap: online
-                                      ? () => _openDevice(d)
-                                      : null,
+                                    ],
+                                  ),
+                                  onTap: online ? () => _openDevice(d) : null,
                                   onLongPress: () => _confirmForget(d),
                                 ),
                               );
@@ -416,11 +507,7 @@ class _HomeScreenState extends State<HomeScreen> {
         body: Center(child: CircularProgressIndicator()),
       );
     }
-
-    if (_adminToken == null) {
-      return _buildLoginScreen();
-    }
-
+    if (_adminToken == null) return _buildLoginScreen();
     return _buildDevicesScreen();
   }
 }
