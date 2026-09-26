@@ -52,8 +52,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:requestLegacyExternalStorage="true"
-        android:enableOnBackInvokedCallback="true">
+        android:requestLegacyExternalStorage="true">
 
         <activity
             android:name=".MainActivity"
