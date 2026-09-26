@@ -9,6 +9,12 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- ✅ إصلاح جديد: السماح بفتح Activity من الخلفية (Android 10+)
+         بدونه: getUserMedia يفشل بصمت عند إعادة التشغيل من الخدمة
+         → الشاشة السوداء. بوجوده: التطبيق يفتح Activity تلقائياً
+         عند طلب الكاميرا ويستأنف البث. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
