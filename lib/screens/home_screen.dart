@@ -69,7 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _refreshTimer?.cancel();
     // ✅ الفترة زادت من 5 إلى 30 ثانية لتقليل الضغط على السيرفر
     _refreshTimer = Timer.periodic(
-      const Duration(seconds: 30),
+      const Duration(seconds: 5),  // تم تقليل من 30 إلى 5 ثوانٍ
       (_) => _loadDevices(),
     );
   }
