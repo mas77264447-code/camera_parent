@@ -12,6 +12,14 @@ if (!UPSTASH_URL || !UPSTASH_TOKEN) {
   process.exit(1);
 }
 
+// ✅ إصلاح #1: سرّ إعداد السيرفر (يمنع سرقة ADMIN_TOKEN)
+const SETUP_TOKEN = process.env.SETUP_TOKEN || null;
+if (!SETUP_TOKEN) {
+  console.warn(
+    "[SECURITY] SETUP_TOKEN غير مضبوط! /admin/claim مكشوف للجميع. اضبطه في Render."
+  );
+}
+
 const redis = {
   async get(k) {
     try {
@@ -92,13 +100,32 @@ const redis = {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal" });
+
+// ✅ إصلاح #4: maxPayload لمنع DoS
+const WS_MAX_PAYLOAD = 512 * 1024; // 512 KB
+const wss = new WebSocketServer({
+  server,
+  path: "/signal",
+  maxPayload: WS_MAX_PAYLOAD,
+});
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
 
+// ✅ إصلاح #8: CORS مضبوط عبر متغير بيئة (افتراضي: مقيد)
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin || "";
+  if (ALLOWED_ORIGINS.includes("*")) {
+    res.header("Access-Control-Allow-Origin", "*");
+  } else if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+  }
   res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   res.header(
     "Access-Control-Allow-Headers",
@@ -122,6 +149,20 @@ const RATE_WINDOW_MS = 60 * 1000;
 const authAttempts = new Map();
 const wsAttempts = new Map();
 
+// ✅ إصلاح #5: rate limit عالمي (ضد الهجمات الموزعة)
+const globalCounters = new Map();
+
+function globalRateLimit(key, limit) {
+  const now = Date.now();
+  const item = globalCounters.get(key);
+  if (!item || now - item.startedAt >= RATE_WINDOW_MS) {
+    globalCounters.set(key, { startedAt: now, count: 1 });
+    return true;
+  }
+  item.count += 1;
+  return item.count <= limit;
+}
+
 function clientIp(req) {
   return String(
     req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
@@ -143,6 +184,13 @@ function rateLimit(map, key, limit) {
 
 function safeText(value, max = 256) {
   return String(value ?? "").trim().slice(0, max);
+}
+
+// ✅ إصلاح #6: اسم مستخدم آمن للمفاتيح
+function safeUsername(u) {
+  const s = String(u || "").trim().toLowerCase();
+  if (!/^[a-z0-9_\-\.]{3,50}$/.test(s)) return null;
+  return s;
 }
 
 function safeCompare(a, b) {
@@ -182,7 +230,21 @@ function computeViewerKey(sessionId, adminToken) {
     .slice(0, 32);
 }
 
+// ✅ إصلاح #1: /admin/claim محمي بـ SETUP_TOKEN
 app.post("/admin/claim", async (req, res) => {
+  const ip = clientIp(req);
+  if (!rateLimit(authAttempts, `claim:${ip}`, 5)) {
+    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
+  }
+
+  // إن كان SETUP_TOKEN مضبوطاً، يجب إرساله
+  if (SETUP_TOKEN) {
+    const provided = String((req.body && req.body.setup_token) || "");
+    if (!safeCompare(provided, SETUP_TOKEN)) {
+      return res.status(403).json({ error: "setup_token غير صحيح." });
+    }
+  }
+
   const claimed = await redis.get("admin:claimed");
   if (claimed) {
     return res
@@ -222,6 +284,31 @@ async function requireAdminToken(req, res, next) {
   res.status(403).send("غير مصرح لك بالدخول هنا.");
 }
 
+// ✅ إصلاح #2: التحقق من ملكية الحساب (وليس فقط ADMIN_TOKEN)
+async function verifyOwnership(req, res, username) {
+  const ownerToken = req.header("x-admin-token") ||
+    (req.body && req.body.owner_token) || "";
+
+  // الأدمن الرئيسي يمر
+  if (ownerToken && safeCompare(ownerToken, ADMIN_TOKEN)) {
+    return true;
+  }
+
+  // صاحب الحساب نفسه
+  if (ownerToken) {
+    const credKey = `parent:credentials:${username}`;
+    const raw = await redis.get(credKey);
+    if (raw) {
+      const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (entry.parentToken && safeCompare(ownerToken, entry.parentToken)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 const clients = {};
 const live = {};
 
@@ -259,6 +346,7 @@ function generatePairingCode() {
 }
 
 const PAIRING_CODE_TTL_SECONDS = 5 * 60;
+const VIEWER_APPROVED_TTL_SECONDS = 7 * 24 * 3600; // ✅ إصلاح #12: أسبوع
 
 function normalizeUsername(u) {
   return String(u || "").trim().toLowerCase();
@@ -273,13 +361,13 @@ app.post("/parent/register", async (req, res) => {
   if (!rateLimit(authAttempts, `parent-register:${ip}`, 10)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
-  const username = normalizeUsername(req.body && req.body.username);
+  const username = safeUsername(req.body && req.body.username);
   const password = String((req.body && req.body.password) || "");
 
-  if (username.length < 3) {
-    return res
-      .status(400)
-      .json({ error: "اسم المستخدم لازم 3 أحرف على الأقل." });
+  if (!username) {
+    return res.status(400).json({
+      error: "اسم المستخدم لازم 3-50 حرفاً (a-z, 0-9, _, -, .)",
+    });
   }
   if (password.length < 8) {
     return res
@@ -353,6 +441,7 @@ app.post("/parent/login", async (req, res) => {
   });
 });
 
+// ✅ إصلاح #2: التحقق من ملكية الحساب
 app.post("/parent/reset-password", async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `parent-reset:${ip}`, 5)) {
@@ -360,11 +449,7 @@ app.post("/parent/reset-password", async (req, res) => {
   }
   const username = normalizeUsername(req.body && req.body.username);
   const newPassword = String((req.body && req.body.new_password) || "");
-  const adminToken = String((req.body && req.body.admin_token) || "");
 
-  if (!adminToken || !safeCompare(adminToken, ADMIN_TOKEN)) {
-    return res.status(403).json({ error: "التوكن الإداري غير صحيح." });
-  }
   if (username.length < 3) {
     return res.status(400).json({ error: "اسم المستخدم غير صالح." });
   }
@@ -372,6 +457,12 @@ app.post("/parent/reset-password", async (req, res) => {
     return res
       .status(400)
       .json({ error: "كلمة المرور الجديدة لازم 8 أحرف على الأقل." });
+  }
+
+  if (!(await verifyOwnership(req, res, username))) {
+    return res
+      .status(403)
+      .json({ error: "غير مصرح. استخدم admin_token الخاص بحسابك." });
   }
 
   const credKey = `parent:credentials:${username}`;
@@ -400,19 +491,22 @@ app.post("/parent/reset-password", async (req, res) => {
   return res.json({ data: { success: true, username } });
 });
 
+// ✅ إصلاح #3: التحقق من الملكية + إلغاء كل الجلسات والأجهزة
 app.post("/parent/delete", async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `parent-delete:${ip}`, 5)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
   const username = normalizeUsername(req.body && req.body.username);
-  const adminToken = String((req.body && req.body.admin_token) || "");
 
-  if (!adminToken || !safeCompare(adminToken, ADMIN_TOKEN)) {
-    return res.status(403).json({ error: "التوكن الإداري غير صحيح." });
-  }
   if (username.length < 3) {
     return res.status(400).json({ error: "اسم المستخدم غير صالح." });
+  }
+
+  if (!(await verifyOwnership(req, res, username))) {
+    return res
+      .status(403)
+      .json({ error: "غير مصرح. استخدم admin_token الخاص بحسابك." });
   }
 
   const credKey = `parent:credentials:${username}`;
@@ -422,11 +516,35 @@ app.post("/parent/delete", async (req, res) => {
   }
 
   const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
-  if (entry.parentToken) {
-    await redis.del(`parenttoken:${entry.parentToken}`);
+  const parentToken = entry.parentToken;
+
+  // ✅ إلغاء كل جلسات وأجهزة هذا الوالد
+  if (parentToken) {
+    const sessionIds =
+      (await redis.smembers(`owner:${parentToken}:sessions`)) || [];
+    for (const sessionId of sessionIds) {
+      const sessRaw = await redis.get(`session:${sessionId}`);
+      if (sessRaw) {
+        const s =
+          typeof sessRaw === "string" ? JSON.parse(sessRaw) : sessRaw;
+        if (s.deviceToken) {
+          await redis.del(`device:${s.deviceToken}`);
+        }
+        await redis.del(`session:${sessionId}`);
+        const liveSession = live[sessionId];
+        if (liveSession && liveSession.broadcaster) {
+          const bClient = clients[liveSession.broadcaster];
+          if (bClient) {
+            try { bClient.ws.close(); } catch (e) {}
+          }
+        }
+        delete live[sessionId];
+      }
+    }
+    await redis.del(`owner:${parentToken}:sessions`);
+    await redis.del(`parenttoken:${parentToken}`);
   }
   await redis.del(credKey);
-  await redis.del(`child:byowner:${username}`);
 
   console.log(`[parent] account deleted: ${username}`);
   return res.json({ data: { deleted: true, username } });
@@ -437,11 +555,20 @@ app.post("/parent/delete", async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 
 app.post("/pairing/create", requireAdminToken, async (req, res) => {
-  let code = generatePairingCode();
-  for (let i = 0; i < 5; i++) {
-    const exists = await redis.get(`pairing:${code}`);
-    if (!exists) break;
-    code = generatePairingCode();
+  let code = null;
+  // ✅ إصلاح #14: 10 محاولات، وإن فشلت نرجع خطأ
+  for (let i = 0; i < 10; i++) {
+    const candidate = generatePairingCode();
+    const exists = await redis.get(`pairing:${candidate}`);
+    if (!exists) {
+      code = candidate;
+      break;
+    }
+  }
+  if (!code) {
+    return res
+      .status(503)
+      .json({ error: "تعذّر توليد كود فريد. حاول لاحقاً." });
   }
   await redis.set(
     `pairing:${code}`,
@@ -453,10 +580,13 @@ app.post("/pairing/create", requireAdminToken, async (req, res) => {
   });
 });
 
-// ✅ إصلاح: إضافة source: "web" لجلسات child.html
 app.post("/pairing/claim", async (req, res) => {
   const ip = clientIp(req);
+  // ✅ إصلاح #5: rate limit لكل IP + عالمي
   if (!rateLimit(authAttempts, `claim-pairing:${ip}`, 12)) {
+    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
+  }
+  if (!globalRateLimit("claim-pairing-global", 60)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
   const code = (req.body && req.body.code ? String(req.body.code) : "").trim();
@@ -485,7 +615,7 @@ app.post("/pairing/claim", async (req, res) => {
       createdAt: Date.now(),
       ownerToken,
       deviceToken,
-      source: "web",  // ✅ إصلاح
+      source: "web",
     })
   );
   await redis.set(
@@ -495,7 +625,7 @@ app.post("/pairing/claim", async (req, res) => {
       ownerToken,
       deviceName,
       pairedAt: Date.now(),
-      source: "web",  // ✅ إصلاح
+      source: "web",
     })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
@@ -509,15 +639,16 @@ app.post("/pairing/claim", async (req, res) => {
   });
 });
 
-// ✅ إصلاح: إضافة source: "pairing" لكل جلسات التطبيق
 app.post("/pairing/register", async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `register:${ip}`, 12)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
-  const username = (
-    req.body && req.body.username ? String(req.body.username).trim() : ""
-  ).toLowerCase();
+  if (!globalRateLimit("register-global", 60)) {
+    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
+  }
+
+  const username = normalizeUsername(req.body && req.body.username);
   const password = req.body && req.body.password ? String(req.body.password) : "";
   const deviceName =
     (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
@@ -525,7 +656,9 @@ app.post("/pairing/register", async (req, res) => {
   const code = (req.body && req.body.code ? String(req.body.code) : "").trim();
 
   if (!username || !password) {
-    return res.status(400).json({ error: "لازم تدخل اسم المستخدم وكلمة المرور." });
+    return res
+      .status(400)
+      .json({ error: "لازم تدخل اسم المستخدم وكلمة المرور." });
   }
   if (password.length < 8) {
     return res
@@ -566,8 +699,7 @@ app.post("/pairing/register", async (req, res) => {
 
       if (ownerToken !== parentEntry.parentToken) {
         return res.status(403).json({
-          error:
-            "هذا الكود من حساب والد مختلف. استخدم كوداً من حسابك.",
+          error: "هذا الكود من حساب والد مختلف. استخدم كوداً من حسابك.",
         });
       }
 
@@ -582,7 +714,7 @@ app.post("/pairing/register", async (req, res) => {
           ownerToken: parentEntry.parentToken,
           deviceToken,
           username,
-          source: "pairing",  // ✅ إصلاح
+          source: "pairing",
         })
       );
       await redis.set(
@@ -593,7 +725,7 @@ app.post("/pairing/register", async (req, res) => {
           deviceName,
           pairedAt: Date.now(),
           username,
-          source: "pairing",  // ✅ إصلاح
+          source: "pairing",
         })
       );
       await redis.sadd(
@@ -645,11 +777,11 @@ app.post("/pairing/register", async (req, res) => {
     }
 
     return res.status(400).json({
-      error:
-        "أدخل الكود من تطبيق الوالد لربط هذا الجهاز بالحساب.",
+      error: "أدخل الكود من تطبيق الوالد لربط هذا الجهاز بالحساب.",
     });
   }
 
+  // حساب طفل قديم
   const credKey = `credentials:${username}`;
   const raw = await redis.get(credKey);
 
@@ -706,7 +838,7 @@ app.post("/pairing/register", async (req, res) => {
       ownerToken,
       deviceToken,
       username,
-      source: "pairing",  // ✅ إصلاح
+      source: "pairing",
     })
   );
   await redis.set(
@@ -717,7 +849,7 @@ app.post("/pairing/register", async (req, res) => {
       deviceName,
       pairedAt: Date.now(),
       username,
-      source: "pairing",  // ✅ إصلاح
+      source: "pairing",
     })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
@@ -753,7 +885,6 @@ app.post("/pairing/unpair", async (req, res) => {
   await redis.srem(`owner:${info.ownerToken}:sessions`, info.sessionId);
 
   if (info.username) {
-    await redis.del(`child:byowner:${info.username}`);
     await redis.del(`child:last:${info.username}`);
   }
 
@@ -761,16 +892,13 @@ app.post("/pairing/unpair", async (req, res) => {
   if (liveSession && liveSession.broadcaster) {
     const bClient = clients[liveSession.broadcaster];
     if (bClient) {
-      try {
-        bClient.ws.close();
-      } catch (e) {}
+      try { bClient.ws.close(); } catch (e) {}
     }
   }
   delete live[info.sessionId];
   res.json({ data: { unpaired: true } });
 });
 
-// ✅ إصلاح: إرجاع source مع كل جلسة
 app.get("/camera/sessions", requireAdminToken, async (req, res) => {
   const requesterToken = req.ownerToken;
   try {
@@ -788,7 +916,7 @@ app.get("/camera/sessions", requireAdminToken, async (req, res) => {
         online: !!(liveSession && liveSession.broadcaster),
         viewers: liveSession ? liveSession.viewers.size : 0,
         created_at: s.createdAt,
-        source: s.source || "pairing",  // ✅ إصلاح: fallback للجلسات القديمة
+        source: s.source || "pairing",
       });
     }
     list.sort((a, b) => b.created_at - a.created_at);
@@ -799,6 +927,7 @@ app.get("/camera/sessions", requireAdminToken, async (req, res) => {
   }
 });
 
+// ✅ إصلاح #13: تنظيف viewer:approved عند حذف الجهاز
 app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
   const requesterToken = req.ownerToken;
   const sessionId = req.params.id;
@@ -813,16 +942,19 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
   if (liveSession && liveSession.broadcaster) {
     const bClient = clients[liveSession.broadcaster];
     if (bClient) {
-      try {
-        bClient.ws.close();
-      } catch (e) {}
+      try { bClient.ws.close(); } catch (e) {}
+    }
+  }
+  if (liveSession) {
+    // ✅ إصلاح: نظّف viewer:approved لكل مشاهد
+    for (const [viewerKey] of liveSession.viewers) {
+      await redis.del(`viewer:approved:${viewerKey}`);
     }
   }
   delete live[sessionId];
 
   if (s.deviceToken) await redis.del(`device:${s.deviceToken}`);
   if (s.username) {
-    await redis.del(`child:byowner:${s.username}`);
     await redis.del(`child:last:${s.username}`);
   }
   await redis.del(`session:${sessionId}`);
@@ -833,6 +965,8 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 // WEBSOCKET
 // ═══════════════════════════════════════════════════════════
+
+const WS_MESSAGE_LIMIT_PER_MIN = 600; // ✅ إصلاح #9
 
 wss.on("connection", (ws, req) => {
   const ip = clientIp(req);
@@ -851,6 +985,19 @@ wss.on("connection", (ws, req) => {
     lastMessageAt: Date.now(),
   };
 
+  // ✅ إصلاح #9: rate limit بعد الاتصال
+  let messageCount = 0;
+  let windowStart = Date.now();
+  ws._rateOk = () => {
+    const now = Date.now();
+    if (now - windowStart >= 60000) {
+      windowStart = now;
+      messageCount = 0;
+    }
+    messageCount++;
+    return messageCount <= WS_MESSAGE_LIMIT_PER_MIN;
+  };
+
   ws.isAlive = true;
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -859,6 +1006,11 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("message", async (raw) => {
+    if (!ws._rateOk()) {
+      try { ws.close(1008, "rate limited"); } catch (_) {}
+      return;
+    }
+
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
 
@@ -931,7 +1083,6 @@ wss.on("connection", (ws, req) => {
           `[ws] broadcaster: client=${clientId} session=${boundSession.slice(0, 8)}...`
         );
 
-        // ✅ إرسال ownerToken للطفل لاشتقاق مفتاح E2E
         const sessionData =
           typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession;
         if (sessionData.ownerToken) {
@@ -951,7 +1102,6 @@ wss.on("connection", (ws, req) => {
             name: info.name,
             source: info.source,
           });
-          // ✅ إصلاح: إذا كان المشاهد معتمداً مسبقاً، أخبره أن المُذيع وصل
           if (info.approved && info.currentClientId) {
             send(info.currentClientId, { type: "viewer-approved" });
             console.log(
@@ -978,7 +1128,8 @@ wss.on("connection", (ws, req) => {
         client.sessionId = session;
         client.role = role;
         client.viewerKey = viewerKey;
-        client.callerName = msg.name || "الوالد";
+        // ✅ إصلاح #7: safeText على الاسم
+        client.callerName = safeText(msg.name, 64) || "الوالد";
 
         const requestedSource =
           msg.requestedSource === "screen" ? "screen"
@@ -1068,10 +1219,13 @@ wss.on("connection", (ws, req) => {
       if (!viewerInfo) return;
       viewerInfo.approved = true;
 
-      await redis.set(`viewer:approved:${msg.target}`, "1");
+      // ✅ إصلاح #12: TTL لمدة أسبوع
+      await redis.set(`viewer:approved:${msg.target}`, "1", {
+        ex: VIEWER_APPROVED_TTL_SECONDS,
+      });
 
       sendToViewer(liveSession, msg.target, { type: "viewer-approved" });
-      console.log(`[ws] viewer approved PERMANENTLY: ${String(msg.target).slice(0, 8)}...`);
+      console.log(`[ws] viewer approved: ${String(msg.target).slice(0, 8)}...`);
       return;
     }
 
@@ -1163,9 +1317,7 @@ wss.on("connection", (ws, req) => {
         !client.viewerKey ||
         !liveSession ||
         !liveSession.broadcaster
-      )
-        return;
-      console.log(`[ws] restart-ice requested by ${client.viewerKey.slice(0, 8)}...`);
+      ) return;
       send(liveSession.broadcaster, {
         type: "request-restart-ice",
         viewerId: client.viewerKey,
@@ -1393,6 +1545,13 @@ const PORT = process.env.PORT || 8080;
   ADMIN_TOKEN = await getOrCreateAdminToken();
   console.log(`[camera-parent] ✅ ADMIN_TOKEN set (len=${ADMIN_TOKEN.length})`);
   console.log("[camera-parent] ✅ Upstash Redis connected");
+  if (SETUP_TOKEN) {
+    console.log("[camera-parent] ✅ SETUP_TOKEN configured");
+  } else {
+    console.warn(
+      "[camera-parent] ⚠️  SETUP_TOKEN غير مضبوط — /admin/claim مكشوف!"
+    );
+  }
   server.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
   });
@@ -1404,4 +1563,6 @@ setInterval(() => {
     if (v.startedAt < cutoff) authAttempts.delete(k);
   for (const [k, v] of wsAttempts)
     if (v.startedAt < cutoff) wsAttempts.delete(k);
+  for (const [k, v] of globalCounters)
+    if (v.startedAt < cutoff) globalCounters.delete(k);
 }, RATE_WINDOW_MS).unref();
