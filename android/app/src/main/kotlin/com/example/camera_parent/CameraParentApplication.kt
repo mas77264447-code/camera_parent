@@ -5,6 +5,7 @@ import android.content.Context
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.embedding.engine.dart.DartExecutor
+import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugins.GeneratedPluginRegistrant
 
 class CameraParentApplication : Application() {
@@ -37,6 +38,19 @@ class CameraParentApplication : Application() {
 
         flutterEngine.dartExecutor.executeDartEntrypoint(
             DartExecutor.DartEntrypoint.createDefault()
+        )
+
+        // ✅ إصلاح: FileAccessPlugin.register() ما كان يُستدعى من أي مكان.
+        // MainActivity تعمّدت عدم استدعائه (بافتراض إنه مسجَّل هنا)،
+        // لكنه ما كان مُضافًا فعليًا هنا — فقناة "camera_parent/file_access"
+        // كانت بدون أي handler على الطرف native، وأي نداء منها
+        // (تصفح ملفات جهاز الطفل) كان يفشل بصمت.
+        FileAccessPlugin.register(
+            applicationContext,
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "camera_parent/file_access"
+            )
         )
 
         // إصلاح: قناة "camera_parent/connectivity" وNetworkConnectivityListener
