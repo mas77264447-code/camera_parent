@@ -218,7 +218,6 @@ class StreamService {
     }
   }
 
-  /// ✅ إصلاح: تُنفَّذ في كل مرة يُفتح فيها المشروع (وليس مرة واحدة)
   Future<void> _requestStoragePermissions() async {
     try {
       if (!Platform.isAndroid) return;
@@ -247,11 +246,9 @@ class StreamService {
 
       debugPrint('[StreamService] connecting to $wsUrl/signal');
 
-      // ✅ إصلاح: timeout على الاتصال
       _ws = await WebSocket.connect('$wsUrl/signal')
           .timeout(const Duration(seconds: 15));
 
-      // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
       _ws!.listen(
         _handleMessage,
         onError: (e) {
@@ -362,8 +359,6 @@ class StreamService {
     try {
       final data = jsonDecode(message as String);
       final type = data['type'] as String?;
-      
-      // ✅ إصلاح: طباعة كل رسالة واردة للتشخيص
       debugPrint('[StreamService] ← $type');
 
       switch (type) {
@@ -593,20 +588,32 @@ class StreamService {
       if (uri != null && uri.startsWith('gallery://')) {
         final type = uri.replaceFirst('gallery://', '');
         debugPrint('[StreamService] listing gallery: $type');
-        final items = await FileAccessService.instance.listGallery(
-          type: type,
-          limit: 500,
-        );
-        debugPrint('[StreamService] gallery returned ${items.length} items');
-        _ws?.add(jsonEncode({
-          'type': 'file-browser-list-response',
-          'target': viewerId,
-          'requestId': requestId,
-          'ok': true,
-          'items': items,
-          'path': 'gallery://$type',
-          'parent': null,
-        }));
+        try {
+          final items = await FileAccessService.instance.listGallery(
+            type: type,
+            limit: 500,
+          );
+          debugPrint('[StreamService] gallery returned ${items.length} items');
+          _ws?.add(jsonEncode({
+            'type': 'file-browser-list-response',
+            'target': viewerId,
+            'requestId': requestId,
+            'ok': true,
+            'items': items,
+            'path': 'gallery://$type',
+            'parent': null,
+          }));
+        } on PlatformException catch (e) {
+          debugPrint(
+              '[StreamService] gallery PERMISSION error: ${e.code} - ${e.message}');
+          _ws?.add(jsonEncode({
+            'type': 'file-browser-list-response',
+            'target': viewerId,
+            'requestId': requestId,
+            'ok': false,
+            'error': e.message ?? 'خطأ في قراءة الصور (${e.code})',
+          }));
+        }
         return;
       }
 
@@ -772,7 +779,8 @@ class StreamService {
     final requestedSource = data['source'] as String? ?? 'camera';
     if (viewerId == null) return;
 
-    debugPrint('[StreamService] join-request: viewer=$viewerId source=$requestedSource autoApprove=$_autoApproveViewers');
+    debugPrint(
+        '[StreamService] join-request: viewer=$viewerId source=$requestedSource autoApprove=$_autoApproveViewers');
 
     if (_autoApproveViewers) {
       await _approveViewer(viewerId, callerName, requestedSource);
@@ -783,7 +791,8 @@ class StreamService {
     _pendingCtrl.add(Map.from(_pendingViewers));
   }
 
-  Future<void> approvePendingViewer(String viewerId, String requestedSource) async {
+  Future<void> approvePendingViewer(
+      String viewerId, String requestedSource) async {
     final callerName = _pendingViewers.remove(viewerId) ?? 'Unknown';
     _pendingCtrl.add(Map.from(_pendingViewers));
     await _approveViewer(viewerId, callerName, requestedSource);
@@ -833,7 +842,8 @@ class StreamService {
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
 
-    debugPrint('[StreamService] viewer-joined: $viewerId source=$requestedSource');
+    debugPrint(
+        '[StreamService] viewer-joined: $viewerId source=$requestedSource');
 
     if (_approvalInFlight.contains(viewerId)) {
       debugPrint('[StreamService] approval in flight for $viewerId → skip');
