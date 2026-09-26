@@ -13,6 +13,9 @@ object ServiceWatchdog {
     private const val REQUEST_CODE = 7788
     const val ACTION = "com.example.camera_parent.WATCHDOG"
 
+    /// ✅ إصلاح: استخدام set() بدل setExact() لتقليل استهلاك البطارية.
+    /// set() يسمح للنظام بتأجيل التنبيه قليلاً، لكنه لا يستدعي RTC_WAKEUP
+    /// من النوم العميق بشكل متكرر → عمر بطارية أفضل + تجنّب قتل MIUI.
     fun scheduleNext(context: Context, delayMs: Long = INTERVAL_MS) {
         try {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -28,17 +31,18 @@ object ServiceWatchdog {
 
             val triggerAt = System.currentTimeMillis() + delayMs
 
+            // ✅ إصلاح: استخدام set() بدل setExact/setExactAndAllowWhileIdle
+            // لتقليل الاستهلاك. Watchdog "تقريبي" كافٍ لإعادة الخدمة.
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    if (am.canScheduleExactAlarms()) {
-                        am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pi)
-                    } else {
-                        am.set(AlarmManager.RTC_WAKEUP, triggerAt, pi)
-                    }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    // setAndAllowWhileIdle يسمح بالعمل في Doze mode لكن لا يوقظ
+                    // المعالج بعنف (بخلاف setExactAndAllowWhileIdle).
+                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
                 } else {
-                    am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                    am.set(AlarmManager.RTC_WAKEUP, triggerAt, pi)
                 }
             } catch (se: SecurityException) {
+                // fallback
                 am.set(AlarmManager.RTC_WAKEUP, triggerAt, pi)
             }
 
