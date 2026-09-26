@@ -22,6 +22,11 @@ class StreamForegroundService : Service() {
         const val ACTION_START = "com.example.camera_parent.action.START_STREAM_SERVICE"
         const val ACTION_STOP = "com.example.camera_parent.action.STOP_STREAM_SERVICE"
 
+        // ✅ يستخدمه StreamWatchdogReceiver للتحقق من وضع الخدمة الحالي.
+        // ما فيه أي مكان بالمشروع يكتب قيمة مختلفة لمفتاح "mode" حاليًا،
+        // فهذا يبقيه القيمة الافتراضية المتوقعة (كاميرا).
+        const val MODE_CAMERA = "camera"
+
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
     }
