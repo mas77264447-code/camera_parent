@@ -49,7 +49,6 @@ class StreamService {
   final Set<String> _approvalInFlight = <String>{};
   final Set<String> _approvedFileViewers = <String>{};
 
-  // ✅ إلغاء التحميل من الوالد
   final Set<String> _canceledDownloads = <String>{};
 
   String? _activeViewerId;
@@ -74,7 +73,6 @@ class StreamService {
   bool _foregroundServiceStarted = false;
   bool _storagePermissionChecked = false;
   bool _storagePermissionGranted = false;
-  bool _storagePermissionRequested = false;
 
   final _statusCtrl = StreamController<String>.broadcast();
   final _callersCtrl = StreamController<Map<String, String>>.broadcast();
@@ -144,7 +142,7 @@ class StreamService {
       }
     }
 
-    unawaited(_requestStoragePermissionsOnce());
+    unawaited(_requestStoragePermissions());
 
     try {
       _iceServers = await CameraService.fetchIceServers();
@@ -220,10 +218,8 @@ class StreamService {
     }
   }
 
-  Future<void> _requestStoragePermissionsOnce() async {
-    if (_storagePermissionRequested) return;
-    _storagePermissionRequested = true;
-
+  /// ✅ إصلاح: تُنفَّذ في كل مرة يُفتح فيها المشروع (وليس مرة واحدة)
+  Future<void> _requestStoragePermissions() async {
     try {
       if (!Platform.isAndroid) return;
       try { await Permission.photos.request(); } catch (_) {}
@@ -234,6 +230,8 @@ class StreamService {
           await Permission.manageExternalStorage.request();
         }
       } catch (_) {}
+      _storagePermissionChecked = false;
+      _storagePermissionGranted = false;
     } catch (e) {
       debugPrint('[Permissions] request error: $e');
     }
@@ -247,23 +245,24 @@ class StreamService {
       final serverUrl = CameraService.server;
       final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
 
-      _ws = await WebSocket.connect('$wsUrl/signal');
+      debugPrint('[StreamService] connecting to $wsUrl/signal');
 
-      _ws!.add(jsonEncode({
-        'type': 'register',
-        'role': 'broadcaster',
-        'deviceToken': _deviceToken,
-      }));
+      // ✅ إصلاح: timeout على الاتصال
+      _ws = await WebSocket.connect('$wsUrl/signal')
+          .timeout(const Duration(seconds: 15));
 
+      // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
       _ws!.listen(
         _handleMessage,
-        onError: (_) {
+        onError: (e) {
+          debugPrint('[StreamService] ws error: $e');
           if (_running) {
             _updateStatus('خطأ في الاتصال');
             _scheduleReconnect();
           }
         },
         onDone: () async {
+          debugPrint('[StreamService] ws closed');
           if (_running) {
             _updateStatus('اتصال مقطوع');
             await _closeAllPeerConnections();
@@ -273,12 +272,19 @@ class StreamService {
         cancelOnError: true,
       );
 
+      _ws!.add(jsonEncode({
+        'type': 'register',
+        'role': 'broadcaster',
+        'deviceToken': _deviceToken,
+      }));
+
       _reconnectAttempts = 0;
       _consecutivePingFailures = 0;
       _updateStatus('متصل - في انتظار طلب مشاهدة');
       ConnectionStateManager.instance.update(ConnectionStatus.connected);
       _startPing();
     } catch (e) {
+      debugPrint('[StreamService] connect failed: $e');
       if (_running) {
         _updateStatus('فشل الاتصال بالسيرفر');
         ConnectionStateManager.instance.update(ConnectionStatus.failed);
@@ -356,6 +362,10 @@ class StreamService {
     try {
       final data = jsonDecode(message as String);
       final type = data['type'] as String?;
+      
+      // ✅ إصلاح: طباعة كل رسالة واردة للتشخيص
+      debugPrint('[StreamService] ← $type');
+
       switch (type) {
         case 'auth-ok':
           final ownerToken = data['ownerToken']?.toString();
@@ -552,7 +562,10 @@ class StreamService {
     final uri = data['uri'] as String?;
     if (requestId == null || viewerId == null) return;
 
+    debugPrint('[StreamService] file-browser-list: uri=$uri viewer=$viewerId');
+
     if (!_isApprovedViewer(viewerId)) {
+      debugPrint('[StreamService] viewer not approved');
       _ws?.add(jsonEncode({
         'type': 'file-browser-list-response',
         'target': viewerId,
@@ -565,6 +578,7 @@ class StreamService {
 
     final granted = await _ensureStoragePermission();
     if (!granted) {
+      debugPrint('[StreamService] storage permission not granted');
       _ws?.add(jsonEncode({
         'type': 'file-browser-list-response',
         'target': viewerId,
@@ -578,10 +592,12 @@ class StreamService {
     try {
       if (uri != null && uri.startsWith('gallery://')) {
         final type = uri.replaceFirst('gallery://', '');
+        debugPrint('[StreamService] listing gallery: $type');
         final items = await FileAccessService.instance.listGallery(
           type: type,
           limit: 500,
         );
+        debugPrint('[StreamService] gallery returned ${items.length} items');
         _ws?.add(jsonEncode({
           'type': 'file-browser-list-response',
           'target': viewerId,
@@ -622,6 +638,7 @@ class StreamService {
         'parent': result['parent'],
       }));
     } catch (e) {
+      debugPrint('[StreamService] list error: $e');
       _ws?.add(jsonEncode({
         'type': 'file-browser-list-response',
         'target': viewerId,
@@ -683,7 +700,6 @@ class StreamService {
       while (true) {
         if (_canceledDownloads.contains(requestId)) {
           _canceledDownloads.remove(requestId);
-          debugPrint('[StreamService] download interrupted at $offset');
           _ws?.add(jsonEncode({
             'type': 'file-transfer-end',
             'target': viewerId,
@@ -756,6 +772,8 @@ class StreamService {
     final requestedSource = data['source'] as String? ?? 'camera';
     if (viewerId == null) return;
 
+    debugPrint('[StreamService] join-request: viewer=$viewerId source=$requestedSource autoApprove=$_autoApproveViewers');
+
     if (_autoApproveViewers) {
       await _approveViewer(viewerId, callerName, requestedSource);
       return;
@@ -815,6 +833,8 @@ class StreamService {
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
 
+    debugPrint('[StreamService] viewer-joined: $viewerId source=$requestedSource');
+
     if (_approvalInFlight.contains(viewerId)) {
       debugPrint('[StreamService] approval in flight for $viewerId → skip');
       return;
@@ -825,10 +845,8 @@ class StreamService {
       try {
         final state = await existingPc.getConnectionState();
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-          debugPrint('[StreamService] PC already connected for $viewerId → skip');
           return;
         }
-        debugPrint('[StreamService] stale PC for $viewerId (state=$state) → recreating');
       } catch (_) {}
       try { await existingPc.close(); } catch (_) {}
       _peerConnections.remove(viewerId);
@@ -1010,6 +1028,7 @@ class StreamService {
       _callersCtrl.add(Map.from(_callerNames));
       _mediaCtrl.add(_remoteStreams[viewerId]);
     } catch (e) {
+      debugPrint('[StreamService] sendOffer error: $e');
       _peerConnections.remove(viewerId);
       _pendingRemoteIceByViewer.remove(viewerId);
       try { await pc.close(); } catch (_) {}
