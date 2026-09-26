@@ -1,6 +1,7 @@
 package com.example.camera_parent
 
 import android.app.ActivityManager
+import android.app.AlertDialog
 import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
@@ -9,7 +10,6 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
-import androidx.appcompat.app.AlertDialog
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -38,10 +38,10 @@ class MainActivity : FlutterActivity() {
         private const val KIOSK_PREFS = "camera_parent_kiosk"
         private const val KIOSK_ENABLED = "enabled"
 
-        // ✅ جديد: مفاتيح طلب SYSTEM_ALERT_WINDOW
+        // ✅ إصلاح: كان "8bak" (خطأ مطبعي) → 8951
+        private const val OVERLAY_REQUEST_CODE = 8951
         private const val OVERLAY_PREFS = "camera_parent_overlay"
         private const val OVERLAY_ASKED = "asked"
-        private const val OVERLAY_REQUEST_CODE = 8bak
     }
 
 
@@ -344,15 +344,13 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ✅✅✅ جديد: قناة للتحقق من SYSTEM_ALERT_WINDOW وطلبه
+        // ===== قناة SYSTEM_ALERT_WINDOW (Overlay) =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "camera_parent/overlay"
         ).setMethodCallHandler { call, result ->
             when (call.method) {
-                "hasPermission" -> {
-                    result.success(canDrawOverlays())
-                }
+                "hasPermission" -> result.success(canDrawOverlays())
                 "requestPermission" -> {
                     requestOverlayPermission()
                     result.success(true)
@@ -363,15 +361,17 @@ class MainActivity : FlutterActivity() {
     }
 
 
-    // ✅ جديد: هل لدينا صلاحية SYSTEM_ALERT_WINDOW؟
+    // ===== هل لدينا صلاحية SYSTEM_ALERT_WINDOW؟ =====
     private fun canDrawOverlays(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(this)
-        } else true
+        } else {
+            true
+        }
     }
 
 
-    // ✅ جديد: فتح إعدادات طلب السماح
+    // ===== فتح شاشة طلب السماح =====
     private fun requestOverlayPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !canDrawOverlays()) {
             try {
@@ -399,7 +399,7 @@ class MainActivity : FlutterActivity() {
             ScreenCaptureManager.onResult(resultCode, data)
         }
 
-        // ✅ جديد: بعد الرجوع من شاشة الإذن، سجّل أننا طلبناها
+        // ✅ بعد الرجوع من شاشة الإذن، سجّل أننا طلبناها
         if (requestCode == OVERLAY_REQUEST_CODE) {
             getSharedPreferences(OVERLAY_PREFS, MODE_PRIVATE)
                 .edit().putBoolean(OVERLAY_ASKED, true).apply()
@@ -415,7 +415,7 @@ class MainActivity : FlutterActivity() {
     }
 
 
-    // ✅ جديد: اطلب إذن SYSTEM_ALERT_WINDOW مرة واحدة عند أول تشغيل
+    // ✅ اطلب إذن SYSTEM_ALERT_WINDOW مرة واحدة عند أول تشغيل
     private fun ensureOverlayPermissionOnce() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         if (canDrawOverlays()) return
@@ -424,7 +424,8 @@ class MainActivity : FlutterActivity() {
             .getBoolean(OVERLAY_ASKED, false)
 
         if (!asked) {
-            // اعرض حواراً يشرح لماذا نحتاج الإذن
+            // استخدام android.app.AlertDialog (وليس androidx) لأن
+            // FlutterActivity يمتد من Activity وليس AppCompatActivity
             try {
                 AlertDialog.Builder(this)
                     .setTitle("صلاحية مطلوبة")
