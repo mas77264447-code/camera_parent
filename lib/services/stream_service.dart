@@ -151,6 +151,27 @@ class StreamService {
     await _connectWebSocket();
   }
 
+  /// تشغيل الكاميرا تلقائيًا عند بدء تطبيق الطفل.
+  /// لا ينتظر طلب مشاهدة من الوالد.
+  Future<void> ensureCameraStarted() async {
+    if (!_running) {
+      debugPrint('[StreamService] auto-start skipped: service is not running');
+      return;
+    }
+
+    // إذا كان هناك بث قائم، لا نعيد إنشاء الكاميرا.
+    if (localStream != null) {
+      _localStreamCtrl.add(localStream!);
+      return;
+    }
+
+    // التأكد من أن المصدر هو الكاميرا وليس مشاركة الشاشة/الملفات.
+    _broadcastScreen = false;
+    _broadcastFiles = false;
+
+    await _startMediaSource();
+  }
+
   Future<void> stop() async {
     CryptoService.instance.clear();
     _running = false;
