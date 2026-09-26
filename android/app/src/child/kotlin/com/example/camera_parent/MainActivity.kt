@@ -390,8 +390,11 @@ class MainActivity : FlutterActivity() {
 
 
         // ===== قناة الوصول للملفات (File Access) =====
+        // ✅ إصلاح: applicationContext بدل this — لمنع مرجع Activity قديم
+        // بعد إعادة تشغيل الخدمة، Activity القديمة تكون مُدمّرة، واستخدام
+        // Context قديم يجعل checkSelfPermission يُرجع DENIED بصمت.
         FileAccessPlugin.register(
-            this,
+            applicationContext,
             MethodChannel(
                 flutterEngine.dartExecutor.binaryMessenger,
                 FILE_ACCESS_CHANNEL
