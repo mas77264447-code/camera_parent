@@ -31,9 +31,6 @@ class MainActivity : FlutterActivity() {
         private const val BATTERY_OPTIMIZATION_CHANNEL =
             "camera_parent/battery_optimization"
 
-        private const val FILE_ACCESS_CHANNEL =
-            "camera_parent/file_access"
-
         private const val MANAGE_STORAGE_CHANNEL =
             "camera_parent/manage_storage"
 
@@ -389,17 +386,11 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ===== قناة الوصول للملفات (File Access) =====
-        // ✅ إصلاح: applicationContext بدل this — لمنع مرجع Activity قديم
-        // بعد إعادة تشغيل الخدمة، Activity القديمة تكون مُدمّرة، واستخدام
-        // Context قديم يجعل checkSelfPermission يُرجع DENIED بصمت.
-        FileAccessPlugin.register(
-            applicationContext,
-            MethodChannel(
-                flutterEngine.dartExecutor.binaryMessenger,
-                FILE_ACCESS_CHANNEL
-            )
-        )
+        // ✅✅✅ إصلاح: FileAccessPlugin الآن مسجَّل في CameraParentApplication.onCreate
+        // السبب: عندما يُعاد تشغيل التطبيق من الخدمة (بدون Activity)،
+        // لا يتم استدعاء configureFlutterEngine هنا، فتفشل جميع قنوات
+        // MethodChannel بـ MissingPluginException. لذلك نقلنا التسجيل
+        // إلى Application لضمان توفره دائماً.
 
 
         // ===== قناة "الوصول لجميع الملفات" (MANAGE_EXTERNAL_STORAGE) =====
