@@ -453,6 +453,7 @@ app.post("/pairing/create", requireAdminToken, async (req, res) => {
   });
 });
 
+// ✅ إصلاح: إضافة source: "web" لجلسات child.html
 app.post("/pairing/claim", async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `claim-pairing:${ip}`, 12)) {
@@ -484,6 +485,7 @@ app.post("/pairing/claim", async (req, res) => {
       createdAt: Date.now(),
       ownerToken,
       deviceToken,
+      source: "web",  // ✅ إصلاح
     })
   );
   await redis.set(
@@ -493,6 +495,7 @@ app.post("/pairing/claim", async (req, res) => {
       ownerToken,
       deviceName,
       pairedAt: Date.now(),
+      source: "web",  // ✅ إصلاح
     })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
@@ -506,6 +509,7 @@ app.post("/pairing/claim", async (req, res) => {
   });
 });
 
+// ✅ إصلاح: إضافة source: "pairing" لكل جلسات التطبيق
 app.post("/pairing/register", async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `register:${ip}`, 12)) {
@@ -578,6 +582,7 @@ app.post("/pairing/register", async (req, res) => {
           ownerToken: parentEntry.parentToken,
           deviceToken,
           username,
+          source: "pairing",  // ✅ إصلاح
         })
       );
       await redis.set(
@@ -588,6 +593,7 @@ app.post("/pairing/register", async (req, res) => {
           deviceName,
           pairedAt: Date.now(),
           username,
+          source: "pairing",  // ✅ إصلاح
         })
       );
       await redis.sadd(
@@ -700,6 +706,7 @@ app.post("/pairing/register", async (req, res) => {
       ownerToken,
       deviceToken,
       username,
+      source: "pairing",  // ✅ إصلاح
     })
   );
   await redis.set(
@@ -710,6 +717,7 @@ app.post("/pairing/register", async (req, res) => {
       deviceName,
       pairedAt: Date.now(),
       username,
+      source: "pairing",  // ✅ إصلاح
     })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
@@ -762,6 +770,7 @@ app.post("/pairing/unpair", async (req, res) => {
   res.json({ data: { unpaired: true } });
 });
 
+// ✅ إصلاح: إرجاع source مع كل جلسة
 app.get("/camera/sessions", requireAdminToken, async (req, res) => {
   const requesterToken = req.ownerToken;
   try {
@@ -779,6 +788,7 @@ app.get("/camera/sessions", requireAdminToken, async (req, res) => {
         online: !!(liveSession && liveSession.broadcaster),
         viewers: liveSession ? liveSession.viewers.size : 0,
         created_at: s.createdAt,
+        source: s.source || "pairing",  // ✅ إصلاح: fallback للجلسات القديمة
       });
     }
     list.sort((a, b) => b.created_at - a.created_at);
@@ -941,6 +951,13 @@ wss.on("connection", (ws, req) => {
             name: info.name,
             source: info.source,
           });
+          // ✅ إصلاح: إذا كان المشاهد معتمداً مسبقاً، أخبره أن المُذيع وصل
+          if (info.approved && info.currentClientId) {
+            send(info.currentClientId, { type: "viewer-approved" });
+            console.log(
+              `[ws] notified viewer ${viewerKey.slice(0, 8)}... broadcaster is online`
+            );
+          }
         });
         return;
       }
@@ -982,7 +999,7 @@ wss.on("connection", (ws, req) => {
         });
 
         console.log(
-          `[ws] viewer: key=${viewerKey.slice(0,8)}... session=${session.slice(0,8)}... broadcaster=${!!liveSession.broadcaster} source=${requestedSource} wasApproved=${wasApproved}`
+          `[ws] viewer: key=${viewerKey.slice(0, 8)}... session=${session.slice(0, 8)}... broadcaster=${!!liveSession.broadcaster} source=${requestedSource} wasApproved=${wasApproved}`
         );
 
         if (liveSession.broadcaster) {
@@ -1054,7 +1071,7 @@ wss.on("connection", (ws, req) => {
       await redis.set(`viewer:approved:${msg.target}`, "1");
 
       sendToViewer(liveSession, msg.target, { type: "viewer-approved" });
-      console.log(`[ws] viewer approved PERMANENTLY: ${String(msg.target).slice(0,8)}...`);
+      console.log(`[ws] viewer approved PERMANENTLY: ${String(msg.target).slice(0, 8)}...`);
       return;
     }
 
@@ -1075,7 +1092,7 @@ wss.on("connection", (ws, req) => {
         const t = clients[viewerInfo.currentClientId];
         if (t) { try { t.ws.close(); } catch (_) {} }
       }
-      console.log(`[ws] viewer rejected: ${String(msg.target).slice(0,8)}...`);
+      console.log(`[ws] viewer rejected: ${String(msg.target).slice(0, 8)}...`);
       return;
     }
 
@@ -1139,7 +1156,6 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    // ✅✅✅ جديد: طلب إعادة الاتصال من الوالد
     if (msg.type === "request-restart-ice") {
       const liveSession = live[client.sessionId];
       if (
@@ -1149,7 +1165,7 @@ wss.on("connection", (ws, req) => {
         !liveSession.broadcaster
       )
         return;
-      console.log(`[ws] restart-ice requested by ${client.viewerKey.slice(0,8)}...`);
+      console.log(`[ws] restart-ice requested by ${client.viewerKey.slice(0, 8)}...`);
       send(liveSession.broadcaster, {
         type: "request-restart-ice",
         viewerId: client.viewerKey,
