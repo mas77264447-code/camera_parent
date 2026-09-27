@@ -509,231 +509,116 @@ app.post("/pairing/claim", async (req, res) => {
   });
 });
 
-// ✅ إصلاح: إضافة source: "pairing" لكل جلسات التطبيق
+// تسجيل جهاز الطفل باستخدام حساب الوالد
 app.post("/pairing/register", async (req, res) => {
   const ip = clientIp(req);
-  if (!rateLimit(authAttempts, `register:${ip}`, 12)) {
-    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
+
+  if (!rateLimit(authAttempts, `pairing-register:${ip}`, 12)) {
+    return res.status(429).json({
+      error: "محاولات كثيرة. حاول لاحقًا.",
+    });
   }
-  const username = (
-    req.body && req.body.username ? String(req.body.username).trim() : ""
+
+  const parentUsername = (
+    req.body && req.body.parent_username
+      ? String(req.body.parent_username).trim()
+      : ""
   ).toLowerCase();
-  const password = req.body && req.body.password ? String(req.body.password) : "";
+
+  const parentPassword =
+    req.body && req.body.parent_password
+      ? String(req.body.parent_password)
+      : "";
+
   const deviceName =
-    (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
-    "جهاز غير مسمى";
-  const code = (req.body && req.body.code ? String(req.body.code) : "").trim();
+    req.body && req.body.device_name &&
+    String(req.body.device_name).trim()
+      ? String(req.body.device_name).trim()
+      : "جهاز الطفل";
 
-  if (!username || !password) {
-    return res.status(400).json({ error: "لازم تدخل اسم المستخدم وكلمة المرور." });
-  }
-  if (password.length < 8) {
-    return res
-      .status(400)
-      .json({ error: "كلمة المرور لازم تكون 8 أحرف على الأقل." });
+  if (!parentUsername || !parentPassword) {
+    return res.status(400).json({
+      error: "أدخل اسم مستخدم الوالد وكلمة مرور الوالد.",
+    });
   }
 
-  const parentKey = `parent:credentials:${username}`;
+  const parentKey = `parent:credentials:${parentUsername}`;
   const parentRaw = await redis.get(parentKey);
 
-  if (parentRaw) {
-    const parentEntry =
-      typeof parentRaw === "string" ? JSON.parse(parentRaw) : parentRaw;
-    const ok = await verifyPasswordAsync(
-      password,
-      parentEntry.salt,
-      parentEntry.passwordHash
-    );
-    if (!ok) {
-      return res.status(401).json({
-        error:
-          "هذا الاسم محجوز لحساب والد. تأكد من كلمة المرور أو استخدم اسمًا آخر.",
-      });
-    }
-
-    if (code) {
-      const pairingRaw = await redis.get(`pairing:${code}`);
-      if (!pairingRaw) {
-        return res
-          .status(400)
-          .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
-      }
-      await redis.del(`pairing:${code}`);
-
-      const pairingEntry =
-        typeof pairingRaw === "string" ? JSON.parse(pairingRaw) : pairingRaw;
-      const ownerToken = pairingEntry.ownerToken;
-
-      if (ownerToken !== parentEntry.parentToken) {
-        return res.status(403).json({
-          error:
-            "هذا الكود من حساب والد مختلف. استخدم كوداً من حسابك.",
-        });
-      }
-
-      const sessionId = crypto.randomBytes(16).toString("hex");
-      const deviceToken = crypto.randomBytes(24).toString("hex");
-
-      await redis.set(
-        `session:${sessionId}`,
-        JSON.stringify({
-          name: deviceName,
-          createdAt: Date.now(),
-          ownerToken: parentEntry.parentToken,
-          deviceToken,
-          username,
-          source: "pairing",  // ✅ إصلاح
-        })
-      );
-      await redis.set(
-        `device:${deviceToken}`,
-        JSON.stringify({
-          sessionId,
-          ownerToken: parentEntry.parentToken,
-          deviceName,
-          pairedAt: Date.now(),
-          username,
-          source: "pairing",  // ✅ إصلاح
-        })
-      );
-      await redis.sadd(
-        `owner:${parentEntry.parentToken}:sessions`,
-        sessionId
-      );
-
-      await redis.set(
-        `child:last:${username}`,
-        JSON.stringify({
-          sessionId,
-          deviceToken,
-          deviceName,
-          linkedAt: Date.now(),
-        })
-      );
-
-      console.log(
-        `[child] NEW device: user=${username} name=${deviceName} session=${sessionId.slice(0, 8)}...`
-      );
-
-      return res.json({
-        data: {
-          device_token: deviceToken,
-          session_id: sessionId,
-          device_name: deviceName,
-        },
-      });
-    }
-
-    const lastRaw = await redis.get(`child:last:${username}`);
-    if (lastRaw) {
-      const lastData =
-        typeof lastRaw === "string" ? JSON.parse(lastRaw) : lastRaw;
-      const sessRaw = await redis.get(`session:${lastData.sessionId}`);
-      if (sessRaw) {
-        console.log(
-          `[child] RESTORE session: user=${username} session=${lastData.sessionId.slice(0, 8)}...`
-        );
-        return res.json({
-          data: {
-            device_token: lastData.deviceToken,
-            session_id: lastData.sessionId,
-            device_name: lastData.deviceName,
-          },
-        });
-      }
-      await redis.del(`child:last:${username}`);
-    }
-
-    return res.status(400).json({
-      error:
-        "أدخل الكود من تطبيق الوالد لربط هذا الجهاز بالحساب.",
+  if (!parentRaw) {
+    return res.status(401).json({
+      error: "حساب الوالد غير موجود.",
     });
   }
 
-  const credKey = `credentials:${username}`;
-  const raw = await redis.get(credKey);
+  let parentEntry;
 
-  if (raw) {
-    const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
-    const ok = await verifyPasswordAsync(
-      password,
-      entry.salt,
-      entry.passwordHash
-    );
-    if (!ok) {
-      return res
-        .status(401)
-        .json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة." });
-    }
-    return res.json({
-      data: {
-        device_token: entry.deviceToken,
-        session_id: entry.sessionId,
-        device_name: entry.deviceName,
-      },
+  try {
+    parentEntry =
+      typeof parentRaw === "string"
+        ? JSON.parse(parentRaw)
+        : parentRaw;
+  } catch (_) {
+    return res.status(500).json({
+      error: "بيانات حساب الوالد غير صالحة.",
     });
   }
 
-  if (!code) {
-    return res
-      .status(400)
-      .json({ error: "لازم كود من تطبيق الوالد لأول تسجيل دخول." });
+  const passwordOk = await verifyPasswordAsync(
+    parentPassword,
+    parentEntry.salt,
+    parentEntry.passwordHash
+  );
+
+  if (!passwordOk) {
+    return res.status(401).json({
+      error: "اسم مستخدم الوالد أو كلمة المرور غير صحيحة.",
+    });
   }
 
-  const pairingRaw = await redis.get(`pairing:${code}`);
-  if (!pairingRaw) {
-    return res
-      .status(400)
-      .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
+  const ownerToken = parentEntry.parentToken;
+
+  if (!ownerToken) {
+    return res.status(500).json({
+      error: "حساب الوالد لا يحتوي على هوية مالك صالحة.",
+    });
   }
-  await redis.del(`pairing:${code}`);
-
-  const pairingEntry =
-    typeof pairingRaw === "string" ? JSON.parse(pairingRaw) : pairingRaw;
-  const ownerToken = pairingEntry.ownerToken;
-
-  const salt = crypto.randomBytes(16).toString("hex");
-  const passwordHash = await hashPasswordAsync(password, salt);
 
   const sessionId = crypto.randomBytes(16).toString("hex");
   const deviceToken = crypto.randomBytes(24).toString("hex");
+
+  const now = Date.now();
 
   await redis.set(
     `session:${sessionId}`,
     JSON.stringify({
       name: deviceName,
-      createdAt: Date.now(),
+      createdAt: now,
       ownerToken,
       deviceToken,
-      username,
-      source: "pairing",  // ✅ إصلاح
+      parentUsername,
+      source: "pairing",
     })
   );
+
   await redis.set(
     `device:${deviceToken}`,
     JSON.stringify({
       sessionId,
       ownerToken,
       deviceName,
-      pairedAt: Date.now(),
-      username,
-      source: "pairing",  // ✅ إصلاح
-    })
-  );
-  await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
-  await redis.set(
-    credKey,
-    JSON.stringify({
-      salt,
-      passwordHash,
-      sessionId,
-      deviceToken,
-      deviceName,
-      createdAt: Date.now(),
+      pairedAt: now,
+      parentUsername,
+      source: "pairing",
     })
   );
 
-  res.json({
+  await redis.sadd(
+    `owner:${ownerToken}:sessions`,
+    sessionId
+  );
+
+  return res.json({
     data: {
       device_token: deviceToken,
       session_id: sessionId,
