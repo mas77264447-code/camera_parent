@@ -159,8 +159,8 @@ class StreamService {
       return;
     }
 
-    // إذا كان هناك بث قائم، لا نعيد إنشاء الكاميرا.
-    if (localStream != null) {
+    // إذا كان هناك بث كاميرا حي، لا نعيد إنشاء الكاميرا.
+    if (localStream != null && _hasLiveVideoTrack()) {
       _localStreamCtrl.add(localStream!);
       return;
     }
@@ -230,13 +230,6 @@ class StreamService {
       try { await old.dispose(); } catch (_) {}
     }
     _localStreamCtrl.add(null);
-  }
-
-  /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
-  Future<void> ensureCameraStarted() async {
-    if (!_running || _broadcastScreen || _broadcastFiles) return;
-    if (localStream != null && _hasLiveVideoTrack()) return;
-    await _startMediaSource();
   }
 
   Future<void> ensureHealthy() async {
