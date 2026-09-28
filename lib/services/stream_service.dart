@@ -1203,6 +1203,25 @@ class StreamService {
     return true;
   }
 
+  Future<void> _reregisterBroadcaster() async {
+    if (!_running) return;
+    if (_ws == null || _ws!.readyState != WebSocket.open) {
+      _scheduleReconnect();
+      return;
+    }
+    try {
+      _ws!.add(jsonEncode({
+        'type': 'register',
+        'role': 'broadcaster',
+        'deviceToken': _deviceToken,
+      }));
+      debugPrint('[StreamService] re-registered broadcaster');
+    } catch (e) {
+      debugPrint('[StreamService] re-register failed: $e');
+      _scheduleReconnect();
+    }
+  }
+
   void _updateStatus(String s) {
     _status = s;
     _statusCtrl.add(s);

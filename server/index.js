@@ -868,6 +868,9 @@ wss.on("connection", (ws, req) => {
 
     if (msg.type === "ping") {
       send(clientId, { type: "pong", timestamp: msg.timestamp || Date.now() });
+      if (client.role === "broadcaster" && client.sessionId) {
+        redis.set(`session:${client.sessionId}:lastSeen`, String(Date.now()), { ex: 300 }).catch(() => {});
+      }
       return;
     }
 
@@ -898,7 +901,14 @@ wss.on("connection", (ws, req) => {
         });
         send(clientId, { type: "wake-sent" });
       } else {
-        send(clientId, { type: "wake-failed", reason: "broadcaster-offline" });
+        const lastSeenStr = await redis.get(`session:${sessionId}:lastSeen`);
+        const lastSeen = lastSeenStr ? parseInt(lastSeenStr, 10) : 0;
+        const ageSeconds = lastSeen ? Math.round((Date.now() - lastSeen) / 1000) : 99999;
+        if (lastSeen && ageSeconds < 120) {
+          send(clientId, { type: "wake-sent" });
+        } else {
+          send(clientId, { type: "wake-failed", reason: "broadcaster-offline" });
+        }
       }
       return;
     }
@@ -925,6 +935,14 @@ wss.on("connection", (ws, req) => {
         client.sessionId = boundSession;
         client.role = role;
         const liveSession = getLive(boundSession);
+
+        if (liveSession.broadcaster && liveSession.broadcaster !== clientId) {
+          const oldBroadcaster = clients[liveSession.broadcaster];
+          if (oldBroadcaster) {
+            try { oldBroadcaster.ws.close(1000, "replaced"); } catch (_) {}
+          }
+        }
+
         liveSession.broadcaster = clientId;
 
         console.log(

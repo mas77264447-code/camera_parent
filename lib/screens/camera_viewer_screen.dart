@@ -41,6 +41,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   Timer? _healthCheckTimer;
   Timer? _pingTimer;
   Timer? _noMediaWatchdog;
+  Timer? _broadcasterLeftTimer;
 
   int _reconnectAttempts = 0;
   int _consecutiveFailures = 0;
@@ -576,8 +577,14 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _noMediaWatchdog?.cancel();
     _noMediaWatchdog = null;
     if (mounted) {
-      setState(() => _status = "انقطع جهاز الطفل - في انتظار عودة البث...");
+      setState(() => _status = "انقطع جهاز الطفل - جاري إعادة المحاولة...");
     }
+    _broadcasterLeftTimer?.cancel();
+    _scheduleReconnect();
+    _broadcasterLeftTimer = Timer(const Duration(seconds: 30), () {
+      if (_disposed) return;
+      if (_remoteStream == null) _reconnectFull();
+    });
   }
 
   Future<void> _handleIceCandidate(Map<String, dynamic> msg) async {
@@ -649,6 +656,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   @override
   void dispose() {
     _disposed = true;
+    _broadcasterLeftTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
     _healthCheckTimer?.cancel();
