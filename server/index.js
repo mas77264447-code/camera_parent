@@ -869,7 +869,7 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "ping") {
       send(clientId, { type: "pong", timestamp: msg.timestamp || Date.now() });
       if (client.role === "broadcaster" && client.sessionId) {
-        redis.set(`session:${client.sessionId}:lastSeen`, String(Date.now()), { ex: 300 }).catch(() => {});
+        redis.set(`session:${client.sessionId}:lastSeen`, String(Date.now()), { ex: 600 }).catch(() => {});
       }
       return;
     }
@@ -904,7 +904,7 @@ wss.on("connection", (ws, req) => {
         const lastSeenStr = await redis.get(`session:${sessionId}:lastSeen`);
         const lastSeen = lastSeenStr ? parseInt(lastSeenStr, 10) : 0;
         const ageSeconds = lastSeen ? Math.round((Date.now() - lastSeen) / 1000) : 99999;
-        if (lastSeen && ageSeconds < 120) {
+        if (lastSeen && ageSeconds < 300) {
           send(clientId, { type: "wake-sent" });
         } else {
           send(clientId, { type: "wake-failed", reason: "broadcaster-offline" });
@@ -1290,6 +1290,7 @@ wss.on("connection", (ws, req) => {
         client.role === "broadcaster" &&
         liveSession.broadcaster === clientId
       ) {
+        redis.set(`session:${client.sessionId}:lastSeen`, String(Date.now()), { ex: 600 }).catch(() => {});
         liveSession.broadcaster = null;
         for (const [viewerKey] of liveSession.viewers) {
           sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });

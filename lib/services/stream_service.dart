@@ -290,6 +290,14 @@ class StreamService {
       _updateStatus('متصل - في انتظار طلب مشاهدة');
       ConnectionStateManager.instance.update(ConnectionStatus.connected);
       _startPing();
+
+      // ✅ ping فوري لإبلاغ السيرفر بحالة الجهاز
+      try {
+        _ws!.add(jsonEncode({
+          'type': 'ping',
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        }));
+      } catch (_) {}
     } catch (e) {
       debugPrint('[StreamService] connect failed: $e');
       if (_running) {
