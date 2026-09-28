@@ -1,16 +1,10 @@
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.pub-cache/
-.pub/
+node_modules/
 build/
-ios/
-windows/
-web/
-macos/
+.dart_tool/
+.gradle/
+.idea/
+.vscode/
+*.iml
+*.apk
+*.keystore
 .env
-*.lock
-
-# Local Gradle state
-android/.gradle/

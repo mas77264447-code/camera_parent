@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/camera_service.dart';
 import 'add_device_screen.dart';
 import 'device_connection_screen.dart';
+import 'web_link_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,6 +30,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _authError;
 
   final Set<String> _wakingSessions = <String>{};
+
+  bool _usersExpanded = true;
+  bool _servicesExpanded = false;
 
   // ✅ حماية ضد المسح عند الفشل المؤقت
   int _consecutiveEmptyResponses = 0;
@@ -599,6 +603,68 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+
+  Widget _buildServicesSection() {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(
+              Icons.build_outlined,
+              color: Colors.deepPurple,
+            ),
+            title: const Text(
+              '🧰 الخدمات',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            trailing: Icon(
+              _servicesExpanded
+                  ? Icons.expand_less
+                  : Icons.expand_more,
+            ),
+            onTap: () {
+              setState(() {
+                _servicesExpanded = !_servicesExpanded;
+              });
+            },
+          ),
+          if (_servicesExpanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Card(
+                margin: EdgeInsets.zero,
+                child: ListTile(
+                  leading: const Icon(
+                    Icons.link,
+                    color: Colors.blue,
+                  ),
+                  title: const Text('🔗 إضافة عبر رابط ⭐'),
+                  subtitle: const Text(
+                    'إضافة جهاز باستخدام رابط الاقتران',
+                  ),
+                  trailing: const Icon(Icons.chevron_left),
+                  onTap: () {
+                    if (_adminToken == null) return;
+
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => WebLinkScreen(
+                          adminToken: _adminToken!,
+                          deviceName: '',
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
