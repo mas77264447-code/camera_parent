@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- القيمة الافتراضية دي بتتبدل تلقائيًا حسب الـ flavor (parent/child)
+         عن طريق resValue في build.gradle.kts - شوف تحت. -->
+    <string name="app_name">Camera Parent</string>
+</resources>

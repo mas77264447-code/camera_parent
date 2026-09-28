@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>كاميرا الطفل</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0a0e1a; color: #fff;
+    font-family: -apple-system, 'Segoe UI', Tahoma, sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column;
+  }
+  .header {
+    padding: 16px; text-align: center;
+    background: #161b2e; border-bottom: 1px solid #2a3450;
+  }
+  .header h1 { margin: 0; font-size: 18px; color: #7ab5ff; }
+  .header p { margin: 4px 0 0; font-size: 12px; color: #8a96b8; }
+  .content { flex: 1; padding: 24px; }
+  .field { margin-bottom: 16px; }
+  .field label {
+    display: block; font-size: 13px; margin-bottom: 6px;
+    color: #8a96b8;
+  }
+  .field input {
+    width: 100%; padding: 14px;
+    background: #161b2e; border: 1px solid #2a3450;
+    color: #fff; border-radius: 10px; font-size: 16px;
+    text-align: center; letter-spacing: 2px;
+  }
+  .field input:focus { outline: none; border-color: #4a7aff; }
+  .btn {
+    width: 100%; padding: 14px;
+    background: linear-gradient(135deg, #4a7aff, #6b5cff);
+    color: #fff; border: none; border-radius: 10px;
+    font-size: 16px; font-weight: 600; cursor: pointer;
+  }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status {
+    margin-top: 16px; padding: 12px;
+    background: #161b2e; border-radius: 10px;
+    font-size: 13px; text-align: center;
+    border-right: 3px solid #4a7aff;
+  }
+  .status.ok { border-right-color: #22c55e; color: #22c55e; }
+  .status.err { border-right-color: #ef4444; color: #ef4444; }
+  .status.warn { border-right-color: #f59e0b; color: #f59e0b; }
+  .video-wrap {
+    display: none; flex: 1; position: relative;
+    background: #000;
+  }
+  .video-wrap.active { display: flex; }
+  video { width: 100%; height: 100%; object-fit: cover; background: #000; }
+  .live-badge {
+    position: absolute; top: 14px; right: 14px;
+    background: rgba(239,68,68,0.9); color: #fff;
+    padding: 6px 12px; border-radius: 20px;
+    font-size: 12px; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📹 كاميرا الطفل</h1>
+  <p>افتح هذا الرابط على جهاز الطفل</p>
+</div>
+
+<div class="content" id="setupScreen">
+  <div class="field">
+    <label>كود الاقتران (6 أرقام)</label>
+    <input id="codeInput" type="tel" inputmode="numeric" maxlength="6" placeholder="------">
+  </div>
+  <div class="field">
+    <label>اسم هذا الجهاز</label>
+    <input id="nameInput" type="text" maxlength="30" value="جهاز الطفل">
+  </div>
+  <button class="btn" id="startBtn" onclick="startPairing()">بدء البث</button>
+  <div class="status" id="statusBox">في انتظار الكود...</div>
+</div>
+
+<div class="video-wrap" id="videoWrap">
+  <video id="localVideo" autoplay muted playsinline></video>
+  <div class="live-badge">● بث مباشر</div>
+</div>
+
+<script>
+const BASE = window.location.origin;
+const WS_URL = BASE.replace(/^http/, 'ws') + '/signal';
+let ws = null, localStream = null, deviceToken = null;
+const peerConnections = {};
+let pingTimer = null;
+
+const statusBox = document.getElementById('statusBox');
+const setupScreen = document.getElementById('setupScreen');
+const videoWrap = document.getElementById('videoWrap');
+const videoEl = document.getElementById('localVideo');
+
+function setStatus(text, type = '') {
+  statusBox.textContent = text;
+  statusBox.className = 'status ' + type;
+}
+
+async function startPairing() {
+  const code = document.getElementById('codeInput').value.trim();
+  const name = document.getElementById('nameInput').value.trim() || 'جهاز الطفل';
+  if (!/^\d{6}$/.test(code)) { setStatus('الكود 6 أرقام', 'err'); return; }
+  document.getElementById('startBtn').disabled = true;
+  setStatus('جاري التحقق...');
+  try {
+    const res = await fetch(BASE + '/pairing/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, device_name: name }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setStatus(data.error || 'الكود غير صحيح', 'err');
+      document.getElementById('startBtn').disabled = false;
+      return;
+    }
+    deviceToken = data.data.device_token;
+    localStorage.setItem('cw_device_token', deviceToken);
+    localStorage.setItem('cw_device_name', data.data.device_name);
+    setStatus('تم الاقتران — جاري طلب الكاميرا...', 'ok');
+    await requestMedia();
+  } catch (e) {
+    setStatus('فشل الاتصال: ' + e.message, 'err');
+    document.getElementById('startBtn').disabled = false;
+  }
+}
+
+async function requestMedia() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+      audio: true,
+    });
+    videoEl.srcObject = localStream;
+    setupScreen.style.display = 'none';
+    videoWrap.classList.add('active');
+    setStatus('الكاميرا جاهزة', 'ok');
+    connectWebSocket();
+  } catch (e) {
+    setStatus('فشل الكاميرا: ' + e.message, 'err');
+  }
+}
+
+function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'register', role: 'broadcaster', deviceToken }));
+    startPing();
+  };
+  ws.onmessage = async (e) => {
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
+    switch (msg.type) {
+      case 'join-request':
+        ws.send(JSON.stringify({ type: 'approve-viewer', target: msg.viewerId }));
+        await createOffer(msg.viewerId);
+        break;
+      case 'viewer-joined':
+        await createOffer(msg.viewerId);
+        break;
+      case 'answer': await handleAnswer(msg); break;
+      case 'ice': await handleIce(msg); break;
+      case 'viewer-left':
+        const pc = peerConnections[msg.viewerId];
+        if (pc) { pc.close(); delete peerConnections[msg.viewerId]; }
+        break;
+      case 'request-restart-ice':
+        const old = peerConnections[msg.viewerId];
+        if (old) { old.close(); delete peerConnections[msg.viewerId]; }
+        await createOffer(msg.viewerId);
+        break;
+    }
+  };
+  ws.onclose = () => setTimeout(connectWebSocket, 3000);
+  ws.onerror = () => {};
+}
+
+function startPing() {
+  clearInterval(pingTimer);
+  pingTimer = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, 15000);
+}
+
+async function createOffer(viewerId) {
+  if (!localStream) return;
+  if (peerConnections[viewerId]) { try { peerConnections[viewerId].close(); } catch {} }
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ],
+  });
+  peerConnections[viewerId] = pc;
+  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  pc.onicecandidate = (e) => {
+    if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'ice', target: viewerId,
+        candidate: {
+          candidate: e.candidate.candidate,
+          sdpMid: e.candidate.sdpMid,
+          sdpMLineIndex: e.candidate.sdpMLineIndex,
+        },
+      }));
+    }
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      delete peerConnections[viewerId];
+    }
+  };
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: 'offer', viewerId, target: viewerId, sdp: offer.sdp }));
+}
+
+async function handleAnswer(msg) {
+  const viewerId = msg.from || msg.viewerId;
+  const pc = peerConnections[viewerId];
+  if (!pc) return;
+  try { await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }); } catch {}
+}
+
+async function handleIce(msg) {
+  const viewerId = msg.from;
+  const pc = peerConnections[viewerId];
+  if (!pc || !msg.candidate) return;
+  try {
+    await pc.addIceCandidate({
+      candidate: msg.candidate.candidate,
+      sdpMid: msg.candidate.sdpMid,
+      sdpMLineIndex: msg.candidate.sdpMLineIndex,
+    });
+  } catch {}
+}
+
+window.addEventListener('load', async () => {
+  const saved = localStorage.getItem('cw_device_token');
+  if (saved) {
+    deviceToken = saved;
+    const name = localStorage.getItem('cw_device_name') || 'جهاز الطفل';
+    document.querySelector('.header p').textContent = name;
+    setStatus('استئناف الجلسة السابقة...', 'warn');
+    try { await requestMedia(); } catch {
+      localStorage.clear();
+      setStatus('انتهت الجلسة — أدخل الكود', 'err');
+    }
+  }
+  const urlParams = new URLSearchParams(window.location.search);
+  const codeFromUrl = urlParams.get('code');
+  if (codeFromUrl && /^\d{6}$/.test(codeFromUrl)) {
+    document.getElementById('codeInput').value = codeFromUrl;
+  }
+});
+</script>
+</body>
+</html>

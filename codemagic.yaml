@@ -1,0 +1,36 @@
+workflows:
+  parent-android-release:
+    name: Camera Parent Android APK (Parent app)
+
+    environment:
+      flutter: stable
+
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+
+      - name: Build APK (parent build)
+        script: |
+          flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
+
+    artifacts:
+      - build/app/outputs/flutter-apk/app-parent-release.apk
+
+  child-android-release:
+    name: Camera Child Android APK (Child device app)
+
+    environment:
+      flutter: stable
+
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+
+      - name: Build APK (child build)
+        script: |
+          flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+
+    artifacts:
+      - build/app/outputs/flutter-apk/app-child-release.apk
