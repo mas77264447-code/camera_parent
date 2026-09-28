@@ -36,6 +36,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // ✅ منع تداخل الطلبات
   bool _loadInFlight = false;
 
+  // ✅ وقت آخر رد ناجح من السيرفر
+  DateTime? _lastSuccessfulUpdate;
+
   @override
   void initState() {
     super.initState();
@@ -52,6 +55,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     final token = prefs.getString('admin_token');
     if (token == null || token.isEmpty) {
       setState(() => _loading = false);
@@ -62,14 +66,15 @@ class _HomeScreenState extends State<HomeScreen> {
       _loading = false;
     });
     await _loadDevices();
+    if (!mounted) return;
     _startRefreshTimer();
   }
 
   void _startRefreshTimer() {
     _refreshTimer?.cancel();
-    // ✅ الفترة زادت من 5 إلى 30 ثانية لتقليل الضغط على السيرفر
+    // التحديث كل 5 ثوانٍ
     _refreshTimer = Timer.periodic(
-      const Duration(seconds: 5),  // تم تقليل من 30 إلى 5 ثوانٍ
+      const Duration(seconds: 5),
       (_) => _loadDevices(),
     );
   }
@@ -100,6 +105,8 @@ class _HomeScreenState extends State<HomeScreen> {
         ? await CameraService.parentRegister(username, password)
         : await CameraService.parentLogin(username, password);
 
+    if (!mounted) return;
+
     if (token == null || token.isEmpty) {
       setState(() {
         _authLoading = false;
@@ -114,12 +121,14 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.setString('admin_token', token);
     await prefs.setString('parent_username', username);
 
+    if (!mounted) return;
     setState(() {
       _adminToken = token;
       _authLoading = false;
     });
 
     await _loadDevices();
+    if (!mounted) return;
     _startRefreshTimer();
   }
 
@@ -148,10 +157,12 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.remove('admin_token');
     _refreshTimer?.cancel();
 
+    if (!mounted) return;
     setState(() {
       _adminToken = null;
       _devices = [];
       _consecutiveEmptyResponses = 0;
+      _lastSuccessfulUpdate = null;
       _usernameController.clear();
       _passwordController.clear();
       _authError = null;
@@ -168,6 +179,38 @@ class _HomeScreenState extends State<HomeScreen> {
       if (a[i]['name'] != b[i]['name']) return false;
     }
     return true;
+  }
+
+  // ✅ تنبيه للأجهزة اللي رجعت أونلاين (المقارنة بالـ session_id مش بالترتيب)
+  void _notifyReconnected(
+    List<Map<String, dynamic>> oldList,
+    List<Map<String, dynamic>> newList,
+  ) {
+    final oldOnline = <String, bool>{
+      for (final d in oldList)
+        if (d['session_id'] != null)
+          d['session_id'].toString(): d['online'] == true,
+    };
+
+    for (final d in newList) {
+      final id = d['session_id']?.toString();
+      if (id == null) continue;
+      final wasKnownOffline = oldOnline.containsKey(id) && !oldOnline[id]!;
+      if (wasKnownOffline && d['online'] == true) {
+        _showDeviceReconnectedSnackbar(d['name']?.toString() ?? 'جهاز');
+      }
+    }
+  }
+
+  void _showDeviceReconnectedSnackbar(String deviceName) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('✅ $deviceName عاد للاتصال'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: Colors.green,
+      ),
+    );
   }
 
   Future<void> _loadDevices() async {
@@ -203,9 +246,22 @@ class _HomeScreenState extends State<HomeScreen> {
           _consecutiveEmptyResponses = 0;
         }
 
-        // ✅ لا rebuild إذا لم تتغير البيانات
-        if (mounted && !_devicesEqual(_devices, list)) {
+        if (!mounted) return;
+
+        final now = DateTime.now();
+        final prev = _lastSuccessfulUpdate;
+        _lastSuccessfulUpdate = now;
+
+        final changed = !_devicesEqual(_devices, list);
+        final minuteChanged =
+            prev == null || prev.minute != now.minute || prev.hour != now.hour;
+
+        if (changed) {
+          _notifyReconnected(_devices, list);
           setState(() => _devices = list);
+        } else if (minuteChanged) {
+          // تحديث نص "آخر تحديث" فقط
+          setState(() {});
         }
       } else if (response.statusCode == 403) {
         debugPrint('[Home] token rejected — logging out');
@@ -217,6 +273,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _adminToken = null;
             _devices = [];
             _consecutiveEmptyResponses = 0;
+            _lastSuccessfulUpdate = null;
           });
         }
       } else if (response.statusCode == 503) {
@@ -368,8 +425,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (confirmed == true && _adminToken != null) {
       await CameraService.forgetDevice(device['session_id'], _adminToken!);
+
+      // ✅ شيل الجهاز محلياً فوراً وصفّر حماية الرد الفارغ،
+      // عشان آخر جهاز ما يفضلش ظاهر لحد ما تعدي 3 استعلامات فاضية
+      if (mounted) {
+        setState(() {
+          _devices = _devices
+              .where((d) => d['session_id'] != device['session_id'])
+              .toList();
+          _consecutiveEmptyResponses = 0;
+        });
+      }
       await _loadDevices();
     }
+  }
+
+  String _lastUpdateText() {
+    final t = _lastSuccessfulUpdate;
+    if (t == null) return '';
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mm = t.minute.toString().padLeft(2, '0');
+    return 'آخر تحديث: $hh:$mm';
   }
 
   Widget _buildLoginScreen() {
@@ -485,9 +561,20 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('أجهزة الأطفال المقترنة',
-                      style: TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold)),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('أجهزة الأطفال المقترنة',
+                          style: TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                      if (_lastSuccessfulUpdate != null)
+                        Text(
+                          _lastUpdateText(),
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.black45),
+                        ),
+                    ],
+                  ),
                   Row(
                     children: [
                       IconButton(
