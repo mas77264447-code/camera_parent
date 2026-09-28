@@ -114,6 +114,15 @@ class StreamService {
   }) async {
     if (_running && _sessionId == sessionId && _deviceToken == deviceToken) {
       debugPrint('[StreamService] already running');
+      // ✅ إذا كان الـ WebSocket مغلقاً أو تالفاً، أعد الاتصال فوراً
+      if (_ws == null || _ws!.readyState != WebSocket.open) {
+        debugPrint('[StreamService] WS not open — reconnecting');
+        _updateStatus('جاري إعادة الاتصال...');
+        _reconnectTimer?.cancel();
+        _reconnectTimer = null;
+        _reconnectAttempts = 0;
+        await _connectWebSocket();
+      }
       _statusCtrl.add(_status);
       return;
     }
@@ -220,8 +229,28 @@ class StreamService {
 
   Future<void> ensureHealthy() async {
     if (!_running) return;
+
     if (_ws == null || _ws!.readyState != WebSocket.open) {
-      _scheduleReconnect();
+      debugPrint('[StreamService] ensureHealthy: WS not open — reconnecting now');
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectAttempts = 0;
+      await _connectWebSocket();
+      return;
+    }
+
+    // ✅ ping فوري لكشف الاتصال التالف
+    try {
+      _ws!.add(jsonEncode({
+        'type': 'ping',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      }));
+    } catch (e) {
+      debugPrint('[StreamService] ping failed: $e');
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectAttempts = 0;
+      await _connectWebSocket();
     }
   }
 
