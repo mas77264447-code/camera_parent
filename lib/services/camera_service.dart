@@ -76,7 +76,7 @@ class CameraService {
   // Parent auth
   // ═══════════════════════════════════════════════════════════
 
-  static Future<Map<String, dynamic>> parentRegister(
+  static Future<String> parentRegister(
     String username,
     String password,
   ) async {
@@ -89,10 +89,15 @@ class CameraService {
       throw Exception("Register failed: ${res.statusCode} ${res.body}");
     }
     final body = jsonDecode(res.body);
-    return Map<String, dynamic>.from(body["data"] ?? body);
+    final data = (body["data"] ?? body) as Map;
+    final token = data["admin_token"]?.toString() ?? "";
+    if (token.isEmpty) {
+      throw Exception("Register: no admin_token in response");
+    }
+    return token;
   }
 
-  static Future<Map<String, dynamic>> parentLogin(
+  static Future<String> parentLogin(
     String username,
     String password,
   ) async {
@@ -105,7 +110,12 @@ class CameraService {
       throw Exception("Login failed: ${res.statusCode} ${res.body}");
     }
     final body = jsonDecode(res.body);
-    return Map<String, dynamic>.from(body["data"] ?? body);
+    final data = (body["data"] ?? body) as Map;
+    final token = data["admin_token"]?.toString() ?? "";
+    if (token.isEmpty) {
+      throw Exception("Login: no admin_token in response");
+    }
+    return token;
   }
 
   // ═══════════════════════════════════════════════════════════
