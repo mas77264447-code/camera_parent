@@ -56,7 +56,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   static const int MAX_CONSECUTIVE_FAILURES = 3;
   static const int MAX_RECONNECT_ATTEMPTS = 20;
-  static const Duration NO_MEDIA_TIMEOUT = Duration(seconds: 60);
+  static const Duration NO_MEDIA_TIMEOUT = Duration(seconds: 10);
 
   List<Map<String, dynamic>> _iceServers = const [
     {"urls": "stun:stun.l.google.com:19302"},
