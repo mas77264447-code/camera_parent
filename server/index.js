@@ -1146,7 +1146,7 @@ wss.on("connection", (ws, req) => {
           for (const [viewerKey] of liveSession.viewers) {
             sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
           }
-          liveSession.viewers.clear();
+          console.log(`[ws] broadcaster left (graceful) — kept ${liveSession.viewers.size} viewers waiting`);
         }
         if (!liveSession.broadcaster && liveSession.viewers.size === 0) {
           delete live[sessionId];
@@ -1378,7 +1378,8 @@ wss.on("connection", (ws, req) => {
         for (const [viewerKey] of liveSession.viewers) {
           sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
         }
-        liveSession.viewers.clear();
+        // ✅ احتفظ بالمشاهدين ليعودوا عند عودة الكاميرا
+        console.log(`[ws] broadcaster disconnected — kept ${liveSession.viewers.size} viewers waiting`);
       }
       if (client.role === "viewer" && client.viewerKey) {
         const v = liveSession.viewers.get(client.viewerKey);
