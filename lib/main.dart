@@ -1,3 +1,5 @@
+import 'services/fcm_service.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'services/service_agent_channel.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,8 +16,14 @@ import 'screens/camera_stream_screen.dart';
 const bool isChildBuild =
     bool.fromEnvironment('IS_CHILD_BUILD', defaultValue: false);
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Firebase.initializeApp();
+    await FcmService.init();
+  } catch (e) {
+    debugPrint("Firebase init failed: $e");
+  }
 
   NativeBridge.initialize();
 

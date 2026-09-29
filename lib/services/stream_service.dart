@@ -14,6 +14,7 @@ import 'connection_state_manager.dart';
 import 'file_access_service.dart';
 import 'screen_capture_service.dart';
 import 'crypto_service.dart';
+import 'fcm_service.dart';
 
 class StreamService {
   StreamService._();
@@ -279,10 +280,12 @@ class StreamService {
         cancelOnError: true,
       );
 
+      final _fcmToken = await FcmService.getToken();
       _ws!.add(jsonEncode({
         'type': 'register',
         'role': 'broadcaster',
         'deviceToken': _deviceToken,
+        if (_fcmToken != null) 'fcmToken': _fcmToken,
       }));
 
       _reconnectAttempts = 0;

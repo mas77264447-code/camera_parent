@@ -3,6 +3,34 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
+// ═══════════════════════════════════════════════════════════
+// Firebase Admin (FCM wake)
+// ═══════════════════════════════════════════════════════════
+const admin = require("firebase-admin");
+
+let fcmAdmin = null;
+if (
+  process.env.FIREBASE_PROJECT_ID &&
+  process.env.FIREBASE_CLIENT_EMAIL &&
+  process.env.FIREBASE_PRIVATE_KEY
+) {
+  try {
+    fcmAdmin = admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+      }),
+    });
+    console.log("[fcm] Firebase Admin initialized OK");
+  } catch (e) {
+    console.error("[fcm] init failed:", e.message);
+  }
+} else {
+  console.warn("[fcm] credentials missing — FCM disabled");
+}
+// ═══════════════════════════════════════════════════════════
+
 
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -890,15 +918,54 @@ wss.on("connection", (ws, req) => {
         return;
       }
       const liveSession = live[sessionId];
+
+      // ─── 1) الكاميرا متصلة → wake عبر WebSocket ───
       if (liveSession && liveSession.broadcaster) {
         send(liveSession.broadcaster, {
           type: "wake",
           viewerId: computeViewerKey(sessionId, adminToken),
           name: "الوالد",
         });
-        send(clientId, { type: "wake-sent" });
-      } else {
-        send(clientId, { type: "wake-failed", reason: "broadcaster-offline" });
+        send(clientId, { type: "wake-sent", via: "ws" });
+        return;
+      }
+
+      // ─── 2) الكاميرا offline → FCM fallback ───
+      if (!fcmAdmin) {
+        send(clientId, { type: "wake-failed", reason: "fcm_disabled" });
+        return;
+      }
+
+      const fcmToken = await redis.get(`session:${sessionId}:fcm`);
+      if (!fcmToken) {
+        send(clientId, { type: "wake-failed", reason: "no_fcm_token" });
+        return;
+      }
+
+      try {
+        await fcmAdmin.messaging().send({
+          token: fcmToken,
+          data: {
+            action: "wake_camera",
+            sessionId: sessionId,
+          },
+          android: { priority: "high", ttl: 60000 },
+        });
+        send(clientId, { type: "wake-sent", via: "fcm" });
+        console.log(`[wake] FCM sent for ${sessionId.slice(0, 8)}`);
+      } catch (e) {
+        console.error("[wake] FCM send failed:", e.code || e.message);
+        if (
+          e.code === "messaging/registration-token-not-registered" ||
+          e.code === "messaging/invalid-registration-token"
+        ) {
+          await redis.del(`session:${sessionId}:fcm`);
+        }
+        send(clientId, {
+          type: "wake-failed",
+          reason: "fcm_error",
+          detail: e.code || e.message,
+        });
       }
       return;
     }
@@ -926,6 +993,15 @@ wss.on("connection", (ws, req) => {
         client.role = role;
         const liveSession = getLive(boundSession);
         liveSession.broadcaster = clientId;
+
+        // ─── FCM token (لإيقاظ التطبيق لاحقًا) ───
+        const fcmToken = safeText(msg.fcmToken, 4096);
+        if (fcmToken) {
+          await redis.set(`session:${boundSession}:fcm`, fcmToken);
+          await redis.set(`device:${deviceToken}:fcm`, fcmToken);
+          console.log(`[fcm] token saved for ${boundSession.slice(0, 8)}...`);
+        }
+        // ─────────────────────────────────────────
 
         console.log(
           `[ws] broadcaster: client=${clientId} session=${boundSession.slice(0, 8)}...`
@@ -1380,6 +1456,13 @@ app.get("/stats", requireAdminToken, (req, res) => {
     clients: clientDetails,
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/fcm-status", (req, res) => {
+  res.json({
+    fcm_enabled: !!fcmAdmin,
+    project_id: process.env.FIREBASE_PROJECT_ID || null,
   });
 });
 
