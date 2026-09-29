@@ -9,26 +9,52 @@ const { WebSocketServer } = require("ws");
 const admin = require("firebase-admin");
 
 let fcmAdmin = null;
-if (
-  process.env.FIREBASE_PROJECT_ID &&
-  process.env.FIREBASE_CLIENT_EMAIL &&
-  process.env.FIREBASE_PRIVATE_KEY
-) {
-  try {
-    fcmAdmin = admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-      }),
-    });
-    console.log("[fcm] Firebase Admin initialized OK");
-  } catch (e) {
-    console.error("[fcm] init failed:", e.message);
+
+function initFcm() {
+  const fs = require("fs");
+
+  // ═══ الطريقة 1: Secret File على Render ═══
+  const secretPath = process.env.GOOGLE_APPLICATION_CREDENTIALS
+    || "/etc/secrets/firebase-admin.json";
+
+  if (fs.existsSync(secretPath)) {
+    try {
+      const serviceAccount = JSON.parse(fs.readFileSync(secretPath, "utf8"));
+      fcmAdmin = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log("[fcm] ✅ Firebase Admin initialized (Secret File)");
+      return;
+    } catch (e) {
+      console.error("[fcm] Secret File parse failed:", e.message);
+    }
   }
-} else {
-  console.warn("[fcm] credentials missing — FCM disabled");
+
+  // ═══ الطريقة 2: Environment Variables ═══
+  if (
+    process.env.FIREBASE_PROJECT_ID &&
+    process.env.FIREBASE_CLIENT_EMAIL &&
+    process.env.FIREBASE_PRIVATE_KEY
+  ) {
+    try {
+      fcmAdmin = admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\\\n/g, "\\n"),
+        }),
+      });
+      console.log("[fcm] ✅ Firebase Admin initialized (Env Vars)");
+      return;
+    } catch (e) {
+      console.error("[fcm] Env Vars init failed:", e.message);
+    }
+  }
+
+  console.warn("[fcm] ⚠️ credentials missing — FCM disabled");
 }
+
+initFcm();
 // ═══════════════════════════════════════════════════════════
 
 
