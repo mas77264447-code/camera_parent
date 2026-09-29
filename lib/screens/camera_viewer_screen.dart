@@ -448,10 +448,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     try { _remoteRenderer.srcObject = null; } catch (_) {}
 
     try {
-      _pc = await createPeerConnection({"iceServers": _iceServers});
+      final pc = await createPeerConnection({"iceServers": _iceServers});
+      _pc = pc;
 
       // ✅✅✅ التعديل: onTrack محسّن
-      _pc!.onTrack = (event) {
+      pc.onTrack = (event) {
         debugPrint('[PC] onTrack received');
         debugPrint('[PC] kind=${event.track.kind}');
         debugPrint('[PC] streams count=${event.streams.length}');
@@ -502,7 +503,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         });
       };
 
-      _pc!.onIceCandidate = (candidate) {
+      pc.onIceCandidate = (candidate) {
         try {
           _ws?.add(jsonEncode({
             "type": "ice",
@@ -518,44 +519,36 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
       };
 
-      _pc!.onConnectionState = (state) {
-        debugPrint("[PC] state=$state");
+      pc.onConnectionState = (state) {
+        debugPrint("[PC] state=$state (current=${_pc == pc})");
+        if (_pc != pc) return;
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-          try { _remoteRenderer.srcObject = null; } catch (_) {}
-          if (mounted) {
-            setState(() => _status = "انقطع الاتصال — جاري إعادة المحاولة...");
-          }
-          _scheduleReconnect();
-        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          try { _remoteRenderer.srcObject = null; } catch (_) {}
-          if (mounted) {
-            setState(() => _status = "انقطع الاتصال بجهاز الكاميرا");
-          }
-          _scheduleReconnect();
-        }
-      };
-
-      _pc!.onIceConnectionState = (state) {
-        debugPrint("[ICE] state=$state");
-        if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
-          debugPrint('[ICE] disconnected — attempting restart');
+          debugPrint("[PC] failed — ICE restart only (NOT WS reconnect)");
           _tryIceRestart();
-        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-          debugPrint('[ICE] failed — full reconnect');
-          _scheduleReconnect();
+        }
+        // Closed يُتجاهل — نحن من أغلقه بأنفسنا
+      };
+
+      pc.onIceConnectionState = (state) {
+        debugPrint("[ICE] state=$state (current=${_pc == pc})");
+        if (_pc != pc) return;
+        if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
+            state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          debugPrint('[ICE] $state — ICE restart only');
+          _tryIceRestart();
         }
       };
 
-      await _pc!.setRemoteDescription(RTCSessionDescription(sdp, "offer"));
+      await pc.setRemoteDescription(RTCSessionDescription(sdp, "offer"));
 
       _remoteDescSet = true;
       for (final c in _pendingRemoteIce) {
-        try { await _pc!.addCandidate(c); } catch (_) {}
+        try { await pc.addCandidate(c); } catch (_) {}
       }
       _pendingRemoteIce.clear();
 
-      final answer = await _pc!.createAnswer();
-      await _pc!.setLocalDescription(answer);
+      final answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
 
       _ws?.add(jsonEncode({
         "type": "answer",
