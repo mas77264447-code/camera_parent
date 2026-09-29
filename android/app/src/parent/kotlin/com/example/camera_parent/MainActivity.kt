@@ -49,10 +49,6 @@ class MainActivity : FlutterActivity() {
     override fun shouldDestroyEngineWithHost(): Boolean {
         return false
     }
-
-    override fun shouldAutomaticallyRegisterPlugins(): Boolean = false
-
-
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
     ) {
