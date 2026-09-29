@@ -865,6 +865,7 @@ wss.on("connection", (ws, req) => {
     const client = clients[clientId];
     if (!client) return;
     client.lastMessageAt = Date.now();
+    if (msg.type !== "ping") console.log(`[msg] ${client.role || "?"} ${clientId.slice(0, 8)} type=${msg.type}`);
 
     if (msg.type === "ping") {
       send(clientId, { type: "pong", timestamp: msg.timestamp || Date.now() });
@@ -1282,7 +1283,8 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code, reason) => {
+    console.log(`[ws-close] ${clients[clientId]?.role || "?"} ${clientId.slice(0, 8)} code=${code} reason=${reason}`);
     const client = clients[clientId];
     if (client && client.sessionId && live[client.sessionId]) {
       const liveSession = live[client.sessionId];
