@@ -400,7 +400,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           _reconnectTimer = null;
           _noMediaWatchdog?.cancel();
           _noMediaWatchdog = null;
-          try { await _pc?.close(); } catch (_) {}
+          final oldPc2 = _pc;
+          _pc = null;
+          if (oldPc2 != null) {
+            try { await oldPc2.close(); } catch (_) {}
+          }
           if (mounted) {
             setState(() => _status = "صاحب الكاميرا رفض طلب الاتصال");
           }
@@ -431,9 +435,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
     _broadcasterId = msg["from"].toString();
 
-    if (_pc != null) {
-      try { await _pc!.close(); } catch (_) {}
-      _pc = null;
+    // ⚠️ عيّن _pc = null أولًا لمنع callback القديم من إعادة تشغيل الاتصال
+    final oldPc = _pc;
+    _pc = null;
+    if (oldPc != null) {
+      try { await oldPc.close(); } catch (_) {}
     }
     _remoteStream = null;
     _textureRefreshedForThisTrack = false;
@@ -566,8 +572,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   Future<void> _handleBroadcasterLeft() async {
     try { _remoteRenderer.srcObject = null; } catch (_) {}
-    try { await _pc?.close(); } catch (_) {}
+    final oldPc = _pc;
     _pc = null;
+    if (oldPc != null) {
+      try { await oldPc.close(); } catch (_) {}
+    }
     _remoteStream = null;
     _broadcasterId = null;
     _textureRefreshedForThisTrack = false;
