@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -25,7 +26,8 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-class _CameraStreamScreenState extends State<CameraStreamScreen> {
+class _CameraStreamScreenState extends State<CameraStreamScreen>
+    with WidgetsBindingObserver {
   final _svc = StreamService.instance;
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
@@ -53,8 +55,18 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _init();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('[Camera] resumed — re-ensuring stream');
+      _svc.ensureCameraStarted();
+      _svc.ensureHealthy();
+    }
   }
 
   Future<void> _init() async {
@@ -163,6 +175,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
