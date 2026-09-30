@@ -26,3 +26,7 @@ android/.gradle/
 *.bak
 *.backup
 *.before-*
+
+android/key.properties
+*.jks
+*.keystore
