@@ -48,7 +48,6 @@ class StreamService {
   final Map<String, MediaStream> _remoteStreams = {};
   final Map<String, List<RTCIceCandidate>> _pendingRemoteIceByViewer = {};
   final Set<String> _approvalInFlight = <String>{};
-  final Map<String, int> _healAttempts = <String, int>{};
   final Set<String> _approvedFileViewers = <String>{};
 
   final Set<String> _canceledDownloads = <String>{};
@@ -1050,77 +1049,11 @@ class StreamService {
       _activeViewerId = viewerId;
       _callersCtrl.add(Map.from(_callerNames));
       _mediaCtrl.add(_remoteStreams[viewerId]);
-      unawaited(_verifyVideoFlowing(viewerId));
     } catch (e) {
       debugPrint('[StreamService] sendOffer error: $e');
       _peerConnections.remove(viewerId);
       _pendingRemoteIceByViewer.remove(viewerId);
       try { await pc.close(); } catch (_) {}
-    }
-  }
-
-  /// علاج ذاتي للصورة السوداء: إذا اتصل المشاهد ولم تُرسل الكاميرا أي بايتات
-  /// فيديو، أعد فتح الكاميرا وأعد العرض مرة واحدة. لا يتدخل إذا تعذّرت
-  /// قراءة الإحصاءات.
-  Future<void> _verifyVideoFlowing(String viewerId) async {
-    if (_broadcastScreen || _broadcastFiles) return;
-    var zeroChecks = 0;
-    for (var i = 0; i < 8; i++) {
-      await Future.delayed(const Duration(seconds: 3));
-      if (!_running) return;
-      final pc = _peerConnections[viewerId];
-      if (pc == null) {
-        _healAttempts.remove(viewerId);
-        return;
-      }
-      final ice = pc.iceConnectionState;
-      final connected =
-          ice == RTCIceConnectionState.RTCIceConnectionStateConnected ||
-              ice == RTCIceConnectionState.RTCIceConnectionStateCompleted;
-      if (!connected) continue;
-
-      num? sent;
-      try {
-        final reports = await pc.getStats();
-        for (final r in reports) {
-          if (r.type != 'outbound-rtp') continue;
-          final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
-          if (kind != 'video') continue;
-          final b = num.tryParse(r.values['bytesSent']?.toString() ?? '');
-          if (b != null) sent = b;
-        }
-      } catch (e) {
-        debugPrint('[StreamService] stats error: $e');
-        return;
-      }
-
-      if (sent == null) return;
-      if (sent > 0) {
-        _healAttempts.remove(viewerId);
-        return;
-      }
-
-      zeroChecks++;
-      if (zeroChecks < 2) continue;
-
-      final attempts = _healAttempts[viewerId] ?? 0;
-      if (attempts >= 1) {
-        debugPrint('[StreamService] video still empty after restart');
-        _healAttempts.remove(viewerId);
-        return;
-      }
-      _healAttempts[viewerId] = attempts + 1;
-      debugPrint('[StreamService] no video bytes sent - restarting camera');
-
-      final name = _callerNames[viewerId] ?? 'Unknown';
-      await _forceCleanupStream();
-      await _startMediaSource();
-      if (localStream == null) {
-        _healAttempts.remove(viewerId);
-        return;
-      }
-      await _sendOfferTo(viewerId, name);
-      return;
     }
   }
 
