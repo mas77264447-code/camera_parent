@@ -117,6 +117,22 @@ class StreamForegroundService : Service() {
                 Log.w("CameraParent", "onTaskRemoved: unable to restart FGS", e)
             }
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
+
+            // إعادة فتح واجهة التطبيق (كانت في النسخة القديمة):
+            // بدون واجهة ظاهرة يمنع أندرويد الكاميرا في الخلفية فتظهر صورة سوداء.
+            try {
+                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                    startActivity(launchIntent)
+                }
+            } catch (e: Exception) {
+                Log.w("CameraParent", "onTaskRemoved: unable to relaunch activity", e)
+            }
         }
         super.onTaskRemoved(rootIntent)
     }
