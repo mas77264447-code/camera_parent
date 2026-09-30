@@ -41,6 +41,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   Timer? _healthCheckTimer;
   Timer? _pingTimer;
   Timer? _noMediaWatchdog;
+  Timer? _diagTimer;
+  String _diag = '';
 
   int _reconnectAttempts = 0;
   int _consecutiveFailures = 0;
@@ -66,6 +68,10 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _init();
+    _diagTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _updateDiag(),
+    );
   }
 
   @override
@@ -77,6 +83,38 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         _scheduleReconnect();
       }
     }
+  }
+
+  String _short(Object? o) => o == null ? '-' : o.toString().split('.').last;
+
+  /// لوحة تشخيص مؤقتة: تبيّن أين ينقطع الفيديو (استقبال/فك ترميز/عرض).
+  Future<void> _updateDiag() async {
+    if (_disposed || !mounted) return;
+    final pc = _pc;
+    final lines = <String>[];
+    lines.add('pc=${_short(pc?.connectionState)} ice=${_short(pc?.iceConnectionState)}');
+    final s = _remoteStream;
+    final vt = s?.getVideoTracks();
+    lines.add('tracks v=${vt?.length ?? 0} a=${s?.getAudioTracks().length ?? 0}'
+        ' enabled=${(vt != null && vt.isNotEmpty) ? vt.first.enabled : '-'}');
+    lines.add('renderer=${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}');
+    if (pc != null) {
+      try {
+        final reports = await pc.getStats();
+        for (final r in reports) {
+          if (r.type != 'inbound-rtp') continue;
+          final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
+          if (kind != 'video') continue;
+          lines.add('rx bytes=${r.values['bytesReceived']} pkts=${r.values['packetsReceived']} lost=${r.values['packetsLost']}');
+          lines.add('frames rx=${r.values['framesReceived']} dec=${r.values['framesDecoded']} drop=${r.values['framesDropped']}');
+          lines.add('size=${r.values['frameWidth']}x${r.values['frameHeight']}');
+        }
+      } catch (e) {
+        lines.add('stats error');
+      }
+    }
+    if (!mounted || _disposed) return;
+    setState(() => _diag = lines.join('\n'));
   }
 
   void _refreshRemoteVideoTexture() {
@@ -655,6 +693,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _reconnectTimer?.cancel();
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
+    _diagTimer?.cancel();
     _noMediaWatchdog?.cancel();
 
     try {
@@ -713,6 +752,21 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
               child: Stack(
                 children: [
                   Positioned.fill(child: RTCVideoView(_remoteRenderer)),
+                  Positioned(
+                    top: 4,
+                    left: 4,
+                    child: IgnorePointer(
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        color: Colors.black54,
+                        child: Text(
+                          _diag,
+                          style: const TextStyle(
+                              color: Colors.greenAccent, fontSize: 10),
+                        ),
+                      ),
+                    ),
+                  ),
                   if (isScreenShare && _remoteStream != null)
                     Positioned(
                       top: 12,

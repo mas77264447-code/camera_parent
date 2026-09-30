@@ -1105,11 +1105,41 @@ class StreamService {
       _activeViewerId = viewerId;
       _callersCtrl.add(Map.from(_callerNames));
       _mediaCtrl.add(_remoteStreams[viewerId]);
+      unawaited(_diagOutbound(viewerId));
     } catch (e) {
       debugPrint('[StreamService] sendOffer error: $e');
       _peerConnections.remove(viewerId);
       _pendingRemoteIceByViewer.remove(viewerId);
       try { await pc.close(); } catch (_) {}
+    }
+  }
+
+  /// تشخيص مؤقت: يعرض في شريط حالة الطفل ما تُرسله الكاميرا فعلاً.
+  Future<void> _diagOutbound(String viewerId) async {
+    for (var i = 0; i < 10; i++) {
+      await Future.delayed(const Duration(seconds: 3));
+      if (!_running) return;
+      final pc = _peerConnections[viewerId];
+      if (pc == null) return;
+      final parts = <String>[];
+      parts.add('ice=${pc.iceConnectionState.toString().split('.').last}');
+      try {
+        final senders = await pc.getSenders();
+        parts.add('senders=${senders.map((s) => '${s.track?.kind}:${s.track?.enabled}').join(',')}');
+        final reports = await pc.getStats();
+        for (final r in reports) {
+          if (r.type != 'outbound-rtp') continue;
+          final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
+          if (kind != 'video') continue;
+          parts.add('tx=${r.values['bytesSent']}B');
+          parts.add('fr=${r.values['framesEncoded']}');
+          parts.add('${r.values['frameWidth']}x${r.values['frameHeight']}');
+          parts.add('enc=${r.values['encoderImplementation']}');
+        }
+      } catch (e) {
+        parts.add('stats error');
+      }
+      _updateStatus('إرسال: ${parts.join(' ')}');
     }
   }
 
