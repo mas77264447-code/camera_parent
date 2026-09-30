@@ -1,0 +1,13 @@
+[33ma0a6ab1[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mproduction-merge[m[33m, [m[1;33mtag: [m[1;33mparent-254[m[33m, [m[1;33mtag: [m[1;33mchild-254[m[33m, [m[1;31morigin/production-merge[m[33m)[m إصلاح: إعادة اكتساب الكاميرا عند استئناف التطبيق (force re-acquire)
+[33m51b3489[m إصلاح: الشاشة السوداء عند إعادة تشغيل تطبيق الطفل + تبسيط شاشة الرابط + PWA
+[33m440eb66[m[33m ([m[1;33mtag: [m[1;33mparent-252[m[33m, [m[1;33mtag: [m[1;33mchild-252[m[33m)[m Revert "fix: self-heal black video by restarting camera capture once"
+[33meb95d68[m[33m ([m[1;33mtag: [m[1;33mparent-251[m[33m, [m[1;33mtag: [m[1;33mchild-251[m[33m)[m fix: relaunch activity first on task removed, keep FGS alive
+[33m1f828e5[m[33m ([m[1;33mtag: [m[1;33mparent-250[m[33m, [m[1;33mtag: [m[1;33mchild-250[m[33m)[m fix: relaunch activity when task removed (restore old behavior)
+[33m8b0a1b4[m[33m ([m[1;33mtag: [m[1;33mparent-249[m[33m, [m[1;33mtag: [m[1;33mparent-247[m[33m, [m[1;33mtag: [m[1;33mparent-245[m[33m, [m[1;33mtag: [m[1;33mparent-241[m[33m, [m[1;33mtag: [m[1;33mchild-249[m[33m, [m[1;33mtag: [m[1;33mchild-247[m[33m, [m[1;33mtag: [m[1;33mchild-245[m[33m, [m[1;33mtag: [m[1;33mchild-241[m[33m)[m fix: self-heal black video by restarting camera capture once
+[33mfb8d96e[m[33m ([m[1;33mtag: [m[1;33mparent-240[m[33m, [m[1;33mtag: [m[1;33mchild-240[m[33m)[m feat: move link pairing into a Services menu on home screen
+[33m1ab2cf4[m[33m ([m[1;33mtag: [m[1;33mparent-239[m[33m, [m[1;33mtag: [m[1;33mchild-239[m[33m)[m fix: start camera right after boot/persisted start
+[33mb8b190a[m[33m ([m[1;33mtag: [m[1;33mparent-238[m[33m, [m[1;33mtag: [m[1;33mchild-238[m[33m)[m ci: build production-merge on push
+[33m2c4e88b[m[33m ([m[1;33mtag: [m[1;33mparent-236[m[33m, [m[1;33mtag: [m[1;33mchild-236[m[33m)[m ci: publish APKs to releases, optional stable signing
+[33m096bc26[m cleanup: remove empty junk files in android/
+[33mde98c1d[m port: restart stream from saved session + resume handling
+[33m23d5572[m cleanup: untrack Termux home files
