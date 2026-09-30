@@ -3,12 +3,15 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, production-merge] # ✅ تمت إضافة فرعك production-merge
     paths:
       - 'lib/**'
       - 'android/**'
       - 'pubspec.yaml'
       - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: write # ✅ ضروري لإنشاء Release تلقائي
 
 jobs:
   build-parent:
@@ -25,6 +28,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: 'gradle' # ✅ تسريع البناء
 
       - name: Verify google-services.json
         run: |
@@ -45,7 +49,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: camera-parent-apk
-          path: build/app/outputs/flutter-apk/app-parent-release.apk
+          path: build/app/outputs/flutter-apk/*.apk # ✅ استخدام * لضمان رفع أي ملف APK ناتج
           retention-days: 30
 
   build-child:
@@ -62,6 +66,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: 'gradle'
 
       - name: Verify google-services.json
         run: |
@@ -82,5 +87,25 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: camera-child-apk
-          path: build/app/outputs/flutter-apk/app-child-release.apk
+          path: build/app/outputs/flutter-apk/*.apk
           retention-days: 30
+
+  # ✅ وظيفة جديدة: إنشاء Release ووضع ملفات APK فيه للتحميل المباشر
+  create-release:
+    needs: [build-parent, build-child] # تنتظر حتى ينتهي بناء التطبيقين
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-apks
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: all-apks/**/*.apk
+          tag_name: build-${{ github.run_number }} # إنشاء رقم إصدار تلقائي
+          name: Release Build ${{ github.run_number }}
+          draft: false
+          prerelease: false
