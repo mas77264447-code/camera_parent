@@ -213,15 +213,14 @@ class StreamService {
   }
 
   /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
-  Future<void> ensureCameraStarted() async {
+  Future<void> ensureCameraStarted({bool force = false}) async {
     if (!_running || _broadcastScreen || _broadcastFiles) return;
 
-    // ✅ إصلاح: إذا كان localStream موجود لكن مساراته ميتة، نظفه
-    if (localStream != null) {
-      if (_hasLiveVideoTrack()) return;
-      debugPrint(
-          '[StreamService] ensureCameraStarted: stream exists but track dead — cleanup');
+    if (force) {
+      debugPrint('[StreamService] ensureCameraStarted(force) — re-acquiring');
       await _forceCleanupStream();
+    } else if (localStream != null) {
+      return;
     }
 
     await _startMediaSource();
@@ -895,15 +894,9 @@ class StreamService {
       _broadcastFiles = newFiles;
     }
 
-    // ✅ إصلاح: تحقق من صحة المسارات أولاً
     if (!_broadcastFiles) {
       if (localStream == null) {
         await _startMediaSource();
-      } else {
-        await _ensureStreamAlive();
-        if (localStream == null || !_hasLiveVideoTrack()) {
-          await _startMediaSource();
-        }
       }
     }
     await _sendOfferTo(viewerId, callerName);
@@ -914,36 +907,28 @@ class StreamService {
     if (s == null) return false;
     try {
       final tracks = s.getVideoTracks();
-      if (tracks.isEmpty) return false;
-      // ✅ إصلاح: فحص readyState وليس فقط الوجود
-      for (final t in tracks) {
-        if (t.readyState == 'live') return true;
-      }
-      return false;
+      return tracks.isNotEmpty;
     } catch (_) {
       return false;
     }
   }
 
-  /// ✅ إصلاح: التحقق من صحة المسارات وإعادة اكتسابها إن ماتت
-  Future<bool> _ensureStreamAlive() async {
-    final s = localStream;
-    if (s == null) return false;
-    try {
-      final videoTracks = s.getVideoTracks();
-      final audioTracks = s.getAudioTracks();
-      final videoAlive = videoTracks.any((t) => t.readyState == 'live');
-      final audioAlive =
-          audioTracks.isEmpty || audioTracks.any((t) => t.readyState == 'live');
-
-      if (videoAlive && audioAlive) return true;
-
-      debugPrint(
-          '[StreamService] tracks dead (video=$videoAlive, audio=$audioAlive) — re-acquiring');
+  /// ✅ إصلاح: إذا force=true نظّف المسار ليُعاد اكتسابه
+  Future<bool> _ensureStreamAlive({bool force = false}) async {
+    if (localStream == null) return false;
+    if (force) {
+      debugPrint('[StreamService] _ensureStreamAlive(force) — cleanup');
       await _forceCleanupStream();
       return false;
-    } catch (e) {
-      debugPrint('[StreamService] _ensureStreamAlive error: $e');
+    }
+    try {
+      final tracks = localStream!.getVideoTracks();
+      if (tracks.isEmpty) {
+        await _forceCleanupStream();
+        return false;
+      }
+      return true;
+    } catch (_) {
       return false;
     }
   }
@@ -957,13 +942,9 @@ class StreamService {
 
     debugPrint('[StreamService] refreshAllViewers: ${viewers.length} viewers');
 
-    // تأكد من أن الكاميرا تعمل فعلاً
-    if (localStream != null) {
-      await _ensureStreamAlive();
-    }
-    if (localStream == null || !_hasLiveVideoTrack()) {
-      await _startMediaSource();
-    }
+    // ✅ force إعادة اكتساب الكاميرا
+    await _ensureStreamAlive(force: true);
+    await _startMediaSource();
     if (localStream == null) return;
 
     for (final viewerId in viewers) {
@@ -1046,11 +1027,6 @@ class StreamService {
 
     if (!_running) return;
 
-    // ✅ إصلاح: تحقق من صحة المسارات قبل المتابعة
-    if (localStream != null) {
-      await _ensureStreamAlive();
-    }
-
     if (localStream == null || !_hasLiveVideoTrack()) {
       if (!(_broadcastScreen && _keepScreenStreamAlive && localStream != null)) {
         await _forceCleanupStream();
@@ -1059,10 +1035,6 @@ class StreamService {
     }
 
     if (localStream == null) return;
-    if (!_hasLiveVideoTrack()) {
-      debugPrint('[StreamService] _sendOfferTo: still no live track, abort');
-      return;
-    }
 
     final old = _peerConnections.remove(viewerId);
     if (old != null) {

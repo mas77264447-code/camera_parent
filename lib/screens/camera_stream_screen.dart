@@ -60,16 +60,32 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
     _init();
   }
 
+  DateTime? _lastPausedAt;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _lastPausedAt = DateTime.now();
+      return;
+    }
+
     if (state == AppLifecycleState.resumed) {
-      debugPrint('[Camera] resumed — re-ensuring stream + viewers');
-      _svc.ensureCameraStarted();
+      final wasInBackground = _lastPausedAt != null &&
+          DateTime.now().difference(_lastPausedAt!) >
+              const Duration(milliseconds: 1500);
+
+      debugPrint('[Camera] resumed, wasInBackground=$wasInBackground');
+
+      // ✅ إذا كان في الخلفية أكثر من 1.5 ثانية، أعِد اكتساب الكاميرا
+      _svc.ensureCameraStarted(force: wasInBackground);
       _svc.ensureHealthy();
-      // ✅ إصلاح: أعد التفاوض مع المشاهدين الحاليين بعد استئناف التطبيق
+
       Future.delayed(const Duration(milliseconds: 800), () {
         if (mounted) _svc.refreshAllViewers();
       });
+
+      _lastPausedAt = null;
     }
   }
 
