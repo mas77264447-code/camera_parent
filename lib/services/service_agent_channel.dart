@@ -37,5 +37,13 @@ class ServiceAgentChannel {
       deviceToken: deviceToken,
       cameraName: deviceName,
     );
+
+    // بعد الإقلاع/إعادة التشغيل: شغّل الكاميرا فوراً بدل انتظار أول مشاهد،
+    // وإلا قد يصل البث بصورة سوداء حتى يُفتح التطبيق.
+    try {
+      await StreamService.instance.ensureCameraStarted();
+    } catch (e) {
+      debugPrint('[ServiceAgent] camera start failed: $e');
+    }
   }
 }
