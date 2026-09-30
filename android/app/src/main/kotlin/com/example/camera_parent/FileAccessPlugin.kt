@@ -467,7 +467,7 @@ object FileAccessPlugin {
         val uri = Uri.parse(uriString)
         val stream = try {
             if (uri.scheme == "content") {
-                CameraParentApplication.AppHolder.context
+                CameraParentApplication.appContext()
                     ?.contentResolver?.openInputStream(uri)
             } else {
                 val f = File(uriString)

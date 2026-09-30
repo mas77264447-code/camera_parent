@@ -43,28 +43,19 @@ class MainActivity : FlutterActivity() {
     override fun provideFlutterEngine(
         context: Context
     ): FlutterEngine {
-
-        return (application as CameraParentApplication)
-            .flutterEngine
+        return (application as CameraParentApplication).ensureEngine()
     }
 
 
     override fun shouldDestroyEngineWithHost(): Boolean {
         return false
     }
-
-
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
     ) {
 
-        // ملاحظة: لا نستدعي super.configureFlutterEngine() هنا عن قصد.
-        // الـ FlutterEngine دائم (persistent) ومُسجَّل في
-        // CameraParentApplication.onCreate() مرة واحدة فقط.
-        // استدعاء super هنا كان يُعيد تسجيل البلجنز → detach/attach
-        // لبلجنز WebRTC في كل مرة تُفتح فيها Activity → يقطع البث.
+                super.configureFlutterEngine(flutterEngine)
 
-        // ===== قناة Device Admin =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             ADMIN_CHANNEL

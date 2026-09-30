@@ -10,26 +10,22 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
-        val enabled = context
-            .getSharedPreferences("camera_parent_service", Context.MODE_PRIVATE)
-            .getBoolean("enabled", false)
-
+        val prefs = context.getSharedPreferences("camera_parent_service", Context.MODE_PRIVATE)
+        val enabled = prefs.getBoolean("enabled", false)
         if (!enabled) return
+
+        val mode = prefs.getString("mode", StreamForegroundService.MODE_CAMERA)
+            ?: StreamForegroundService.MODE_CAMERA
 
         try {
             val service = Intent(context, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(service)
-            } else {
-                context.startService(service)
-            }
-
-            // ✅ جدول watchdog بعد الإقلاع بـ 60 ثانية
+                .putExtra(StreamForegroundService.EXTRA_MODE, mode)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(service)
+            else context.startService(service)
             ServiceWatchdog.scheduleNext(context, 60_000L)
-
         } catch (e: Exception) {
-            Log.w("CameraParent", "Unable to restore foreground service after boot", e)
+            Log.w("CameraParent", "Boot recovery start failed", e)
         }
     }
 }
