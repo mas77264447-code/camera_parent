@@ -63,9 +63,13 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      debugPrint('[Camera] resumed — re-ensuring stream');
+      debugPrint('[Camera] resumed — re-ensuring stream + viewers');
       _svc.ensureCameraStarted();
       _svc.ensureHealthy();
+      // ✅ إصلاح: أعد التفاوض مع المشاهدين الحاليين بعد استئناف التطبيق
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted) _svc.refreshAllViewers();
+      });
     }
   }
 

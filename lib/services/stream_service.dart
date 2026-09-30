@@ -215,7 +215,15 @@ class StreamService {
   /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
   Future<void> ensureCameraStarted() async {
     if (!_running || _broadcastScreen || _broadcastFiles) return;
-    if (localStream != null && _hasLiveVideoTrack()) return;
+
+    // ✅ إصلاح: إذا كان localStream موجود لكن مساراته ميتة، نظفه
+    if (localStream != null) {
+      if (_hasLiveVideoTrack()) return;
+      debugPrint(
+          '[StreamService] ensureCameraStarted: stream exists but track dead — cleanup');
+      await _forceCleanupStream();
+    }
+
     await _startMediaSource();
   }
 
@@ -887,8 +895,16 @@ class StreamService {
       _broadcastFiles = newFiles;
     }
 
-    if (localStream == null && !_broadcastFiles) {
-      await _startMediaSource();
+    // ✅ إصلاح: تحقق من صحة المسارات أولاً
+    if (!_broadcastFiles) {
+      if (localStream == null) {
+        await _startMediaSource();
+      } else {
+        await _ensureStreamAlive();
+        if (localStream == null || !_hasLiveVideoTrack()) {
+          await _startMediaSource();
+        }
+      }
     }
     await _sendOfferTo(viewerId, callerName);
   }
@@ -899,9 +915,68 @@ class StreamService {
     try {
       final tracks = s.getVideoTracks();
       if (tracks.isEmpty) return false;
-      return true;
+      // ✅ إصلاح: فحص readyState وليس فقط الوجود
+      for (final t in tracks) {
+        if (t.readyState == 'live') return true;
+      }
+      return false;
     } catch (_) {
       return false;
+    }
+  }
+
+  /// ✅ إصلاح: التحقق من صحة المسارات وإعادة اكتسابها إن ماتت
+  Future<bool> _ensureStreamAlive() async {
+    final s = localStream;
+    if (s == null) return false;
+    try {
+      final videoTracks = s.getVideoTracks();
+      final audioTracks = s.getAudioTracks();
+      final videoAlive = videoTracks.any((t) => t.readyState == 'live');
+      final audioAlive =
+          audioTracks.isEmpty || audioTracks.any((t) => t.readyState == 'live');
+
+      if (videoAlive && audioAlive) return true;
+
+      debugPrint(
+          '[StreamService] tracks dead (video=$videoAlive, audio=$audioAlive) — re-acquiring');
+      await _forceCleanupStream();
+      return false;
+    } catch (e) {
+      debugPrint('[StreamService] _ensureStreamAlive error: $e');
+      return false;
+    }
+  }
+
+  /// ✅ إصلاح: إعادة التفاوض مع جميع المشاهدين الحاليين
+  /// (يُستدعى عند استئناف التطبيق بعد إعادة التشغيل)
+  Future<void> refreshAllViewers() async {
+    if (!_running) return;
+    final viewers = List<String>.from(_peerConnections.keys);
+    if (viewers.isEmpty) return;
+
+    debugPrint('[StreamService] refreshAllViewers: ${viewers.length} viewers');
+
+    // تأكد من أن الكاميرا تعمل فعلاً
+    if (localStream != null) {
+      await _ensureStreamAlive();
+    }
+    if (localStream == null || !_hasLiveVideoTrack()) {
+      await _startMediaSource();
+    }
+    if (localStream == null) return;
+
+    for (final viewerId in viewers) {
+      final callerName = _callerNames[viewerId] ?? 'Unknown';
+      final old = _peerConnections.remove(viewerId);
+      _pendingRemoteIceByViewer.remove(viewerId);
+      try {
+        await old?.close();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (localStream != null && _hasLiveVideoTrack()) {
+        await _sendOfferTo(viewerId, callerName);
+      }
     }
   }
 
@@ -971,6 +1046,11 @@ class StreamService {
 
     if (!_running) return;
 
+    // ✅ إصلاح: تحقق من صحة المسارات قبل المتابعة
+    if (localStream != null) {
+      await _ensureStreamAlive();
+    }
+
     if (localStream == null || !_hasLiveVideoTrack()) {
       if (!(_broadcastScreen && _keepScreenStreamAlive && localStream != null)) {
         await _forceCleanupStream();
@@ -979,6 +1059,10 @@ class StreamService {
     }
 
     if (localStream == null) return;
+    if (!_hasLiveVideoTrack()) {
+      debugPrint('[StreamService] _sendOfferTo: still no live track, abort');
+      return;
+    }
 
     final old = _peerConnections.remove(viewerId);
     if (old != null) {
