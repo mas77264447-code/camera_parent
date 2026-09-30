@@ -843,7 +843,7 @@ class StreamService {
       final newScreen = requestedSource == 'screen';
       final newFiles = requestedSource == 'files';
 
-      if (_broadcastScreen && !newScreen && localStream != null) {
+      if (_broadcastScreen != newScreen && localStream != null) {
         await _forceCleanupStream();
       }
 
@@ -886,7 +886,7 @@ class StreamService {
       final newScreen = requestedSource == 'screen';
       final newFiles = requestedSource == 'files';
 
-      if (_broadcastScreen && !newScreen && localStream != null) {
+      if (_broadcastScreen != newScreen && localStream != null) {
         await _forceCleanupStream();
       }
 
@@ -1216,7 +1216,9 @@ class StreamService {
     } else if (_peerConnections.isEmpty &&
         !_broadcastScreen &&
         localStream != null) {
-      await _forceCleanupStream();
+      // أبقِ الكاميرا مفتوحة بعد مغادرة المشاهد: إعادة فتحها من الخلفية
+      // (بعد إغلاق التطبيق/إعادة التشغيل) تمنعها أندرويد فتظهر سوداء.
+      _updateStatus("جاهز للبث - في انتظار طلب جديد");
     }
   }
 
