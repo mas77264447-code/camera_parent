@@ -8,12 +8,10 @@ import '../services/camera_service.dart';
 
 class WebLinkScreen extends StatefulWidget {
   final String adminToken;
-  final String deviceName;
 
   const WebLinkScreen({
     super.key,
     required this.adminToken,
-    required this.deviceName,
   });
 
   @override

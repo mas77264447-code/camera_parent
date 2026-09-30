@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/camera_service.dart';
 import 'add_device_screen.dart';
 import 'device_connection_screen.dart';
+import 'web_link_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -329,6 +330,46 @@ class _HomeScreenState extends State<HomeScreen> {
     ).then((_) => _loadDevices());
   }
 
+  void _openServices() {
+    if (_adminToken == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              title: Text(
+                'خدمات',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.link, size: 32, color: Colors.blue),
+              title: const Text(
+                'إضافة عبر رابط ⭐',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: const Text(
+                'شارك رابطاً يفتحه الطفل في المتصفح — بدون تثبيت',
+              ),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => WebLinkScreen(adminToken: _adminToken!),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _openDevice(Map<String, dynamic> device) {
     if (_adminToken == null) return;
     Navigator.push(
@@ -485,11 +526,19 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('أجهزة الأطفال المقترنة',
-                      style: TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Expanded(
+                    child: Text('أجهزة الأطفال المقترنة',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                  ),
                   Row(
                     children: [
+                      IconButton(
+                        icon: const Icon(Icons.apps),
+                        tooltip: 'خدمات',
+                        onPressed: _openServices,
+                      ),
                       IconButton(
                         icon: const Icon(Icons.refresh),
                         tooltip: 'تحديث',
