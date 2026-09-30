@@ -5,90 +5,109 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>كاميرا الطفل</title>
 <style>
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: #0a0e1a; color: #fff;
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #0a0e1a; color: #fff;
     font-family: -apple-system, 'Segoe UI', Tahoma, sans-serif;
-    min-height: 100vh; display: flex; flex-direction: column;
+    min-height: 100vh; overflow: hidden;
   }
-  .header {
-    padding: 16px; text-align: center;
-    background: #161b2e; border-bottom: 1px solid #2a3450;
+  .screen {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 24px; text-align: center;
   }
-  .header h1 { margin: 0; font-size: 18px; color: #7ab5ff; }
-  .header p { margin: 4px 0 0; font-size: 12px; color: #8a96b8; }
-  .content { flex: 1; padding: 24px; }
-  .field { margin-bottom: 16px; }
-  .field label {
-    display: block; font-size: 13px; margin-bottom: 6px;
-    color: #8a96b8;
+  .screen.hidden { display: none; }
+  .title { font-size: 22px; color: #7ab5ff; margin: 0 0 8px; }
+  .subtitle { font-size: 13px; color: #8a96b8; margin: 0 0 28px; max-width: 320px; }
+  .camera-select { display: flex; gap: 10px; margin-bottom: 22px; }
+  .cam-btn {
+    padding: 12px 20px; border-radius: 12px;
+    background: #161b2e; border: 2px solid #2a3450;
+    color: #8a96b8; font-size: 14px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+    font-family: inherit;
   }
-  .field input {
-    width: 100%; padding: 14px;
-    background: #161b2e; border: 1px solid #2a3450;
-    color: #fff; border-radius: 10px; font-size: 16px;
-    text-align: center; letter-spacing: 2px;
+  .cam-btn.active {
+    border-color: #4a7aff; color: #7ab5ff; background: #1a2540;
   }
-  .field input:focus { outline: none; border-color: #4a7aff; }
-  .btn {
-    width: 100%; padding: 14px;
+  .main-btn {
+    padding: 18px 48px; border-radius: 50px;
     background: linear-gradient(135deg, #4a7aff, #6b5cff);
-    color: #fff; border: none; border-radius: 10px;
-    font-size: 16px; font-weight: 600; cursor: pointer;
+    color: #fff; border: none;
+    font-size: 17px; font-weight: 700;
+    cursor: pointer; box-shadow: 0 8px 24px rgba(74,122,255,0.4);
+    font-family: inherit;
   }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .main-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .status {
-    margin-top: 16px; padding: 12px;
-    background: #161b2e; border-radius: 10px;
-    font-size: 13px; text-align: center;
-    border-right: 3px solid #4a7aff;
+    margin-top: 18px; font-size: 13px;
+    color: #8a96b8; min-height: 20px; max-width: 320px;
   }
-  .status.ok { border-right-color: #22c55e; color: #22c55e; }
-  .status.err { border-right-color: #ef4444; color: #ef4444; }
-  .status.warn { border-right-color: #f59e0b; color: #f59e0b; }
+  .status.err { color: #ef4444; }
   .video-wrap {
-    display: none; flex: 1; position: relative;
-    background: #000;
+    position: fixed; inset: 0;
+    display: none; background: #000;
   }
-  .video-wrap.active { display: flex; }
+  .video-wrap.active { display: block; }
   video { width: 100%; height: 100%; object-fit: cover; background: #000; }
   .live-badge {
     position: absolute; top: 14px; right: 14px;
     background: rgba(239,68,68,0.9); color: #fff;
     padding: 6px 12px; border-radius: 20px;
     font-size: 12px; font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .live-badge::before {
+    content: ''; width: 8px; height: 8px;
+    background: #fff; border-radius: 50%;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .switch-btn {
+    position: absolute; bottom: 24px; right: 24px;
+    width: 54px; height: 54px; border-radius: 50%;
+    background: rgba(0,0,0,0.55); border: 2px solid rgba(255,255,255,0.3);
+    color: #fff; font-size: 22px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
   }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <h1>📹 كاميرا الطفل</h1>
-  <p>افتح هذا الرابط على جهاز الطفل</p>
-</div>
+<div class="screen" id="setupScreen">
+  <h1 class="title">📹 كاميرا الطفل</h1>
+  <p class="subtitle">اضغط الزر للبدء — سيُطلب الإذن مرة واحدة فقط</p>
 
-<div class="content" id="setupScreen">
-  <div class="field">
-    <label>كود الاقتران (6 أرقام)</label>
-    <input id="codeInput" type="tel" inputmode="numeric" maxlength="6" placeholder="------">
+  <div class="camera-select" id="camSelect">
+    <button class="cam-btn active" data-facing="user" onclick="selectCamera('user')">
+      🤳 أمامية
+    </button>
+    <button class="cam-btn" data-facing="environment" onclick="selectCamera('environment')">
+      📷 خلفية
+    </button>
   </div>
-  <div class="field">
-    <label>اسم هذا الجهاز</label>
-    <input id="nameInput" type="text" maxlength="30" value="جهاز الطفل">
-  </div>
-  <button class="btn" id="startBtn" onclick="startPairing()">بدء البث</button>
-  <div class="status" id="statusBox">في انتظار الكود...</div>
+
+  <button class="main-btn" id="startBtn" onclick="start()">تشغيل الكاميرا</button>
+  <div class="status" id="statusBox"></div>
 </div>
 
 <div class="video-wrap" id="videoWrap">
   <video id="localVideo" autoplay muted playsinline></video>
-  <div class="live-badge">● بث مباشر</div>
+  <div class="live-badge">بث مباشر</div>
+  <button class="switch-btn" onclick="switchCamera()" title="تبديل الكاميرا">🔄</button>
 </div>
 
 <script>
 const BASE = window.location.origin;
 const WS_URL = BASE.replace(/^http/, 'ws') + '/signal';
+const URL_CODE = new URLSearchParams(location.search).get('code');
+
 let ws = null, localStream = null, deviceToken = null;
+let currentFacing = 'user';
 const peerConnections = {};
 let pingTimer = null;
 
@@ -97,53 +116,112 @@ const setupScreen = document.getElementById('setupScreen');
 const videoWrap = document.getElementById('videoWrap');
 const videoEl = document.getElementById('localVideo');
 
-function setStatus(text, type = '') {
-  statusBox.textContent = text;
-  statusBox.className = 'status ' + type;
+function setStatus(text, isErr = false) {
+  statusBox.textContent = text || '';
+  statusBox.className = 'status' + (isErr ? ' err' : '');
 }
 
-async function startPairing() {
-  const code = document.getElementById('codeInput').value.trim();
-  const name = document.getElementById('nameInput').value.trim() || 'جهاز الطفل';
-  if (!/^\d{6}$/.test(code)) { setStatus('الكود 6 أرقام', 'err'); return; }
-  document.getElementById('startBtn').disabled = true;
-  setStatus('جاري التحقق...');
+function selectCamera(facing) {
+  currentFacing = facing;
+  document.querySelectorAll('.cam-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.facing === facing);
+  });
+}
+
+function mediaConstraints() {
+  return {
+    video: {
+      facingMode: currentFacing,
+      width: { ideal: 640 },
+      height: { ideal: 480 },
+      frameRate: { ideal: 24 },
+    },
+    audio: true, // إشعار واحد مع الكاميرا
+  };
+}
+
+async function start() {
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  setStatus('جاري التحضير...');
+
   try {
-    const res = await fetch(BASE + '/pairing/claim', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, device_name: name }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setStatus(data.error || 'الكود غير صحيح', 'err');
-      document.getElementById('startBtn').disabled = false;
-      return;
+    // 1) الاقتران (فقط أول مرة، وإلا نستخدم التوكن المحفوظ)
+    if (!deviceToken) {
+      if (!URL_CODE || !/^\d{6}$/.test(URL_CODE)) {
+        setStatus('الرابط لا يحتوي على كود صالح', true);
+        btn.disabled = false;
+        return;
+      }
+      setStatus('جاري الربط...');
+      const res = await fetch(BASE + '/pairing/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: URL_CODE, device_name: 'جهاز الطفل' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(data.error || 'الكود غير صحيح أو منتهي', true);
+        btn.disabled = false;
+        return;
+      }
+      deviceToken = data.data.device_token;
+      localStorage.setItem('cw_device_token', deviceToken);
+      localStorage.setItem('cw_device_name', data.data.device_name || 'جهاز الطفل');
     }
-    deviceToken = data.data.device_token;
-    localStorage.setItem('cw_device_token', deviceToken);
-    localStorage.setItem('cw_device_name', data.data.device_name);
-    setStatus('تم الاقتران — جاري طلب الكاميرا...', 'ok');
-    await requestMedia();
+
+    // 2) طلب واحد فقط → إشعار واحد للكاميرا والميكروفون
+    setStatus('بانتظار موافقتك على الكاميرا والميكروفون...');
+    localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints());
+
+    videoEl.srcObject = localStream;
+    setupScreen.classList.add('hidden');
+    videoWrap.classList.add('active');
+    setStatus('');
+    connectWebSocket();
   } catch (e) {
-    setStatus('فشل الاتصال: ' + e.message, 'err');
-    document.getElementById('startBtn').disabled = false;
+    setStatus('تعذر تشغيل الكاميرا: ' + (e.message || e.name), true);
+    btn.disabled = false;
   }
 }
 
-async function requestMedia() {
+async function switchCamera() {
+  if (!localStream) return;
+  const newFacing = currentFacing === 'user' ? 'environment' : 'user';
+  const oldStream = localStream;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: newFacing,
+        width: { ideal: 640 },
+        height: { ideal: 480 },
+        frameRate: { ideal: 24 },
+      },
       audio: true,
     });
-    videoEl.srcObject = localStream;
-    setupScreen.style.display = 'none';
-    videoWrap.classList.add('active');
-    setStatus('الكاميرا جاهزة', 'ok');
-    connectWebSocket();
+    currentFacing = newFacing;
+    localStream = newStream;
+    videoEl.srcObject = newStream;
+
+    // استبدال المسارات في كل اتصالات WebRTC القائمة
+    const newVideo = newStream.getVideoTracks()[0];
+    const newAudio = newStream.getAudioTracks()[0];
+    for (const id in peerConnections) {
+      const pc = peerConnections[id];
+      for (const sender of pc.getSenders()) {
+        if (!sender.track) continue;
+        if (sender.track.kind === 'video' && newVideo) {
+          try { await sender.replaceTrack(newVideo); } catch {}
+        }
+        if (sender.track.kind === 'audio' && newAudio) {
+          try { await sender.replaceTrack(newAudio); } catch {}
+        }
+      }
+    }
+    // إيقاف المسارات القديمة بعد الاستبدال
+    oldStream.getTracks().forEach(t => t.stop());
   } catch (e) {
-    setStatus('فشل الكاميرا: ' + e.message, 'err');
+    console.warn('switchCamera failed:', e);
   }
 }
 
@@ -166,15 +244,17 @@ function connectWebSocket() {
         break;
       case 'answer': await handleAnswer(msg); break;
       case 'ice': await handleIce(msg); break;
-      case 'viewer-left':
+      case 'viewer-left': {
         const pc = peerConnections[msg.viewerId];
         if (pc) { pc.close(); delete peerConnections[msg.viewerId]; }
         break;
-      case 'request-restart-ice':
+      }
+      case 'request-restart-ice': {
         const old = peerConnections[msg.viewerId];
         if (old) { old.close(); delete peerConnections[msg.viewerId]; }
         await createOffer(msg.viewerId);
         break;
+      }
     }
   };
   ws.onclose = () => setTimeout(connectWebSocket, 3000);
@@ -243,22 +323,21 @@ async function handleIce(msg) {
   } catch {}
 }
 
+// عند التحميل: لو فيه توكن محفوظ، نحاول الاستئناف تلقائياً بدون أي ضغطة
 window.addEventListener('load', async () => {
   const saved = localStorage.getItem('cw_device_token');
-  if (saved) {
-    deviceToken = saved;
-    const name = localStorage.getItem('cw_device_name') || 'جهاز الطفل';
-    document.querySelector('.header p').textContent = name;
-    setStatus('استئناف الجلسة السابقة...', 'warn');
-    try { await requestMedia(); } catch {
-      localStorage.clear();
-      setStatus('انتهت الجلسة — أدخل الكود', 'err');
-    }
-  }
-  const urlParams = new URLSearchParams(window.location.search);
-  const codeFromUrl = urlParams.get('code');
-  if (codeFromUrl && /^\d{6}$/.test(codeFromUrl)) {
-    document.getElementById('codeInput').value = codeFromUrl;
+  if (!saved) return;
+
+  deviceToken = saved;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints());
+    videoEl.srcObject = localStream;
+    setupScreen.classList.add('hidden');
+    videoWrap.classList.add('active');
+    connectWebSocket();
+  } catch (e) {
+    // المتصفح رفض الاستئناف التلقائي (يحتاج ضغطة) — نظهر الزر
+    setStatus('اضغط الزر للسماح بالكاميرا', false);
   }
 });
 </script>
