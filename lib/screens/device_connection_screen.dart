@@ -112,7 +112,7 @@ class DeviceConnectionScreen extends StatelessWidget {
                     MaterialPageRoute(
                       builder: (_) => WebLinkScreen(
                         adminToken: adminToken,
-                        deviceName: name,
+                        // ✅ حذفنا deviceName لأن WebLinkScreen ما يعد يستقبله
                       ),
                     ),
                   );
