@@ -12,48 +12,63 @@ class CameraParentApplication : Application() {
 
     companion object {
         const val ENGINE_ID = "camera_parent_persistent_engine"
-
-        @Volatile
-        private var appContext: Context? = null
-
-        fun appContext(): Context? = appContext
     }
 
     lateinit var flutterEngine: FlutterEngine
         private set
 
-    override fun onCreate() {
-        super.onCreate()
-        appContext = applicationContext
-        ensureEngine()
+
+    object AppHolder {
+        var engine: FlutterEngine? = null
+        var context: Context? = null
     }
 
-    @Synchronized
-    fun ensureEngine(): FlutterEngine {
-        FlutterEngineCache.getInstance().get(ENGINE_ID)?.let {
-            flutterEngine = it
-            return it
-        }
 
-        val engine = FlutterEngine(this)
-        GeneratedPluginRegistrant.registerWith(engine)
+    override fun onCreate() {
+        super.onCreate()
 
-        engine.dartExecutor.executeDartEntrypoint(
+        // حفظ Context لاستخدامه من ForegroundService
+        AppHolder.context = applicationContext
+
+
+        flutterEngine = FlutterEngine(this)
+
+        GeneratedPluginRegistrant.registerWith(flutterEngine)
+
+
+        flutterEngine.dartExecutor.executeDartEntrypoint(
             DartExecutor.DartEntrypoint.createDefault()
         )
 
+        // ✅ إصلاح: FileAccessPlugin.register() ما كان يُستدعى من أي مكان.
+        // MainActivity تعمّدت عدم استدعائه (بافتراض إنه مسجَّل هنا)،
+        // لكنه ما كان مُضافًا فعليًا هنا — فقناة "camera_parent/file_access"
+        // كانت بدون أي handler على الطرف native، وأي نداء منها
+        // (تصفح ملفات جهاز الطفل) كان يفشل بصمت.
         FileAccessPlugin.register(
             applicationContext,
-            MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/file_access")
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "camera_parent/file_access"
+            )
         )
 
-        ConnectivityChannel.setup(engine)
+        // إصلاح: قناة "camera_parent/connectivity" وNetworkConnectivityListener
+        // كانا معرَّفين لكن لا أحد يستدعيهما أبداً، فتغييرات الشبكة
+        // (فقدان/عودة الإنترنت) كانت لا تصل إلى Dart إطلاقاً.
+        ConnectivityChannel.setup(flutterEngine)
         NetworkConnectivityListener(applicationContext) { online ->
             ConnectivityChannel.sendNetworkState(online)
         }.start()
 
-        FlutterEngineCache.getInstance().put(ENGINE_ID, engine)
-        flutterEngine = engine
-        return engine
+        AppHolder.engine = flutterEngine
+
+
+        FlutterEngineCache
+            .getInstance()
+            .put(
+                ENGINE_ID,
+                flutterEngine
+            )
     }
 }
