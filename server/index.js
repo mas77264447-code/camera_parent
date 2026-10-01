@@ -85,11 +85,23 @@ const redis = {
       const value = typeof v === "string" ? v : JSON.stringify(v);
       let url = `${UPSTASH_URL}/set/${k}/${encodeURIComponent(value)}`;
       if (opts?.ex) url += `/EX/${opts.ex}`;
+      if (opts?.nx) url += `/NX`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       const data = await res.json();
       return data.result ? "OK" : null;
+    } catch (e) {
+      return null;
+    }
+  },
+  async getdel(k) {
+    try {
+      const res = await fetch(`${UPSTASH_URL}/getdel/${k}`, {
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      });
+      const data = await res.json();
+      return data.result || null;
     } catch (e) {
       return null;
     }
