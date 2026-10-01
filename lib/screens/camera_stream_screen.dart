@@ -464,3 +464,54 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
             style: const TextStyle(color: Colors.white, fontSize: 12)),
       );
 }
+// Fix: broadcaster-leaving
+@override
+void dispose() {
+  _disposed = true;
+
+  _reconnectTimer?.cancel();
+  _retryTimer?.cancel();
+
+  if (_ws != null) {
+    try {
+      _ws!.add(jsonEncode({
+        'type': 'broadcaster-leaving',
+        'deviceToken': widget.deviceToken,
+      }));
+      
+      Future.delayed(const Duration(milliseconds: 200), () {
+        try {
+          _ws?.close();
+        } catch (_) {}
+      });
+    } catch (_) {
+      try {
+        _ws?.close();
+      } catch (_) {}
+    }
+  }
+  
+  _ws = null;
+  WidgetsBinding.instance.removeObserver(this);
+  WakelockPlus.disable();
+
+  for (final viewerId in _peerConnections.keys.toList()) {
+    try {
+      _peerConnections[viewerId]?.close();
+    } catch (_) {}
+  }
+  _peerConnections.clear();
+  _remoteStreams.clear();
+  _callerNames.clear();
+  _pendingViewers.clear();
+
+  try {
+    _remoteRenderer.srcObject = null;
+    _localRenderer.srcObject = null;
+  } catch (_) {}
+
+  _localRenderer.dispose();
+  _remoteRenderer.dispose();
+
+  super.dispose();
+}
