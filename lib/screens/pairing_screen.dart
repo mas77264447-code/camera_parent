@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/camera_service.dart';
 import 'camera_stream_screen.dart';
@@ -34,9 +34,10 @@ class _PairingScreenState extends State<PairingScreen> {
   Future<void> _checkSavedLogin() async {
     final prefs = await SharedPreferences.getInstance();
     final isPaired = prefs.getBool('is_paired') ?? false;
-    final deviceToken = prefs.getString('device_token');
-    final sessionId = prefs.getString('session_id');
-    final deviceName = prefs.getString('device_name');
+    const storage = FlutterSecureStorage();
+    final deviceToken = await storage.read(key: 'device_token');
+    final sessionId = await storage.read(key: 'session_id');
+    final deviceName = await storage.read(key: 'device_name');
 
     if (isPaired &&
         deviceToken != null &&
@@ -115,9 +116,9 @@ class _PairingScreenState extends State<PairingScreen> {
       final body = jsonDecode(response.body);
       final data = body['data'];
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('device_token', data['device_token']);
-      await prefs.setString('session_id', data['session_id']);
-      await prefs.setString('device_name', data['device_name']);
+      await storage.write(key: 'device_token', value: data['device_token']);
+      await storage.write(key: 'session_id', value: data['session_id']);
+      await storage.write(key: 'device_name', value: data['device_name']);
       await prefs.setBool('is_paired', true);
 
       WakelockPlus.disable();

@@ -4,7 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../services/camera_service.dart';
 import 'add_device_screen.dart';
@@ -54,7 +54,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('admin_token');
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'admin_token');
     if (token == null || token.isEmpty) {
       setState(() => _loading = false);
       return;
@@ -112,9 +113,9 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('admin_token', token);
-    await prefs.setString('parent_username', username);
+    const storage = FlutterSecureStorage();
+    await storage.write(key: 'admin_token', value: token);
+    await storage.write(key: 'parent_username', value: username);
 
     setState(() {
       _adminToken = token;
