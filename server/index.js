@@ -71,7 +71,7 @@ if (!UPSTASH_URL || !UPSTASH_TOKEN) {
 const redis = {
   async get(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/get/${k}`, {
+      const res = await fetch(`${UPSTASH_URL}/get/${encodeURIComponent(k)}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       const data = await res.json();
@@ -83,7 +83,7 @@ const redis = {
   async set(k, v, opts) {
     try {
       const value = typeof v === "string" ? v : JSON.stringify(v);
-      let url = `${UPSTASH_URL}/set/${k}/${encodeURIComponent(value)}`;
+      let url = `${UPSTASH_URL}/set/${encodeURIComponent(k)}/${encodeURIComponent(value)}`;
       if (opts?.ex) url += `/EX/${opts.ex}`;
       if (opts?.nx) url += `/NX`;
       const res = await fetch(url, {
@@ -97,7 +97,7 @@ const redis = {
   },
   async getdel(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/getdel/${k}`, {
+      const res = await fetch(`${UPSTASH_URL}/getdel/${encodeURIComponent(k)}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       const data = await res.json();
@@ -108,7 +108,7 @@ const redis = {
   },
   async del(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/del/${k}`, {
+      const res = await fetch(`${UPSTASH_URL}/del/${encodeURIComponent(k)}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       const data = await res.json();
@@ -120,7 +120,7 @@ const redis = {
   async sadd(key, member) {
     try {
       const res = await fetch(
-        `${UPSTASH_URL}/sadd/${key}/${encodeURIComponent(member)}`,
+        `${UPSTASH_URL}/sadd/${encodeURIComponent(key)}/${encodeURIComponent(member)}`,
         { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
       );
       const data = await res.json();
@@ -132,7 +132,7 @@ const redis = {
   async srem(key, member) {
     try {
       const res = await fetch(
-        `${UPSTASH_URL}/srem/${key}/${encodeURIComponent(member)}`,
+        `${UPSTASH_URL}/srem/${encodeURIComponent(key)}/${encodeURIComponent(member)}`,
         { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
       );
       const data = await res.json();
@@ -143,7 +143,7 @@ const redis = {
   },
   async smembers(key) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/smembers/${key}`, {
+      const res = await fetch(`${UPSTASH_URL}/smembers/${encodeURIComponent(key)}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       if (!res.ok) {
