@@ -3,6 +3,8 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
+process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
+process.on("uncaughtException", (e) => console.error("[uncaughtException]", e));
 // ═══════════════════════════════════════════════════════════
 // Firebase Admin (FCM wake)
 // ═══════════════════════════════════════════════════════════
@@ -146,7 +148,7 @@ const redis = {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal" });
+const wss = new WebSocketServer({ server, path: "/signal", maxPayload: 256 * 1024 });
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
@@ -180,7 +182,8 @@ function clientIp(req) {
   return String(
     req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
   )
-    .split(",")[0]
+    .split(",")
+    .pop()
     .trim();
 }
 
@@ -237,13 +240,15 @@ function computeViewerKey(sessionId, adminToken) {
 }
 
 app.post("/admin/claim", async (req, res) => {
-  const claimed = await redis.get("admin:claimed");
-  if (claimed) {
+  if (!rateLimit(authAttempts, `admin-claim:${clientIp(req)}`, 5)) {
+    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
+  }
+  const ok = await redis.set("admin:claimed", String(Date.now()), { nx: true });
+  if (!ok) {
     return res
       .status(403)
       .json({ error: "تم ربط هذا السيرفر بحساب والد بالفعل." });
   }
-  await redis.set("admin:claimed", String(Date.now()));
   res.json({ data: { admin_token: ADMIN_TOKEN } });
 });
 
@@ -518,13 +523,12 @@ app.post("/pairing/claim", async (req, res) => {
     (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
     "جهاز غير مسمى";
 
-  const raw = await redis.get(`pairing:${code}`);
+  const raw = await redis.getdel(`pairing:${code}`);
   if (!raw) {
     return res
       .status(400)
       .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
   }
-  await redis.del(`pairing:${code}`);
 
   const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
   const ownerToken = entry.ownerToken;
@@ -606,13 +610,12 @@ app.post("/pairing/register", async (req, res) => {
     }
 
     if (code) {
-      const pairingRaw = await redis.get(`pairing:${code}`);
+      const pairingRaw = await redis.getdel(`pairing:${code}`);
       if (!pairingRaw) {
         return res
           .status(400)
           .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
       }
-      await redis.del(`pairing:${code}`);
 
       const pairingEntry =
         typeof pairingRaw === "string" ? JSON.parse(pairingRaw) : pairingRaw;
