@@ -73,7 +73,7 @@ class _WebDevicesScreenState extends State<WebDevicesScreen> {
         widget.getDevices().where((d) => d['source'] == 'web').toList();
     return Scaffold(
       appBar: AppBar(
-        title: const Text('الأجهزة المتصلة عبر رابط'),
+        title: const Text('أجهزة الرابط'),
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _reload),
         ],
