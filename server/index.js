@@ -891,7 +891,7 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
 wss.on("connection", (ws, req) => {
   const ip = clientIp(req);
   if (!rateLimit(wsAttempts, ip, 30)) {
-    try { ws.close(1013, "rate limited"); } catch (_) {}
+    console.log("[ws] rate limited", ip); try { ws.close(1013, "rate limited"); } catch (_) {}
     return;
   }
 
@@ -1366,7 +1366,8 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code) => {
+    console.log(`[ws] close role=${clients[clientId]?.role} code=${code}`);
     const client = clients[clientId];
     if (client && client.sessionId && live[client.sessionId]) {
       const liveSession = live[client.sessionId];
@@ -1419,9 +1420,10 @@ const heartbeatInterval = setInterval(() => {
     const client = clientId ? clients[clientId] : null;
 
     if (client && now - client.lastMessageAt > WS_IDLE_TIMEOUT) {
+      console.log("[ws] terminate: idle", client.role);
       return ws.terminate();
     }
-    if (ws.isAlive === false) return ws.terminate();
+    if (ws.isAlive === false) { console.log("[ws] terminate: no pong"); return ws.terminate(); }
     ws.isAlive = false;
     try { ws.ping(); } catch (_) {}
   });
