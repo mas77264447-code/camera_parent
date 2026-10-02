@@ -160,7 +160,7 @@ const redis = {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal", maxPayload: 256 * 1024 });
+const wss = new WebSocketServer({ server, path: "/signal" });
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
@@ -194,8 +194,7 @@ function clientIp(req) {
   return String(
     req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
   )
-    .split(",")
-    .pop()
+    .split(",")[0]
     .trim();
 }
 
@@ -906,7 +905,7 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
 wss.on("connection", (ws, req) => {
   const ip = clientIp(req);
   if (!rateLimit(wsAttempts, ip, 30)) {
-    try { ws.close(1013, "rate limited"); } catch (_) {}
+    console.log("[ws] rate limited", ip); try { ws.close(1013, "rate limited"); } catch (_) {}
     return;
   }
 
@@ -1381,7 +1380,8 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code) => {
+    console.log(`[ws] close role=${clients[clientId]?.role} code=${code}`);
     const client = clients[clientId];
     if (client && client.sessionId && live[client.sessionId]) {
       const liveSession = live[client.sessionId];
