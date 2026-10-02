@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -26,8 +25,7 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-class _CameraStreamScreenState extends State<CameraStreamScreen>
-    with WidgetsBindingObserver {
+class _CameraStreamScreenState extends State<CameraStreamScreen> {
   final _svc = StreamService.instance;
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
@@ -55,38 +53,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _init();
-  }
-
-  DateTime? _lastPausedAt;
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      _lastPausedAt = DateTime.now();
-      return;
-    }
-
-    if (state == AppLifecycleState.resumed) {
-      final wasInBackground = _lastPausedAt != null &&
-          DateTime.now().difference(_lastPausedAt!) >
-              const Duration(milliseconds: 1500);
-
-      debugPrint('[Camera] resumed, wasInBackground=$wasInBackground');
-
-      // ✅ إذا كان في الخلفية أكثر من 1.5 ثانية، أعِد اكتساب الكاميرا
-      _svc.ensureCameraStarted(force: wasInBackground);
-      _svc.ensureHealthy();
-
-      Future.delayed(const Duration(milliseconds: 800), () {
-        if (mounted) _svc.refreshAllViewers();
-      });
-
-      _lastPausedAt = null;
-    }
   }
 
   Future<void> _init() async {
@@ -195,7 +163,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
@@ -463,55 +430,4 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
         child: Text(text,
             style: const TextStyle(color: Colors.white, fontSize: 12)),
       );
-}
-// Fix: broadcaster-leaving
-@override
-void dispose() {
-  _disposed = true;
-
-  _reconnectTimer?.cancel();
-  _retryTimer?.cancel();
-
-  if (_ws != null) {
-    try {
-      _ws!.add(jsonEncode({
-        'type': 'broadcaster-leaving',
-        'deviceToken': widget.deviceToken,
-      }));
-      
-      Future.delayed(const Duration(milliseconds: 200), () {
-        try {
-          _ws?.close();
-        } catch (_) {}
-      });
-    } catch (_) {
-      try {
-        _ws?.close();
-      } catch (_) {}
-    }
-  }
-  
-  _ws = null;
-  WidgetsBinding.instance.removeObserver(this);
-  WakelockPlus.disable();
-
-  for (final viewerId in _peerConnections.keys.toList()) {
-    try {
-      _peerConnections[viewerId]?.close();
-    } catch (_) {}
-  }
-  _peerConnections.clear();
-  _remoteStreams.clear();
-  _callerNames.clear();
-  _pendingViewers.clear();
-
-  try {
-    _remoteRenderer.srcObject = null;
-    _localRenderer.srcObject = null;
-  } catch (_) {}
-
-  _localRenderer.dispose();
-  _remoteRenderer.dispose();
-
-  super.dispose();
 }
