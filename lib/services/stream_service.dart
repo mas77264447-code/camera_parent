@@ -1106,7 +1106,7 @@ class StreamService {
       _activeViewerId = viewerId;
       _callersCtrl.add(Map.from(_callerNames));
       _mediaCtrl.add(_remoteStreams[viewerId]);
-      unawaited(_diagOutbound(viewerId));
+      // unawaited(_diagOutbound(viewerId)); // disabled: suspected native crash
     } catch (e) {
       debugPrint('[StreamService] sendOffer error: $e');
       _peerConnections.remove(viewerId);
