@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../services/device_admin_service.dart';
+import '../services/parent_pin.dart';
 import '../services/stream_service.dart';
 import 'pairing_screen.dart';
 
@@ -25,7 +26,8 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-class _CameraStreamScreenState extends State<CameraStreamScreen> {
+class _CameraStreamScreenState extends State<CameraStreamScreen>
+    with WidgetsBindingObserver {
   final _svc = StreamService.instance;
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
@@ -53,14 +55,24 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _init();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // عند عودة التطبيق: أندرويد قد يكون سحب الكاميرا في الخلفية
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_svc.onAppResumed());
+    }
   }
 
   Future<void> _init() async {
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
     await Permission.notification.request();
+    if (!mounted) return;
     if (!cam.isGranted || !mic.isGranted) {
       setState(() => _status = "مطلوب صلاحيات الكاميرا والميكروفون");
       return;
@@ -71,17 +83,24 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       await _remoteRenderer.initialize();
       _renderersReady = true;
     } catch (_) {}
+    if (!mounted) return; // خرج المستخدم أثناء التجهيز: لا نُنشئ اشتراكات يتيمة
 
-    _statusSub = _svc.onStatus.listen((s) => setState(() => _status = s));
-    _callersSub = _svc.onCallers.listen((c) => setState(() => _callers = c));
+    _statusSub = _svc.onStatus.listen((s) {
+      if (mounted) setState(() => _status = s);
+    });
+    _callersSub = _svc.onCallers.listen((c) {
+      if (mounted) setState(() => _callers = c);
+    });
     _remoteSub = _svc.onRemoteStreams.listen((r) {
+      if (!mounted) return;
       setState(() => _remoteStreams = r);
       final active = _svc.activeViewerId;
-      if (active != null) {
+      if (active != null && _renderersReady) {
         _remoteRenderer.srcObject = r[active];
       }
     });
     _pendingSub = _svc.onPendingRequests.listen((p) {
+      if (!mounted) return;
       setState(() => _pending = p);
       _maybeShowApprovalDialog();
     });
@@ -163,6 +182,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
@@ -172,6 +192,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     WakelockPlus.disable();
     try {
+      _localRenderer.srcObject = null;
+      _remoteRenderer.srcObject = null;
       _localRenderer.dispose();
       _remoteRenderer.dispose();
     } catch (_) {}
@@ -183,28 +205,120 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     final supported = status['supported'] == true;
     if (!supported) return;
     if (!mounted) return;
-    final confirmed = await showDialog<bool>(
+    // 'enable' | 'disable' | null
+    final choice = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Kiosk Mode'),
         content: const Text(
             'هذا الخيار يقفل التطبيق على الشاشة (بدون X).\n'
+            'يمكنك إيقافه من هنا في أي وقت.\n'
             'إذا أردت أن يعمل بالخلفية فقط، تجاهل هذا.'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(context, null),
             child: const Text('إلغاء'),
           ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'disable'),
+            child: const Text('إيقاف Kiosk'),
+          ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(context, 'enable'),
             child: const Text('تفعيل'),
           ),
         ],
       ),
     );
-    if (confirmed == true) {
+    if (choice == 'enable') {
+      // رمز الوالد إجباري قبل التفعيل: بدونه لا توجد حماية لزر الإيقاف
+      if (!await ParentPin.isSet()) {
+        final pin = await _askNewPin();
+        if (pin == null) return;
+        await ParentPin.set(pin);
+      }
       await DeviceAdminService.enableKioskMode();
+    } else if (choice == 'disable') {
+      // ✅ كان لا يوجد مخرج من Kiosk؛ الآن المخرج محمي برمز الوالد
+      // حتى لا يستطيع الطفل إيقافه بنفسه.
+      if (!await _requirePin()) return;
+      final ok = await DeviceAdminService.disableKioskMode();
+      if (ok) await ParentPin.clear();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(ok ? 'تم إيقاف Kiosk' : 'تعذر إيقاف Kiosk')),
+        );
+      }
     }
+  }
+
+  Future<String?> _askPin(String title, {String? hint}) async {
+    if (!mounted) return null;
+    final c = TextEditingController();
+    try {
+      return await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: Text(title),
+          content: TextField(
+            controller: c,
+            autofocus: true,
+            obscureText: true,
+            keyboardType: TextInputType.number,
+            maxLength: 8,
+            decoration: InputDecoration(hintText: hint ?? 'رمز من 4 إلى 8 أرقام'),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, null),
+                child: const Text('إلغاء')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, c.text.trim()),
+                child: const Text('موافق')),
+          ],
+        ),
+      );
+    } finally {
+      c.dispose();
+    }
+  }
+
+  /// يطلب رمزاً جديداً مرتين. يعيد null عند الإلغاء أو عدم التطابق.
+  Future<String?> _askNewPin() async {
+    final a = await _askPin('عيّن رمز الوالد',
+        hint: 'سيُطلب لإيقاف Kiosk أو فك الاقتران');
+    if (a == null) return null;
+    if (!ParentPin.isValidFormat(a)) {
+      _snack('الرمز يجب أن يكون من 4 إلى 8 أرقام');
+      return null;
+    }
+    final b = await _askPin('أعد إدخال الرمز');
+    if (b != a) {
+      _snack('الرمزان غير متطابقين');
+      return null;
+    }
+    return a;
+  }
+
+  /// true إذا لا يوجد رمز معيّن أو أُدخل الرمز الصحيح.
+  Future<bool> _requirePin() async {
+    if (!await ParentPin.isSet()) return true;
+    final lock = ParentPin.lockRemaining();
+    if (lock != null) {
+      _snack('محاولات كثيرة. انتظر ${lock.inSeconds} ثانية');
+      return false;
+    }
+    final pin = await _askPin('أدخل رمز الوالد');
+    if (pin == null) return false;
+    final ok = await ParentPin.verify(pin);
+    if (!ok) _snack('رمز غير صحيح');
+    return ok;
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _unpair() async {
@@ -227,6 +341,12 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       ),
     );
     if (ok != true) return;
+    // فك الاقتران يتطلب رمز الوالد إن كان معيّناً (وإلا يفكّ الطفل الاقتران بنفسه)
+    if (!await _requirePin()) return;
+    // بعد التحقق من الرمز نزيل Kiosk حتى لا يبقى الجهاز مقيّداً بلا تطبيق يتحكم فيه
+    try {
+      if (await DeviceAdminService.disableKioskMode()) await ParentPin.clear();
+    } catch (_) {}
     await _svc.unpair();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
@@ -264,7 +384,10 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
             ),
             IconButton(
               icon: const Icon(Icons.cameraswitch),
-              onPressed: () => setState(() => _svc.switchCamera()),
+              onPressed: () async {
+                await _svc.switchCamera();
+                if (mounted) setState(() {});
+              },
             ),
             IconButton(
               icon: const Icon(Icons.lock_outline),

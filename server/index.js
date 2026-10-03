@@ -146,7 +146,8 @@ const redis = {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal" });
+// حد أقصى للرسالة الواحدة (مقاطع الملفات تُرسل مقسّمة) لمنع استنزاف الذاكرة
+const wss = new WebSocketServer({ server, path: "/signal", maxPayload: 2 * 1024 * 1024 });
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
@@ -181,6 +182,14 @@ async function getOrCreateAdminToken() {
   await redis.set("admin:token", generated);
   return generated;
 }
+
+// شبكة أمان: أي رفض غير معالج (مثلاً انقطاع Upstash) لا يجب أن يسقط السيرفر ويقطع كل الاتصالات
+process.on("unhandledRejection", (reason) => {
+  console.error("[process] unhandledRejection:", reason && reason.message ? reason.message : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[process] uncaughtException:", err && err.stack ? err.stack : err);
+});
 
 let ADMIN_TOKEN = null;
 
@@ -530,6 +539,11 @@ app.post("/pairing/claim", async (req, res) => {
     (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
     "جهاز غير مسمى";
 
+  if (!/^\d{6}$/.test(code)) {
+    return res
+      .status(400)
+      .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
+  }
   const raw = await redis.get(`pairing:${code}`);
   if (!raw) {
     return res
@@ -917,6 +931,10 @@ wss.on("connection", (ws, req) => {
     lastMessageAt: Date.now(),
   };
 
+  ws.on("error", (e) => {
+    console.error("[ws] socket error:", e && e.message ? e.message : e);
+  });
+
   ws.isAlive = true;
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -925,8 +943,17 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("message", async (raw) => {
+    try {
+      await handleWsMessage(raw);
+    } catch (e) {
+      console.error("[ws] handler error:", e && e.message ? e.message : e);
+    }
+  });
+
+  async function handleWsMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
+    if (!msg || typeof msg !== "object") return;
 
     const client = clients[clientId];
     if (!client) return;
@@ -1289,7 +1316,9 @@ wss.on("connection", (ws, req) => {
 
     if (msg.type === "switch-camera" || msg.type === "toggle-mic") {
       const liveSession = live[client.sessionId];
-      if (client.role !== "viewer" || !liveSession || !liveSession.broadcaster) return;
+      if (client.role !== "viewer" || !client.viewerKey || !liveSession || !liveSession.broadcaster) return;
+      const vInfo = liveSession.viewers.get(client.viewerKey);
+      if (!vInfo || !vInfo.approved) return; // مشاهد لم يوافق عليه الطفل لا يتحكم بالجهاز
       send(liveSession.broadcaster, { type: msg.type });
       return;
     }
@@ -1376,7 +1405,7 @@ wss.on("connection", (ws, req) => {
       }
       return;
     }
-  });
+  }
 
   ws.on("close", (code) => {
     console.log(`[ws] close role=${clients[clientId]?.role} code=${code}`);
@@ -1445,6 +1474,35 @@ wss.on("close", () => clearInterval(heartbeatInterval));
 
 let _warnedNoPrivateTurn = false;
 
+// ✅ TURN عبر Metered API (حساب مجاني: 20GB/شهر). عيّن في Render:
+//   METERED_APP=اسم_تطبيقك   (الجزء قبل .metered.live)
+//   METERED_API_KEY=مفتاحك
+// يجلب بيانات اعتماد حقيقية ويخزّنها 30 دقيقة.
+let _meteredCache = { at: 0, servers: null };
+
+async function fetchMeteredServers() {
+  const app_ = (process.env.METERED_APP || "").trim();
+  const key = (process.env.METERED_API_KEY || "").trim();
+  if (!app_ || !key || typeof fetch !== "function") return null;
+  if (_meteredCache.servers && Date.now() - _meteredCache.at < 30 * 60 * 1000) {
+    return _meteredCache.servers;
+  }
+  try {
+    const r = await fetch(
+      `https://${app_}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(key)}`
+    );
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const list = await r.json();
+    if (Array.isArray(list) && list.length) {
+      _meteredCache = { at: Date.now(), servers: list };
+      return list;
+    }
+  } catch (e) {
+    console.error("[ice] metered fetch failed:", e && e.message ? e.message : e);
+  }
+  return _meteredCache.servers; // آخر نسخة ناجحة إن وجدت
+}
+
 function getIceServers() {
   const stunServers = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -1467,7 +1525,7 @@ function getIceServers() {
 
   if (!_warnedNoPrivateTurn) {
     _warnedNoPrivateTurn = true;
-    console.warn("[camera-parent] مفيش TURN_URLS - fallback openrelay");
+    console.warn("[camera-parent] مفيش TURN_URLS ولا METERED_* - fallback openrelay العام (غير مضمون)");
   }
 
   return [
@@ -1478,7 +1536,17 @@ function getIceServers() {
   ];
 }
 
-app.get("/ice-servers", (req, res) => {
+app.get("/ice-servers", async (req, res) => {
+  try {
+    const metered = await fetchMeteredServers();
+    if (metered) {
+      return res.json({
+        data: [{ urls: "stun:stun.l.google.com:19302" }, ...metered],
+      });
+    }
+  } catch (e) {
+    console.error("[ice] error:", e && e.message ? e.message : e);
+  }
   res.json({ data: getIceServers() });
 });
 
