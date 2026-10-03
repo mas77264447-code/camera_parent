@@ -9,6 +9,31 @@ import 'package:path_provider/path_provider.dart';
 import '../services/camera_service.dart';
 import '../services/crypto_service.dart';
 
+/// ينظّف اسم الملف القادم من الجهاز البعيد: يحافظ على الحروف العربية/اللاتينية والأرقام،
+/// ويمنع المسارات والنقاط في البداية. (\w وحدها كانت تحوّل كل حرف عربي إلى "_".)
+String _sanitizeFileName(String name) {
+  var n = name.split(RegExp(r'[\\/]')).last;
+  n = n.replaceAll(RegExp(r'[^\p{L}\p{N}_.\-]', unicode: true), '_');
+  n = n.replaceFirst(RegExp(r'^\.+'), '');
+  if (n.isEmpty) n = 'file';
+  if (n.length > 120) n = n.substring(n.length - 120);
+  return n;
+}
+
+/// يمنع الكتابة فوق ملف موجود بنفس الاسم.
+Future<File> _uniqueFile(Directory dir, String name) async {
+  var f = File('${dir.path}/$name');
+  if (!await f.exists()) return f;
+  final dot = name.lastIndexOf('.');
+  final base = dot > 0 ? name.substring(0, dot) : name;
+  final ext = dot > 0 ? name.substring(dot) : '';
+  for (var i = 1; i < 1000; i++) {
+    f = File('${dir.path}/${base}_$i$ext');
+    if (!await f.exists()) return f;
+  }
+  return File('${dir.path}/${base}_${DateTime.now().millisecondsSinceEpoch}$ext');
+}
+
 class DeviceFilesScreen extends StatefulWidget {
   final String sessionId;
   final String name;
@@ -315,7 +340,7 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
     if (dest == null) return;
 
     final requestId = _uid();
-    final safeName = name.replaceAll(RegExp(r'[^\w\.\-]'), '_');
+    final safeName = _sanitizeFileName(name);
     final tempFile = File('${dest.path}/$safeName.part');
     final sink = tempFile.openWrite();
 
@@ -525,8 +550,8 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
       if (!await dir.exists()) {
         await dir.create(recursive: true);
       }
-      final safeName = state.name.replaceAll(RegExp(r'[^\w\.\-]'), '_');
-      final finalFile = File('${dir.path}/$safeName');
+      final safeName = _sanitizeFileName(state.name);
+      final finalFile = await _uniqueFile(dir, safeName);
 
       if (state.tempFile != null && await state.tempFile!.exists()) {
         await state.tempFile!.rename(finalFile.path);

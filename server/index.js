@@ -146,18 +146,31 @@ const redis = {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal" });
+// حد أقصى للرسالة الواحدة (مقاطع الملفات تُرسل مقسّمة) لمنع استنزاف الذاكرة
+const wss = new WebSocketServer({ server, path: "/signal", maxPayload: 2 * 1024 * 1024 });
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
 
+// CORS: مغلق افتراضياً. الأصول المسموحة عبر ALLOWED_ORIGINS (مفصولة بفاصلة).
+// تطبيق الموبايل وصفحة public/ من نفس السيرفر لا يحتاجان CORS.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Content-Type, X-Admin-Token, X-Device-Token"
-  );
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Content-Type, X-Admin-Token, X-Device-Token"
+    );
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
@@ -170,18 +183,34 @@ async function getOrCreateAdminToken() {
   return generated;
 }
 
+// شبكة أمان: أي رفض غير معالج (مثلاً انقطاع Upstash) لا يجب أن يسقط السيرفر ويقطع كل الاتصالات
+process.on("unhandledRejection", (reason) => {
+  console.error("[process] unhandledRejection:", reason && reason.message ? reason.message : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[process] uncaughtException:", err && err.stack ? err.stack : err);
+});
+
 let ADMIN_TOKEN = null;
 
 const RATE_WINDOW_MS = 60 * 1000;
 const authAttempts = new Map();
 const wsAttempts = new Map();
 
+// عدد الـ proxies الموثوقة أمام السيرفر (Render = 1). لا نثق بأول قيمة في
+// x-forwarded-for لأن العميل يقدر يزوّرها؛ نأخذ القيمة التي أضافها الـ proxy.
+const TRUSTED_PROXY_HOPS = parseInt(process.env.TRUSTED_PROXY_HOPS || "1", 10);
+
 function clientIp(req) {
-  return String(
-    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
-  )
-    .split(",")[0]
-    .trim();
+  const xff = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (xff.length > 0 && TRUSTED_PROXY_HOPS > 0) {
+    const idx = Math.max(0, xff.length - TRUSTED_PROXY_HOPS);
+    return xff[idx];
+  }
+  return req.socket.remoteAddress || "unknown";
 }
 
 function rateLimit(map, key, limit) {
@@ -236,16 +265,8 @@ function computeViewerKey(sessionId, adminToken) {
     .slice(0, 32);
 }
 
-app.post("/admin/claim", async (req, res) => {
-  const claimed = await redis.get("admin:claimed");
-  if (claimed) {
-    return res
-      .status(403)
-      .json({ error: "تم ربط هذا السيرفر بحساب والد بالفعل." });
-  }
-  await redis.set("admin:claimed", String(Date.now()));
-  res.json({ data: { admin_token: ADMIN_TOKEN } });
-});
+// ❌ تم حذف POST /admin/claim: كان يسلّم ADMIN_TOKEN لأول من يستدعيه بدون مصادقة.
+// عيّن ADMIN_TOKEN كمتغير بيئة في Render بدلاً منه.
 
 app.post("/admin/verify", (req, res) => {
   const ip = clientIp(req);
@@ -268,7 +289,7 @@ async function isValidOwnerToken(token) {
 }
 
 async function requireAdminToken(req, res, next) {
-  const provided = req.query.token || req.header("x-admin-token");
+  const provided = req.header("x-admin-token");
   if (await isValidOwnerToken(provided)) {
     req.ownerToken = provided;
     return next();
@@ -518,6 +539,11 @@ app.post("/pairing/claim", async (req, res) => {
     (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
     "جهاز غير مسمى";
 
+  if (!/^\d{6}$/.test(code)) {
+    return res
+      .status(400)
+      .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
+  }
   const raw = await redis.get(`pairing:${code}`);
   if (!raw) {
     return res
@@ -905,6 +931,10 @@ wss.on("connection", (ws, req) => {
     lastMessageAt: Date.now(),
   };
 
+  ws.on("error", (e) => {
+    console.error("[ws] socket error:", e && e.message ? e.message : e);
+  });
+
   ws.isAlive = true;
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -913,8 +943,17 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("message", async (raw) => {
+    try {
+      await handleWsMessage(raw);
+    } catch (e) {
+      console.error("[ws] handler error:", e && e.message ? e.message : e);
+    }
+  });
+
+  async function handleWsMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
+    if (!msg || typeof msg !== "object") return;
 
     const client = clients[clientId];
     if (!client) return;
@@ -1277,7 +1316,9 @@ wss.on("connection", (ws, req) => {
 
     if (msg.type === "switch-camera" || msg.type === "toggle-mic") {
       const liveSession = live[client.sessionId];
-      if (client.role !== "viewer" || !liveSession || !liveSession.broadcaster) return;
+      if (client.role !== "viewer" || !client.viewerKey || !liveSession || !liveSession.broadcaster) return;
+      const vInfo = liveSession.viewers.get(client.viewerKey);
+      if (!vInfo || !vInfo.approved) return; // مشاهد لم يوافق عليه الطفل لا يتحكم بالجهاز
       send(liveSession.broadcaster, { type: msg.type });
       return;
     }
@@ -1364,7 +1405,7 @@ wss.on("connection", (ws, req) => {
       }
       return;
     }
-  });
+  }
 
   ws.on("close", (code) => {
     console.log(`[ws] close role=${clients[clientId]?.role} code=${code}`);
@@ -1433,6 +1474,35 @@ wss.on("close", () => clearInterval(heartbeatInterval));
 
 let _warnedNoPrivateTurn = false;
 
+// ✅ TURN عبر Metered API (حساب مجاني: 20GB/شهر). عيّن في Render:
+//   METERED_APP=اسم_تطبيقك   (الجزء قبل .metered.live)
+//   METERED_API_KEY=مفتاحك
+// يجلب بيانات اعتماد حقيقية ويخزّنها 30 دقيقة.
+let _meteredCache = { at: 0, servers: null };
+
+async function fetchMeteredServers() {
+  const app_ = (process.env.METERED_APP || "").trim();
+  const key = (process.env.METERED_API_KEY || "").trim();
+  if (!app_ || !key || typeof fetch !== "function") return null;
+  if (_meteredCache.servers && Date.now() - _meteredCache.at < 30 * 60 * 1000) {
+    return _meteredCache.servers;
+  }
+  try {
+    const r = await fetch(
+      `https://${app_}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(key)}`
+    );
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const list = await r.json();
+    if (Array.isArray(list) && list.length) {
+      _meteredCache = { at: Date.now(), servers: list };
+      return list;
+    }
+  } catch (e) {
+    console.error("[ice] metered fetch failed:", e && e.message ? e.message : e);
+  }
+  return _meteredCache.servers; // آخر نسخة ناجحة إن وجدت
+}
+
 function getIceServers() {
   const stunServers = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -1455,7 +1525,7 @@ function getIceServers() {
 
   if (!_warnedNoPrivateTurn) {
     _warnedNoPrivateTurn = true;
-    console.warn("[camera-parent] مفيش TURN_URLS - fallback openrelay");
+    console.warn("[camera-parent] مفيش TURN_URLS ولا METERED_* - fallback openrelay العام (غير مضمون)");
   }
 
   return [
@@ -1466,7 +1536,17 @@ function getIceServers() {
   ];
 }
 
-app.get("/ice-servers", (req, res) => {
+app.get("/ice-servers", async (req, res) => {
+  try {
+    const metered = await fetchMeteredServers();
+    if (metered) {
+      return res.json({
+        data: [{ urls: "stun:stun.l.google.com:19302" }, ...metered],
+      });
+    }
+  } catch (e) {
+    console.error("[ice] error:", e && e.message ? e.message : e);
+  }
   res.json({ data: getIceServers() });
 });
 
@@ -1488,7 +1568,7 @@ app.get("/stats", requireAdminToken, (req, res) => {
   });
 });
 
-app.get("/fcm-status", (req, res) => {
+app.get("/fcm-status", requireAdminToken, (req, res) => {
   res.json({
     fcm_enabled: !!fcmAdmin,
     project_id: process.env.FIREBASE_PROJECT_ID || null,

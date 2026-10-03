@@ -13,24 +13,36 @@ class CameraService {
   // ICE Servers
   // ═══════════════════════════════════════════════════════════
 
-  static Future<List<Map<String, dynamic>>> fetchIceServers() async {
-    try {
-      final res = await http
-          .get(Uri.parse("$server/ice-servers"))
-          .timeout(const Duration(seconds: 10));
+  /// true إذا كانت آخر قائمة رجعت من الـfallback (STUN فقط) لأن الجلب فشل.
+  /// عندها لن يعمل الاتصال خلف NAT صارم/شبكات الجوال، فيجب إعادة الجلب.
+  static bool lastIceFetchFailed = false;
 
-      if (res.statusCode == 200) {
-        final body = jsonDecode(res.body);
-        final data = body["data"];
-        if (data is List) {
-          return data.map((e) => Map<String, dynamic>.from(e)).toList();
+  static Future<List<Map<String, dynamic>>> fetchIceServers() async {
+    // السيرفر على استضافة مجانية ينام ويحتاج 30-60 ثانية ليستيقظ بعد إعادة التشغيل،
+    // لذلك 3 محاولات بمهلة 25 ثانية (كانت محاولة واحدة بمهلة 10 فتفشل وتبقى STUN فقط).
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final res = await http
+            .get(Uri.parse("$server/ice-servers"))
+            .timeout(const Duration(seconds: 25));
+
+        if (res.statusCode == 200) {
+          final body = jsonDecode(res.body);
+          final data = body["data"];
+          if (data is List && data.isNotEmpty) {
+            lastIceFetchFailed = false;
+            return data.map((e) => Map<String, dynamic>.from(e)).toList();
+          }
         }
+        debugPrint("[CameraService] fetchIceServers bad response ${res.statusCode} (attempt $attempt)");
+      } catch (e) {
+        debugPrint("[CameraService] fetchIceServers failed (attempt $attempt): $e");
       }
-    } catch (e) {
-      debugPrint("[CameraService] fetchIceServers failed: $e");
+      if (attempt < 3) await Future.delayed(Duration(seconds: 2 * attempt));
     }
 
-    // fallback: STUN عام
+    // fallback: STUN عام (قد لا يكفي للاتصال خلف NAT)
+    lastIceFetchFailed = true;
     return [
       {"urls": "stun:stun.l.google.com:19302"},
     ];

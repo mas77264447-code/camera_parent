@@ -41,6 +41,26 @@ jobs:
         run: |
           sed -i 's/-Xmx8G/-Xmx3G/; s/MaxMetaspaceSize=4G/MaxMetaspaceSize=1G/' android/gradle.properties || true
 
+      - name: Prepare release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SEC_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          SEC_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SEC_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks"
+              echo "KEYSTORE_PASSWORD=$SEC_STORE_PASS"
+              echo "KEY_ALIAS=$SEC_KEY_ALIAS"
+              echo "KEY_PASSWORD=$SEC_KEY_PASS"
+            } >> "$GITHUB_ENV"
+            echo "✅ release keystore ready"
+          else
+            echo "⚠️ KEYSTORE_BASE64 غير موجود — سيتم التوقيع بمفتاح debug"
+          fi
+
       - run: flutter clean
 
       - name: Build parent APK
@@ -78,6 +98,26 @@ jobs:
       - name: Reduce Gradle heap
         run: |
           sed -i 's/-Xmx8G/-Xmx3G/; s/MaxMetaspaceSize=4G/MaxMetaspaceSize=1G/' android/gradle.properties || true
+
+      - name: Prepare release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SEC_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          SEC_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SEC_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks"
+              echo "KEYSTORE_PASSWORD=$SEC_STORE_PASS"
+              echo "KEY_ALIAS=$SEC_KEY_ALIAS"
+              echo "KEY_PASSWORD=$SEC_KEY_PASS"
+            } >> "$GITHUB_ENV"
+            echo "✅ release keystore ready"
+          else
+            echo "⚠️ KEYSTORE_BASE64 غير موجود — سيتم التوقيع بمفتاح debug"
+          fi
 
       - run: flutter clean
 

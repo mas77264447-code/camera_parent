@@ -94,7 +94,13 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
   }
 
-  Future<void> _loadIceServers() async {
+  Future<void>? _iceLoading;
+
+  Future<void> _loadIceServers() {
+    return _iceLoading = _loadIceServersImpl();
+  }
+
+  Future<void> _loadIceServersImpl() async {
     try {
       final servers = await CameraService.fetchIceServers();
       if (!_disposed) {
@@ -466,6 +472,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     try { _remoteRenderer.srcObject = null; } catch (_) {}
 
     try {
+      // ✅ انتظر انتهاء جلب TURN (كان الاتصال يبدأ أحياناً قبل وصوله فيبقى ICE في Checking)
+      try { await _iceLoading; } catch (_) {}
+      if (CameraService.lastIceFetchFailed) {
+        await _loadIceServers();
+      }
       final pc = await createPeerConnection({"iceServers": _iceServers});
       _pc = pc;
 
@@ -692,7 +703,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       }
     } catch (_) {}
 
+    try { _remoteRenderer.srcObject = null; } catch (_) {}
     try { _pc?.close(); } catch (_) {}
+    try { _pc?.dispose(); } catch (_) {}
     try { _ws?.close(); } catch (_) {}
     _remoteRenderer.dispose();
     super.dispose();

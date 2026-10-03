@@ -41,7 +41,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           'Content-Type': 'application/json',
           'X-Admin-Token': widget.adminToken,
         },
-      ).timeout(const Duration(seconds: 10), onTimeout: () {
+      ).timeout(const Duration(seconds: 45), onTimeout: () {
         throw TimeoutException('اتصال الخادم استغرق وقتاً طويلاً');
       });
 
