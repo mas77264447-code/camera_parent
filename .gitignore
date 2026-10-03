@@ -30,3 +30,15 @@ android/.gradle/
 android/key.properties
 *.jks
 *.keystore
+
+# Termux / shell personal files
+.bash_history
+.bashrc
+.gitconfig
+.lesshst
+.termux/
+.ssh/
+storage/
+key.properties
+*.jks
+*.keystore
