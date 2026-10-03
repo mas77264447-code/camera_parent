@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'camera_service.dart';
 import 'connection_state_manager.dart';
@@ -32,6 +31,7 @@ class StreamService {
   bool _wsConnecting = false;
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
+  bool _authFailed = false;
   Timer? _pingTimer;
   int _consecutivePingFailures = 0;
 
@@ -121,6 +121,7 @@ class StreamService {
     }
     if (_running) await stop();
 
+    _authFailed = false;
     _sessionId = sessionId;
     _deviceToken = deviceToken;
     _cameraName = cameraName;
@@ -136,11 +137,16 @@ class StreamService {
       try {
         const fsChannel = MethodChannel('camera_parent/foreground_service');
         await fsChannel.invokeMethod('start', {'mode': 'camera'});
-        const batChannel = MethodChannel('camera_parent/battery_optimization');
-        await batChannel.invokeMethod('requestBatteryOptimizationExemption');
         _foregroundServiceStarted = true;
       } catch (e) {
         debugPrint('[StreamService] fgs start failed: $e');
+      }
+      // طلب استثناء البطارية منفصل: فشله لا يجب أن يؤثر على تشغيل الخدمة
+      try {
+        const batChannel = MethodChannel('camera_parent/battery_optimization');
+        await batChannel.invokeMethod('requestBatteryOptimizationExemption');
+      } catch (e) {
+        debugPrint('[StreamService] battery exemption failed: $e');
       }
     }
 
@@ -214,16 +220,9 @@ class StreamService {
   }
 
   /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
-  Future<void> ensureCameraStarted({bool force = false}) async {
+  Future<void> ensureCameraStarted() async {
     if (!_running || _broadcastScreen || _broadcastFiles) return;
-
-    if (force) {
-      debugPrint('[StreamService] ensureCameraStarted(force) — re-acquiring');
-      await _forceCleanupStream();
-    } else if (localStream != null) {
-      return;
-    }
-
+    if (localStream != null && _hasLiveVideoTrack()) return;
     await _startMediaSource();
   }
 
@@ -266,6 +265,9 @@ class StreamService {
       // ✅ إصلاح: timeout على الاتصال
       _ws = await WebSocket.connect('$wsUrl/signal')
           .timeout(const Duration(seconds: 15));
+
+      // ping على مستوى البروتوكول: يغلق Dart الاتصال تلقائياً إن لم يصله pong (اتصال نصف ميت)
+      _ws!.pingInterval = const Duration(seconds: 15);
 
       // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
       _ws!.listen(
@@ -361,13 +363,14 @@ class StreamService {
   }
 
   void _scheduleReconnect() {
-    if (!_running) return;
+    if (!_running || _authFailed) return;
     if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
 
     ConnectionStateManager.instance.update(ConnectionStatus.reconnecting);
     _reconnectTimer?.cancel();
     _reconnectAttempts++;
-    final exp = math.pow(2, _reconnectAttempts).toInt();
+    // ✅ كان math.pow(2, n).toInt() يرمي استثناء عند n=1024 (Infinity) فيتوقف إعادة الاتصال نهائياً
+    final exp = 1 << math.min(_reconnectAttempts, 5);
     final seconds = math.min(30, exp);
     final delay = Duration(seconds: seconds);
     debugPrint('[StreamService] reconnect in ${seconds}s (attempt=$_reconnectAttempts)');
@@ -429,6 +432,7 @@ class StreamService {
           _updateStatus('تم إنهاء الاتصال من طرف السيرفر');
           break;
         case 'auth-failed':
+          _authFailed = true; // لا نعيد الاتصال في حلقة بعد رفض السيرفر
           _reconnectTimer?.cancel();
           _updateStatus('فشل التحقق من الجهاز');
           _error = 'الجهاز غير مقترن على السيرفر. أعد الاقتران من جديد.';
@@ -844,7 +848,7 @@ class StreamService {
       final newScreen = requestedSource == 'screen';
       final newFiles = requestedSource == 'files';
 
-      if (_broadcastScreen != newScreen && localStream != null) {
+      if (_broadcastScreen && !newScreen && localStream != null) {
         await _forceCleanupStream();
       }
 
@@ -887,7 +891,7 @@ class StreamService {
       final newScreen = requestedSource == 'screen';
       final newFiles = requestedSource == 'files';
 
-      if (_broadcastScreen != newScreen && localStream != null) {
+      if (_broadcastScreen && !newScreen && localStream != null) {
         await _forceCleanupStream();
       }
 
@@ -895,10 +899,8 @@ class StreamService {
       _broadcastFiles = newFiles;
     }
 
-    if (!_broadcastFiles) {
-      if (localStream == null) {
-        await _startMediaSource();
-      }
+    if (localStream == null && !_broadcastFiles) {
+      await _startMediaSource();
     }
     await _sendOfferTo(viewerId, callerName);
   }
@@ -908,57 +910,10 @@ class StreamService {
     if (s == null) return false;
     try {
       final tracks = s.getVideoTracks();
-      return tracks.isNotEmpty;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// ✅ إصلاح: إذا force=true نظّف المسار ليُعاد اكتسابه
-  Future<bool> _ensureStreamAlive({bool force = false}) async {
-    if (localStream == null) return false;
-    if (force) {
-      debugPrint('[StreamService] _ensureStreamAlive(force) — cleanup');
-      await _forceCleanupStream();
-      return false;
-    }
-    try {
-      final tracks = localStream!.getVideoTracks();
-      if (tracks.isEmpty) {
-        await _forceCleanupStream();
-        return false;
-      }
+      if (tracks.isEmpty) return false;
       return true;
     } catch (_) {
       return false;
-    }
-  }
-
-  /// ✅ إصلاح: إعادة التفاوض مع جميع المشاهدين الحاليين
-  /// (يُستدعى عند استئناف التطبيق بعد إعادة التشغيل)
-  Future<void> refreshAllViewers() async {
-    if (!_running) return;
-    final viewers = List<String>.from(_peerConnections.keys);
-    if (viewers.isEmpty) return;
-
-    debugPrint('[StreamService] refreshAllViewers: ${viewers.length} viewers');
-
-    // ✅ force إعادة اكتساب الكاميرا
-    await _ensureStreamAlive(force: true);
-    await _startMediaSource();
-    if (localStream == null) return;
-
-    for (final viewerId in viewers) {
-      final callerName = _callerNames[viewerId] ?? 'Unknown';
-      final old = _peerConnections.remove(viewerId);
-      _pendingRemoteIceByViewer.remove(viewerId);
-      try {
-        await old?.close();
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 300));
-      if (localStream != null && _hasLiveVideoTrack()) {
-        await _sendOfferTo(viewerId, callerName);
-      }
     }
   }
 
@@ -1106,41 +1061,11 @@ class StreamService {
       _activeViewerId = viewerId;
       _callersCtrl.add(Map.from(_callerNames));
       _mediaCtrl.add(_remoteStreams[viewerId]);
-      // unawaited(_diagOutbound(viewerId)); // disabled: suspected native crash
     } catch (e) {
       debugPrint('[StreamService] sendOffer error: $e');
       _peerConnections.remove(viewerId);
       _pendingRemoteIceByViewer.remove(viewerId);
       try { await pc.close(); } catch (_) {}
-    }
-  }
-
-  /// تشخيص مؤقت: يعرض في شريط حالة الطفل ما تُرسله الكاميرا فعلاً.
-  Future<void> _diagOutbound(String viewerId) async {
-    for (var i = 0; i < 10; i++) {
-      await Future.delayed(const Duration(seconds: 3));
-      if (!_running) return;
-      final pc = _peerConnections[viewerId];
-      if (pc == null) return;
-      final parts = <String>[];
-      parts.add('ice=${pc.iceConnectionState.toString().split('.').last}');
-      try {
-        final senders = await pc.getSenders();
-        parts.add('senders=${senders.map((s) => '${s.track?.kind}:${s.track?.enabled}').join(',')}');
-        final reports = await pc.getStats();
-        for (final r in reports) {
-          if (r.type != 'outbound-rtp') continue;
-          final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
-          if (kind != 'video') continue;
-          parts.add('tx=${r.values['bytesSent']}B');
-          parts.add('fr=${r.values['framesEncoded']}');
-          parts.add('${r.values['frameWidth']}x${r.values['frameHeight']}');
-          parts.add('enc=${r.values['encoderImplementation']}');
-        }
-      } catch (e) {
-        parts.add('stats error');
-      }
-      _updateStatus('إرسال: ${parts.join(' ')}');
     }
   }
 
@@ -1247,9 +1172,7 @@ class StreamService {
     } else if (_peerConnections.isEmpty &&
         !_broadcastScreen &&
         localStream != null) {
-      // أبقِ الكاميرا مفتوحة بعد مغادرة المشاهد: إعادة فتحها من الخلفية
-      // (بعد إغلاق التطبيق/إعادة التشغيل) تمنعها أندرويد فتظهر سوداء.
-      _updateStatus("جاهز للبث - في انتظار طلب جديد");
+      await _forceCleanupStream();
     }
   }
 

@@ -46,7 +46,9 @@ class FcmService {
 
   static Future<String?> getToken() async {
     try {
-      return await FirebaseMessaging.instance.getToken();
+      return await FirebaseMessaging.instance
+          .getToken()
+          .timeout(const Duration(seconds: 5));
     } catch (e) {
       debugPrint('[FCM] getToken failed: $e');
       return null;

@@ -3,8 +3,6 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
-process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
-process.on("uncaughtException", (e) => console.error("[uncaughtException]", e));
 // ═══════════════════════════════════════════════════════════
 // Firebase Admin (FCM wake)
 // ═══════════════════════════════════════════════════════════
@@ -71,7 +69,7 @@ if (!UPSTASH_URL || !UPSTASH_TOKEN) {
 const redis = {
   async get(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/get/${encodeURIComponent(k)}`, {
+      const res = await fetch(`${UPSTASH_URL}/get/${k}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       const data = await res.json();
@@ -83,9 +81,8 @@ const redis = {
   async set(k, v, opts) {
     try {
       const value = typeof v === "string" ? v : JSON.stringify(v);
-      let url = `${UPSTASH_URL}/set/${encodeURIComponent(k)}/${encodeURIComponent(value)}`;
+      let url = `${UPSTASH_URL}/set/${k}/${encodeURIComponent(value)}`;
       if (opts?.ex) url += `/EX/${opts.ex}`;
-      if (opts?.nx) url += `/NX`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
@@ -95,20 +92,9 @@ const redis = {
       return null;
     }
   },
-  async getdel(k) {
-    try {
-      const res = await fetch(`${UPSTASH_URL}/getdel/${encodeURIComponent(k)}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
-      });
-      const data = await res.json();
-      return data.result || null;
-    } catch (e) {
-      return null;
-    }
-  },
   async del(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/del/${encodeURIComponent(k)}`, {
+      const res = await fetch(`${UPSTASH_URL}/del/${k}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       const data = await res.json();
@@ -120,7 +106,7 @@ const redis = {
   async sadd(key, member) {
     try {
       const res = await fetch(
-        `${UPSTASH_URL}/sadd/${encodeURIComponent(key)}/${encodeURIComponent(member)}`,
+        `${UPSTASH_URL}/sadd/${key}/${encodeURIComponent(member)}`,
         { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
       );
       const data = await res.json();
@@ -132,7 +118,7 @@ const redis = {
   async srem(key, member) {
     try {
       const res = await fetch(
-        `${UPSTASH_URL}/srem/${encodeURIComponent(key)}/${encodeURIComponent(member)}`,
+        `${UPSTASH_URL}/srem/${key}/${encodeURIComponent(member)}`,
         { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
       );
       const data = await res.json();
@@ -143,7 +129,7 @@ const redis = {
   },
   async smembers(key) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/smembers/${encodeURIComponent(key)}`, {
+      const res = await fetch(`${UPSTASH_URL}/smembers/${key}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
       if (!res.ok) {
@@ -165,13 +151,25 @@ const wss = new WebSocketServer({ server, path: "/signal" });
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
 
+// CORS: مغلق افتراضياً. الأصول المسموحة عبر ALLOWED_ORIGINS (مفصولة بفاصلة).
+// تطبيق الموبايل وصفحة public/ من نفس السيرفر لا يحتاجان CORS.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Content-Type, X-Admin-Token, X-Device-Token"
-  );
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Content-Type, X-Admin-Token, X-Device-Token"
+    );
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
@@ -190,12 +188,20 @@ const RATE_WINDOW_MS = 60 * 1000;
 const authAttempts = new Map();
 const wsAttempts = new Map();
 
+// عدد الـ proxies الموثوقة أمام السيرفر (Render = 1). لا نثق بأول قيمة في
+// x-forwarded-for لأن العميل يقدر يزوّرها؛ نأخذ القيمة التي أضافها الـ proxy.
+const TRUSTED_PROXY_HOPS = parseInt(process.env.TRUSTED_PROXY_HOPS || "1", 10);
+
 function clientIp(req) {
-  return String(
-    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
-  )
-    .split(",")[0]
-    .trim();
+  const xff = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (xff.length > 0 && TRUSTED_PROXY_HOPS > 0) {
+    const idx = Math.max(0, xff.length - TRUSTED_PROXY_HOPS);
+    return xff[idx];
+  }
+  return req.socket.remoteAddress || "unknown";
 }
 
 function rateLimit(map, key, limit) {
@@ -250,18 +256,8 @@ function computeViewerKey(sessionId, adminToken) {
     .slice(0, 32);
 }
 
-app.post("/admin/claim", async (req, res) => {
-  if (!rateLimit(authAttempts, `admin-claim:${clientIp(req)}`, 5)) {
-    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
-  }
-  const ok = await redis.set("admin:claimed", String(Date.now()), { nx: true });
-  if (!ok) {
-    return res
-      .status(403)
-      .json({ error: "تم ربط هذا السيرفر بحساب والد بالفعل." });
-  }
-  res.json({ data: { admin_token: ADMIN_TOKEN } });
-});
+// ❌ تم حذف POST /admin/claim: كان يسلّم ADMIN_TOKEN لأول من يستدعيه بدون مصادقة.
+// عيّن ADMIN_TOKEN كمتغير بيئة في Render بدلاً منه.
 
 app.post("/admin/verify", (req, res) => {
   const ip = clientIp(req);
@@ -284,7 +280,7 @@ async function isValidOwnerToken(token) {
 }
 
 async function requireAdminToken(req, res, next) {
-  const provided = req.query.token || req.header("x-admin-token");
+  const provided = req.header("x-admin-token");
   if (await isValidOwnerToken(provided)) {
     req.ownerToken = provided;
     return next();
@@ -534,12 +530,13 @@ app.post("/pairing/claim", async (req, res) => {
     (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
     "جهاز غير مسمى";
 
-  const raw = await redis.getdel(`pairing:${code}`);
+  const raw = await redis.get(`pairing:${code}`);
   if (!raw) {
     return res
       .status(400)
       .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
   }
+  await redis.del(`pairing:${code}`);
 
   const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
   const ownerToken = entry.ownerToken;
@@ -621,12 +618,13 @@ app.post("/pairing/register", async (req, res) => {
     }
 
     if (code) {
-      const pairingRaw = await redis.getdel(`pairing:${code}`);
+      const pairingRaw = await redis.get(`pairing:${code}`);
       if (!pairingRaw) {
         return res
           .status(400)
           .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
       }
+      await redis.del(`pairing:${code}`);
 
       const pairingEntry =
         typeof pairingRaw === "string" ? JSON.parse(pairingRaw) : pairingRaw;
@@ -1434,9 +1432,10 @@ const heartbeatInterval = setInterval(() => {
     const client = clientId ? clients[clientId] : null;
 
     if (client && now - client.lastMessageAt > WS_IDLE_TIMEOUT) {
+      console.log("[ws] terminate: idle", client.role);
       return ws.terminate();
     }
-    if (ws.isAlive === false) return ws.terminate();
+    if (ws.isAlive === false) { console.log("[ws] terminate: no pong"); return ws.terminate(); }
     ws.isAlive = false;
     try { ws.ping(); } catch (_) {}
   });
@@ -1501,7 +1500,7 @@ app.get("/stats", requireAdminToken, (req, res) => {
   });
 });
 
-app.get("/fcm-status", (req, res) => {
+app.get("/fcm-status", requireAdminToken, (req, res) => {
   res.json({
     fcm_enabled: !!fcmAdmin,
     project_id: process.env.FIREBASE_PROJECT_ID || null,
