@@ -14,3 +14,19 @@ macos/
 
 # Local Gradle state
 android/.gradle/
+
+# Never commit Termux home files
+.ssh/
+.bash_history
+.bashrc
+.gitconfig
+.lesshst
+.termux/
+/storage/
+*.bak
+*.backup
+*.before-*
+
+android/key.properties
+*.jks
+*.keystore

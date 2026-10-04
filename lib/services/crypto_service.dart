@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:pointycastle/export.dart' as pc;
+import 'package:crypto/crypto.dart' as crypto_lib;
 
 class CryptoService {
   CryptoService._();
@@ -18,20 +19,27 @@ class CryptoService {
   bool get isInitialized => _derivedKey != null;
 
   Uint8List _deriveKey(String adminToken) {
+    // HKDF-SHA256: extract + expand
     final inputKey = Uint8List.fromList(utf8.encode(adminToken));
-    final info = Uint8List.fromList(utf8.encode('camera_parent_files_v1'));
-    final salt = Uint8List.fromList(utf8.encode('camera_parent_files_salt'));
-
-    final hmac = pc.HMac(pc.SHA256Digest(), 64)
-      ..init(pc.KeyParameter(inputKey));
-
-    hmac.update(salt, 0, salt.length);
-    hmac.update(inputKey, 0, inputKey.length);
-    hmac.update(info, 0, info.length);
-
-    final out = Uint8List(32);
-    hmac.doFinal(out, 0);
-    return out;
+    const info = 'camera_parent_files_e2e_v1';
+    const salt = 'hkdf_salt_v1';
+    
+    // Extract: PRK = HMAC-Hash(salt, IKM)
+    final extractor = pc.HMac(pc.SHA256Digest(), 64)
+      ..init(pc.KeyParameter(Uint8List.fromList(utf8.encode(salt))));
+    extractor.update(inputKey, 0, inputKey.length);
+    final prk = Uint8List(32);
+    extractor.doFinal(prk, 0);
+    
+    // Expand: OKM = HMAC-Hash(PRK, info || counter)
+    final expander = pc.HMac(pc.SHA256Digest(), 64)
+      ..init(pc.KeyParameter(prk));
+    expander.update(Uint8List.fromList(utf8.encode(info)), 0, info.length);
+    expander.updateByte(0x01); // counter = 1
+    final okm = Uint8List(32);
+    expander.doFinal(okm, 0);
+    
+    return okm;
   }
 
   Uint8List encrypt(Uint8List plaintext) {

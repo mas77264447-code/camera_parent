@@ -161,7 +161,6 @@ class _WebLinkScreenState extends State<WebLinkScreen> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            // عرض الكود (صغير للتوضيح فقط)
                             Text(
                               _code!,
                               style: TextStyle(
@@ -188,8 +187,6 @@ class _WebLinkScreenState extends State<WebLinkScreen> {
                               ],
                             ),
                             const SizedBox(height: 40),
-
-                            // زر نسخ الرابط فقط
                             ElevatedButton.icon(
                               onPressed: _copy,
                               icon: const Icon(Icons.copy, size: 22),

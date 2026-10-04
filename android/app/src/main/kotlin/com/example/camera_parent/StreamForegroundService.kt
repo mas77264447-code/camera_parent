@@ -34,6 +34,7 @@ class StreamForegroundService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var foregroundStarted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -75,9 +76,14 @@ class StreamForegroundService : Service() {
             } else startForeground(NOTIFICATION_ID, notification)
         } catch (e: Exception) {
             Log.e("CameraParent", "startForeground failed mode=$mode", e)
+            if (foregroundStarted) {
+                // الخدمة تعمل أصلاً كخدمة أمامية: لا توقفها بسبب فشل إعادة الترقية
+                return START_STICKY
+            }
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
+        foregroundStarted = true
 
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
@@ -109,13 +115,32 @@ class StreamForegroundService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         val enabled = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
         if (enabled) {
+            // 1) أعد فتح واجهة التطبيق أولاً (كانت في النسخة القديمة):
+            // بدون واجهة ظاهرة يمنع أندرويد الكاميرا في الخلفية فتظهر صورة سوداء.
             try {
-                val restart = Intent(applicationContext, StreamForegroundService::class.java).setAction(ACTION_START)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(restart)
-                else startService(restart)
+                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                    startActivity(launchIntent)
+                }
             } catch (e: Exception) {
-                Log.w("CameraParent", "onTaskRemoved: unable to restart FGS", e)
+                Log.w("CameraParent", "onTaskRemoved: unable to relaunch activity", e)
             }
+
+            // 2) بعد ثانيتين (الواجهة صارت ظاهرة) أعد تشغيل الخدمة
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    val restart = Intent(applicationContext, StreamForegroundService::class.java).setAction(ACTION_START)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(restart)
+                    else startService(restart)
+                } catch (e: Exception) {
+                    Log.w("CameraParent", "onTaskRemoved: unable to restart FGS", e)
+                }
+            }, 2000L)
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
         }
         super.onTaskRemoved(rootIntent)

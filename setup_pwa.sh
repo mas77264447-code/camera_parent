@@ -1,0 +1,210 @@
+#!/bin/bash
+set -e
+
+echo "📁 إنشاء المجلدات..."
+mkdir -p server/public/icons
+
+echo "📄 إنشاء manifest.json..."
+cat > server/public/manifest.json << 'ENDOFFILE'
+{
+  "name": "كاميرا الطفل",
+  "short_name": "كاميرا الطفل",
+  "start_url": "./child.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0e1a",
+  "theme_color": "#0a0e1a",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
+ENDOFFILE
+
+echo "📄 إنشاء sw.js..."
+cat > server/public/sw.js << 'ENDOFFILE'
+const CACHE_NAME = 'child-cam-v1';
+const PRECACHE = ['./child.html','./manifest.json','./icons/icon-192.png','./icons/icon-512.png'];
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE)).catch(() => {}));
+  self.skipWaiting();
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(caches.keys().then((names) => Promise.all(names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n)))));
+  self.clients.claim();
+});
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.pathname.startsWith('/pairing') || url.pathname.startsWith('/signal')) return;
+  event.respondWith(fetch(req).then((res) => {
+    if (res.ok && url.origin === location.origin) {
+      const clone = res.clone();
+      caches.open(CACHE_NAME).then((c) => c.put(req, clone)).catch(() => {});
+    }
+    return res;
+  }).catch(() => caches.match(req)));
+});
+ENDOFFILE
+
+echo "📄 إنشاء child.html..."
+cat > server/public/child.html << 'ENDOFFILE'
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>كاميرا الطفل</title>
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#0a0e1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="كاميرا الطفل">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="icon" type="image/png" href="./icons/icon-192.png">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: #0a0e1a; color: #fff; font-family: -apple-system, 'Segoe UI', Tahoma, sans-serif; min-height: 100vh; overflow: hidden; }
+  .screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+  .screen.hidden { display: none; }
+  .title { font-size: 22px; color: #7ab5ff; margin: 0 0 8px; }
+  .subtitle { font-size: 13px; color: #8a96b8; margin: 0 0 28px; max-width: 320px; line-height: 1.5; }
+  .camera-select { display: flex; gap: 10px; margin-bottom: 22px; }
+  .cam-btn { padding: 12px 20px; border-radius: 12px; background: #161b2e; border: 2px solid #2a3450; color: #8a96b8; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit; }
+  .cam-btn.active { border-color: #4a7aff; color: #7ab5ff; background: #1a2540; }
+  .main-btn { padding: 18px 48px; border-radius: 50px; background: linear-gradient(135deg, #4a7aff, #6b5cff); color: #fff; border: none; font-size: 17px; font-weight: 700; cursor: pointer; box-shadow: 0 8px 24px rgba(74,122,255,0.4); font-family: inherit; }
+  .main-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { margin-top: 18px; font-size: 13px; color: #8a96b8; min-height: 20px; max-width: 320px; }
+  .status.err { color: #ef4444; }
+  .video-wrap { position: fixed; inset: 0; display: none; background: #000; }
+  .video-wrap.active { display: block; }
+  video { width: 100%; height: 100%; object-fit: cover; background: #000; }
+  .live-badge { position: absolute; top: 14px; right: 14px; background: rgba(239,68,68,0.9); color: #fff; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .live-badge::before { content: ''; width: 8px; height: 8px; background: #fff; border-radius: 50%; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .switch-btn { position: absolute; bottom: 24px; right: 24px; width: 54px; height: 54px; border-radius: 50%; background: rgba(0,0,0,0.55); border: 2px solid rgba(255,255,255,0.3); color: #fff; font-size: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
+  .install-banner { position: fixed; bottom: 0; left: 0; right: 0; background: #161b2e; border-top: 1px solid #2a3450; padding: 14px 16px; display: none; align-items: center; gap: 10px; z-index: 100; box-shadow: 0 -4px 20px rgba(0,0,0,0.4); }
+  .install-banner.show { display: flex; }
+  .install-banner .ib-text { flex: 1; font-size: 13px; color: #cfd6e8; line-height: 1.4; }
+  .install-banner .ib-text b { color: #7ab5ff; display: block; margin-bottom: 2px; }
+  .ib-btn { padding: 9px 16px; border-radius: 10px; border: none; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .ib-btn.primary { background: #4a7aff; color: #fff; }
+  .ib-btn.ghost { background: transparent; color: #8a96b8; padding: 9px 10px; }
+  .big-icon { font-size: 56px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="screen" id="setupScreen">
+  <h1 class="title">📹 كاميرا الطفل</h1>
+  <p class="subtitle" id="setupSubtitle">اضغط الزر للبدء</p>
+  <div class="camera-select">
+    <button class="cam-btn active" data-facing="user" onclick="selectCamera('user')">🤳 أمامية</button>
+    <button class="cam-btn" data-facing="environment" onclick="selectCamera('environment')">📷 خلفية</button>
+  </div>
+  <button class="main-btn" id="startBtn" onclick="start()">تشغيل الكاميرا</button>
+  <div class="status" id="statusBox"></div>
+</div>
+<div class="screen hidden" id="invalidScreen">
+  <div class="big-icon">⚠️</div>
+  <h1 class="title">رابط غير مكتمل</h1>
+  <p class="subtitle">اطلب من والدك رابطاً جديداً.</p>
+</div>
+<div class="video-wrap" id="videoWrap">
+  <video id="localVideo" autoplay muted playsinline></video>
+  <div class="live-badge">بث مباشر</div>
+  <button class="switch-btn" onclick="switchCamera()">🔄</button>
+</div>
+<div class="install-banner" id="installBanner">
+  <div class="ib-text"><b>📲 ثبّت التطبيق</b>افتحه لاحقاً من أيقونة</div>
+  <button class="ib-btn primary" onclick="installPWA()">تثبيت</button>
+  <button class="ib-btn ghost" onclick="dismissBanner()">لاحقاً</button>
+</div>
+<script>
+const BASE = window.location.origin;
+const WS_URL = BASE.replace(/^http/, 'ws') + '/signal';
+const URL_CODE = new URLSearchParams(location.search).get('code');
+let ws = null, localStream = null, deviceToken = null, currentFacing = 'user';
+const peerConnections = {};
+let pingTimer = null, wakeLock = null, deferredInstallPrompt = null;
+let bannerDismissed = false, streamStartedAt = 0;
+const statusBox = document.getElementById('statusBox');
+const setupScreen = document.getElementById('setupScreen');
+const invalidScreen = document.getElementById('invalidScreen');
+const videoWrap = document.getElementById('videoWrap');
+const videoEl = document.getElementById('localVideo');
+const installBanner = document.getElementById('installBanner');
+const setupSubtitle = document.getElementById('setupSubtitle');
+function setStatus(t, e=false){statusBox.textContent=t||'';statusBox.className='status'+(e?' err':'');}
+function selectCamera(f){currentFacing=f;document.querySelectorAll('.cam-btn').forEach(b=>b.classList.toggle('active',b.dataset.facing===f));}
+function mediaConstraints(){return{video:{facingMode:currentFacing,width:{ideal:640},height:{ideal:480},frameRate:{ideal:24}},audio:true};}
+async function acquireWakeLock(){if(!('wakeLock'in navigator)||wakeLock)return;try{wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>{wakeLock=null;if(document.visibilityState==='visible'&&localStream)setTimeout(acquireWakeLock,3000);});}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&localStream){acquireWakeLock();if(!ws||ws.readyState===WebSocket.CLOSED)connectWebSocket();}});
+async function start(){const btn=document.getElementById('startBtn');btn.disabled=true;setStatus('جاري التحضير...');try{if(!deviceToken){if(!URL_CODE||!/^\d{6}$/.test(URL_CODE)){showInvalid();return;}setStatus('جاري الربط...');const res=await fetch(BASE+'/pairing/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:URL_CODE,device_name:'جهاز الطفل'})});const data=await res.json();if(!res.ok){setStatus(data.error||'الكود غير صحيح',true);btn.disabled=false;return;}deviceToken=data.data.device_token;localStorage.setItem('cw_device_token',deviceToken);localStorage.setItem('cw_device_name',data.data.device_name||'جهاز الطفل');}setStatus('بانتظار الموافقة...');localStream=await navigator.mediaDevices.getUserMedia(mediaConstraints());videoEl.srcObject=localStream;setupScreen.classList.add('hidden');videoWrap.classList.add('active');setStatus('');streamStartedAt=Date.now();acquireWakeLock();connectWebSocket();setTimeout(maybeShowInstallBanner,3000);}catch(e){setStatus('تعذر تشغيل الكاميرا: '+(e.message||e.name),true);btn.disabled=false;}}
+function showInvalid(){setupScreen.classList.add('hidden');invalidScreen.classList.remove('hidden');}
+async function switchCamera(){if(!localStream)return;const nf=currentFacing==='user'?'environment':'user';const oldS=localStream;try{const ns=await navigator.mediaDevices.getUserMedia({video:{facingMode:nf,width:{ideal:640},height:{ideal:480},frameRate:{ideal:24}},audio:true});currentFacing=nf;localStream=ns;videoEl.srcObject=ns;const nv=ns.getVideoTracks()[0],na=ns.getAudioTracks()[0];for(const id in peerConnections){const pc=peerConnections[id];for(const s of pc.getSenders()){if(!s.track)continue;if(s.track.kind==='video'&&nv)try{await s.replaceTrack(nv);}catch{}if(s.track.kind==='audio'&&na)try{await s.replaceTrack(na);}catch{}}}oldS.getTracks().forEach(t=>t.stop());}catch(e){}}
+function connectWebSocket(){if(ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING))return;ws=new WebSocket(WS_URL);ws.onopen=()=>{ws.send(JSON.stringify({type:'register',role:'broadcaster',deviceToken}));startPing();};ws.onmessage=async(e)=>{let msg;try{msg=JSON.parse(e.data);}catch{return;}switch(msg.type){case'join-request':ws.send(JSON.stringify({type:'approve-viewer',target:msg.viewerId}));await createOffer(msg.viewerId);break;case'viewer-joined':await createOffer(msg.viewerId);break;case'answer':await handleAnswer(msg);break;case'ice':await handleIce(msg);break;case'viewer-left':{const pc=peerConnections[msg.viewerId];if(pc){pc.close();delete peerConnections[msg.viewerId];}break;}case'request-restart-ice':{const o=peerConnections[msg.viewerId];if(o){o.close();delete peerConnections[msg.viewerId];}await createOffer(msg.viewerId);break;}}};ws.onclose=()=>setTimeout(connectWebSocket,3000);ws.onerror=()=>{};}
+function startPing(){clearInterval(pingTimer);pingTimer=setInterval(()=>{if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'ping'}));},15000);}
+async function createOffer(vid){if(!localStream)return;if(peerConnections[vid])try{peerConnections[vid].close();}catch{}const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]});peerConnections[vid]=pc;localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));pc.onicecandidate=(e)=>{if(e.candidate&&ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'ice',target:vid,candidate:{candidate:e.candidate.candidate,sdpMid:e.candidate.sdpMid,sdpMLineIndex:e.candidate.sdpMLineIndex}}));};pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed'||pc.connectionState==='closed')delete peerConnections[vid];};const offer=await pc.createOffer();await pc.setLocalDescription(offer);ws.send(JSON.stringify({type:'offer',viewerId:vid,target:vid,sdp:offer.sdp}));}
+async function handleAnswer(msg){const vid=msg.from||msg.viewerId;const pc=peerConnections[vid];if(!pc)return;try{await pc.setRemoteDescription({type:'answer',sdp:msg.sdp});}catch{}}
+async function handleIce(msg){const pc=peerConnections[msg.from];if(!pc||!msg.candidate)return;try{await pc.addIceCandidate({candidate:msg.candidate.candidate,sdpMid:msg.candidate.sdpMid,sdpMLineIndex:msg.candidate.sdpMLineIndex});}catch{}}
+function isStandalone(){return window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true;}
+function isIOS(){return /iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);}
+function maybeShowInstallBanner(){if(bannerDismissed||isStandalone())return;if(localStorage.getItem('cw_install_dismissed')==='1')return;if(deferredInstallPrompt||isIOS())installBanner.classList.add('show');}
+function dismissBanner(){bannerDismissed=true;installBanner.classList.remove('show');localStorage.setItem('cw_install_dismissed','1');}
+async function installPWA(){if(deferredInstallPrompt){deferredInstallPrompt.prompt();const{outcome}=await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;installBanner.classList.remove('show');if(outcome==='dismissed')localStorage.setItem('cw_install_dismissed','1');return;}if(isIOS()){alert('1. اضغط زر المشاركة\n2. إضافة إلى الشاشة الرئيسية\n3. إضافة');dismissBanner();}}
+window.addEventListener('beforeinstallprompt',(e)=>{e.preventDefault();deferredInstallPrompt=e;if(localStream&&streamStartedAt)setTimeout(maybeShowInstallBanner,1500);});
+window.addEventListener('appinstalled',()=>{installBanner.classList.remove('show');deferredInstallPrompt=null;});
+if('serviceWorker'in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(e=>console.warn('SW:',e));});}
+window.addEventListener('load',async()=>{const saved=localStorage.getItem('cw_device_token');if(saved){deviceToken=saved;setupSubtitle.textContent=localStorage.getItem('cw_device_name')||'جهاز الطفل';try{localStream=await navigator.mediaDevices.getUserMedia(mediaConstraints());videoEl.srcObject=localStream;setupScreen.classList.add('hidden');videoWrap.classList.add('active');streamStartedAt=Date.now();acquireWakeLock();connectWebSocket();setTimeout(maybeShowInstallBanner,3000);return;}catch(e){setStatus('اضغط الزر للسماح بالكاميرا');setupSubtitle.textContent='مرحباً بعودتك';document.getElementById('startBtn').disabled=false;return;}}if(URL_CODE&&/^\d{6}$/.test(URL_CODE))setStatus('');else showInvalid();});
+</script>
+</body>
+</html>
+ENDOFFILE
+
+echo "🎨 إنشاء الأيقونات..."
+python3 << 'PYEOF'
+import zlib, struct
+def make_png(w, h, fn):
+    cx, cy = w/2, h/2
+    outer_r = w / 3.2
+    inner_r = w / 5
+    rows = []
+    for y in range(h):
+        row = bytearray([0])
+        for x in range(w):
+            t = (x + y) / (w + h - 2)
+            r = int(74 + (107 - 74) * t)
+            g = int(122 + (92 - 122) * t)
+            b = 255
+            d = ((x - cx)**2 + (y - cy)**2) ** 0.5
+            if d < outer_r: r, g, b = 255, 255, 255
+            if d < inner_r:
+                r = int(74 + (107 - 74) * t)
+                g = int(122 + (92 - 122) * t)
+                b = 255
+            row += bytes([r, g, b])
+        rows.append(bytes(row))
+    raw = b''.join(rows)
+    def ch(typ, data):
+        c = struct.pack('>I', len(data)) + typ + data
+        crc = zlib.crc32(typ + data) & 0xffffffff
+        return c + struct.pack('>I', crc)
+    png = b'\x89PNG\r\n\x1a\n'
+    png += ch(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+    png += ch(b'IDAT', zlib.compress(raw, 9))
+    png += ch(b'IEND', b'')
+    with open(fn, 'wb') as f: f.write(png)
+make_png(192, 192, 'server/public/icons/icon-192.png')
+make_png(512, 512, 'server/public/icons/icon-512.png')
+print('OK')
+PYEOF
+
+echo ""
+echo "✅ تم! الملفات:"
+ls -la server/public/
+ls -la server/public/icons/
