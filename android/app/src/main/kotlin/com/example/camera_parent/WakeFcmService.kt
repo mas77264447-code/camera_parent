@@ -1,6 +1,11 @@
 package com.example.camera_parent
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
+import android.provider.Settings
+import androidx.core.app.NotificationCompat
 import android.os.Build
 import android.util.Log
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -12,6 +17,8 @@ class WakeFcmService : FirebaseMessagingService() {
         private const val TAG = "WakeFcm"
         private const val PREFS = "camera_parent_service"
         private const val KEY_FCM_TOKEN = "fcm_token"
+        private const val WAKE_CHANNEL_ID = "camera_parent_wake_channel"
+        private const val WAKE_NOTIFICATION_ID = 4822
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
@@ -39,6 +46,10 @@ class WakeFcmService : FirebaseMessagingService() {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start FGS", e)
             }
+
+            // الكاميرا لا تعمل من الخلفية بدون واجهة ظاهرة (تظهر صورة سوداء)،
+            // لذلك نحاول إظهار واجهة التطبيق.
+            bringAppToForeground()
         }
     }
 
@@ -48,5 +59,60 @@ class WakeFcmService : FirebaseMessagingService() {
             .edit()
             .putString(KEY_FCM_TOKEN, token)
             .apply()
+    }
+
+    private fun bringAppToForeground() {
+        val launch = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        } ?: return
+
+        val canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            Settings.canDrawOverlays(this)
+
+        if (canOverlay) {
+            try {
+                startActivity(launch)
+                Log.i(TAG, "Activity launched directly (overlay permission granted)")
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "Direct activity launch blocked", e)
+            }
+        }
+
+        // بديل: إشعار بملء الشاشة (يفتح الواجهة عند قفل الشاشة، أو إشعار منبثق عند الضغط عليه)
+        try {
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        WAKE_CHANNEL_ID,
+                        "تشغيل الكاميرا",
+                        NotificationManager.IMPORTANCE_HIGH
+                    )
+                )
+            }
+            val pi = PendingIntent.getActivity(
+                this, 1, launch,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val n = NotificationCompat.Builder(this, WAKE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setContentTitle("طلب تشغيل الكاميرا")
+                .setContentText("اضغط لفتح التطبيق وبدء البث")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setFullScreenIntent(pi, true)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(WAKE_NOTIFICATION_ID, n)
+            Log.i(TAG, "Full-screen wake notification posted")
+        } catch (e: Exception) {
+            Log.w(TAG, "Wake notification failed", e)
+        }
     }
 }

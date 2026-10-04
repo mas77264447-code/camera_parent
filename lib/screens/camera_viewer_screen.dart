@@ -42,6 +42,10 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   Timer? _pingTimer;
   Timer? _noMediaWatchdog;
   Timer? _diagTimer;
+  Timer? _rendererBindTimer;
+  Timer? _videoFrameWatchdog;
+  int _videoStallChecks = 0;
+  bool _stallIceRestartTried = false;
   String _diag = '';
 
   int _reconnectAttempts = 0;
@@ -101,13 +105,18 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     if (pc != null) {
       try {
         final reports = await pc.getStats();
+        var sawVideo = false;
         for (final r in reports) {
           if (r.type != 'inbound-rtp') continue;
           final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
           if (kind != 'video') continue;
+          sawVideo = true;
           lines.add('rx bytes=${r.values['bytesReceived']} pkts=${r.values['packetsReceived']} lost=${r.values['packetsLost']}');
           lines.add('frames rx=${r.values['framesReceived']} dec=${r.values['framesDecoded']} drop=${r.values['framesDropped']}');
           lines.add('size=${r.values['frameWidth']}x${r.values['frameHeight']}');
+        }
+        if (!sawVideo) {
+          lines.add('rx: NO video inbound-rtp (reports=${reports.length})');
         }
       } catch (e) {
         lines.add('stats error');
@@ -115,6 +124,79 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
     if (!mounted || _disposed) return;
     setState(() => _diag = lines.join('\n'));
+  }
+
+  /// يربط الـ stream بالـ renderer مرة واحدة فقط (debounce) حتى لو وصل onTrack
+  /// للصوت ثم للفيديو، ثم يراقب وصول أول إطار فيديو فعلي.
+  void _bindRemoteStream(MediaStream stream) {
+    _rendererBindTimer?.cancel();
+    try { _remoteRenderer.srcObject = null; } catch (_) {}
+
+    _rendererBindTimer = Timer(const Duration(milliseconds: 150), () {
+      if (_disposed || !mounted || !identical(_remoteStream, stream)) return;
+      try {
+        _remoteRenderer.srcObject = stream;
+        setState(() {});
+        debugPrint('[Viewer] renderer bound to stream ${stream.id}');
+      } catch (e) {
+        debugPrint('[Viewer] renderer bind failed: $e');
+      }
+      _startVideoFrameWatchdog();
+    });
+  }
+
+  /// إذا الفيديو موجود لكن الـ renderer ما زال 0x0:
+  /// بعد ~4 ثواني يعيد الربط، وبعد ~10 ثواني يطلب إعادة ICE مرة واحدة.
+  void _startVideoFrameWatchdog() {
+    _videoFrameWatchdog?.cancel();
+    _videoStallChecks = 0;
+    _stallIceRestartTried = false;
+
+    _videoFrameWatchdog = Timer.periodic(const Duration(seconds: 2), (timer) {
+      if (_disposed || !mounted) {
+        timer.cancel();
+        return;
+      }
+      final stream = _remoteStream;
+      if (stream == null) {
+        timer.cancel();
+        return;
+      }
+      if (stream.getVideoTracks().isEmpty) return;
+
+      if (_remoteRenderer.videoWidth > 0) {
+        debugPrint('[Watchdog] video OK ${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}');
+        timer.cancel();
+        return;
+      }
+
+      _videoStallChecks++;
+      debugPrint('[Watchdog] renderer still 0x0 (check $_videoStallChecks)');
+
+      if (_videoStallChecks == 2) {
+        try {
+          _remoteRenderer.srcObject = null;
+          Future.delayed(const Duration(milliseconds: 100), () {
+            if (_disposed || !mounted || !identical(_remoteStream, stream)) return;
+            try {
+              _remoteRenderer.srcObject = stream;
+              setState(() {});
+            } catch (_) {}
+          });
+        } catch (_) {}
+      } else if (_videoStallChecks >= 5 && !_stallIceRestartTried) {
+        _stallIceRestartTried = true;
+        debugPrint('[Watchdog] no video frames after ~10s — ICE restart');
+        _tryIceRestart();
+      }
+    });
+  }
+
+  void _cancelRendererTimers() {
+    _rendererBindTimer?.cancel();
+    _rendererBindTimer = null;
+    _videoFrameWatchdog?.cancel();
+    _videoFrameWatchdog = null;
   }
 
   void _refreshRemoteVideoTexture() {
@@ -319,6 +401,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         _onSignalMessage,
         onDone: () async {
           if (_rejected) return;
+          _cancelRendererTimers();
           try { await _pc?.close(); } catch (_) {}
           _pc = null;
           _remoteStream = null;
@@ -402,6 +485,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _pendingRemoteIce.clear();
     _reconnectAttempts = 0;
     _consecutiveFailures = 0;
+    _cancelRendererTimers();
     try { _remoteRenderer.srcObject = null; } catch (_) {}
 
     if (mounted) {
@@ -480,6 +564,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       try { await oldPc.close(); } catch (_) {}
     }
     _remoteStream = null;
+    _cancelRendererTimers();
     _textureRefreshedForThisTrack = false;
     _remoteDescSet = false;
     _pendingRemoteIce.clear();
@@ -489,11 +574,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       final pc = await createPeerConnection({"iceServers": _iceServers});
       _pc = pc;
 
-      // ✅✅✅ التعديل: onTrack محسّن
       pc.onTrack = (event) {
-        debugPrint('[PC] onTrack received');
-        debugPrint('[PC] kind=${event.track.kind}');
-        debugPrint('[PC] streams count=${event.streams.length}');
+        if (_pc != pc) return; // callback قديم من اتصال سابق
+        debugPrint('[PC] onTrack kind=${event.track.kind} streams=${event.streams.length}');
 
         if (event.streams.isEmpty) {
           debugPrint('[PC] onTrack called but streams is empty!');
@@ -501,9 +584,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
 
         final stream = event.streams[0];
-        debugPrint('[PC] stream id=${stream.id}');
-        debugPrint('[PC] video tracks=${stream.getVideoTracks().length}');
-        debugPrint('[PC] audio tracks=${stream.getAudioTracks().length}');
+        debugPrint('[PC] stream id=${stream.id} '
+            'video=${stream.getVideoTracks().length} audio=${stream.getAudioTracks().length}');
 
         _remoteStream = stream;
         _noMediaWatchdog?.cancel();
@@ -511,34 +593,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
         if (mounted) setState(() => _status = "متصل ✓");
 
-        // ✅✅✅ إعادة تعيين renderer بقوة
         _textureRefreshedForThisTrack = true;
-        try {
-          _remoteRenderer.srcObject = null;
-        } catch (_) {}
-
-        Future.delayed(const Duration(milliseconds: 150), () {
-          if (!mounted || _remoteStream == null) return;
-          try {
-            _remoteRenderer.srcObject = _remoteStream;
-            setState(() {});
-            debugPrint('[PC] ✅ renderer updated with remote stream');
-          } catch (e) {
-            debugPrint('[PC] renderer update failed: $e');
-          }
-        });
-
-        // إعادة إضافية بعد 1.5 ثانية
-        Future.delayed(const Duration(milliseconds: 1500), () {
-          if (!mounted || _remoteStream == null) return;
-          if (_remoteRenderer.srcObject == null) {
-            debugPrint('[PC] renderer still null — retrying');
-            try {
-              _remoteRenderer.srcObject = _remoteStream;
-              setState(() {});
-            } catch (_) {}
-          }
-        });
+        _bindRemoteStream(stream);
       };
 
       pc.onIceCandidate = (candidate) {
@@ -602,6 +658,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   Future<void> _handleBroadcasterLeft() async {
+    _cancelRendererTimers();
     try { _remoteRenderer.srcObject = null; } catch (_) {}
     final oldPc = _pc;
     _pc = null;
@@ -667,6 +724,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
     _noMediaWatchdog?.cancel();
+    _cancelRendererTimers();
 
     final socket = _ws;
     try {
@@ -695,6 +753,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _pingTimer?.cancel();
     _diagTimer?.cancel();
     _noMediaWatchdog?.cancel();
+    _cancelRendererTimers();
 
     try {
       if (_ws?.readyState == WebSocket.open) {
@@ -755,6 +814,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
                   Positioned(
                     top: 4,
                     left: 4,
+                    right: 4,
                     child: IgnorePointer(
                       child: Container(
                         padding: const EdgeInsets.all(4),

@@ -440,6 +440,27 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "hasOverlayPermission" -> {
+                    result.success(
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                            Settings.canDrawOverlays(this)
+                    )
+                }
+
+                "requestOverlayPermission" -> {
+                    try {
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                        )
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+
                 "openAutoStartSettings" -> {
                     try {
                         val intent = Intent(
