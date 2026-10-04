@@ -9,6 +9,7 @@ import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserve
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'camera_service.dart';
 import 'connection_state_manager.dart';
 import 'file_access_service.dart';
@@ -943,6 +944,10 @@ class StreamService {
           _pendingCameraStart = true;
           final ok = await _bringToForeground();
           if (!ok) {
+            // اترك _pendingCameraStart = true، حتى لو فتح المستخدم
+            // التطبيق يدوياً، سيفتح _onAppResumed الكاميرا فوراً.
+            debugPrint('[StreamService] bringToForeground failed — '
+                'camera will start when app returns to foreground');
             return;
           }
           // _onAppResumed ستفتح الكاميرا وترسل العرض
@@ -1052,7 +1057,8 @@ class StreamService {
     }
   }
 
-  /// معدّلة بالكامل: تمنع فتح الكاميرا في الخلفية
+  /// معدّلة: تمنع فتح الكاميرا في الخلفية، وتحفظ _pendingCameraStart
+  /// حتى تُفتح الكاميرا لاحقاً عند عودة التطبيق للمقدمة.
   Future<void> _startMediaSource() async {
     if (localStream != null) {
       _updateStatus("جاهز للبث!");
@@ -1075,7 +1081,8 @@ class StreamService {
       final ok = await _bringToForeground();
       if (!ok) {
         _updateStatus("مطلوب فتح التطبيق على الجهاز لتشغيل الكاميرا");
-        _pendingCameraStart = false;
+        // ✅ لا تُلغِ _pendingCameraStart — اتركها true حتى تُفتح
+        // الكاميرا تلقائياً عند عودة المستخدم للتطبيق.
       }
       return;
     }
