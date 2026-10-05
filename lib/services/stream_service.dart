@@ -1133,33 +1133,34 @@ class StreamService {
     }
   }
 
-  /// يطلب من الجانب الأصلي إحضار التطبيق للمقدمة (مع إعادة محاولة).
+  /// ✅ معدّلة: يطلب من الجانب الأصلي إحضار التطبيق للمقدمة.
+  /// لا يفحص صلاحية Overlay أولاً — الجانب الأصلي يتولّى كل الطرق
+  /// (startActivity مباشر + Full-Screen Intent).
   Future<bool> _bringToForeground({int maxAttempts = 3}) async {
     if (_foregroundRequestInFlight) return false;
     _foregroundRequestInFlight = true;
     try {
       const channel = MethodChannel('camera_parent/foreground_service');
 
-      final has =
-          await channel.invokeMethod<bool>('hasOverlayPermission') ?? false;
-      if (!has) {
-        debugPrint('[StreamService] NO overlay permission');
-        return false;
-      }
-
       for (int i = 0; i < maxAttempts; i++) {
         try {
           final ok = await channel.invokeMethod<bool>('bringToForeground');
-          await Future.delayed(const Duration(milliseconds: 800));
+          debugPrint('[StreamService] bring attempt ${i + 1} → $ok');
+
+          // انتظر لنتأكد أن التطبيق فعلاً في المقدمة
+          await Future.delayed(const Duration(milliseconds: 900));
           final state = WidgetsBinding.instance.lifecycleState;
           if (state == AppLifecycleState.resumed) {
+            debugPrint('[StreamService] bringToForeground SUCCESS');
             return true;
           }
+          debugPrint('[StreamService] still in background (state=$state)');
         } catch (e) {
           debugPrint('[StreamService] bring attempt ${i + 1} error: $e');
         }
         await Future.delayed(const Duration(milliseconds: 700));
       }
+      debugPrint('[StreamService] bringToForeground FAILED after $maxAttempts');
       return false;
     } finally {
       _foregroundRequestInFlight = false;
