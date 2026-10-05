@@ -1434,9 +1434,10 @@ const heartbeatInterval = setInterval(() => {
     const client = clientId ? clients[clientId] : null;
 
     if (client && now - client.lastMessageAt > WS_IDLE_TIMEOUT) {
+      console.log("[ws] terminate: idle", client.role);
       return ws.terminate();
     }
-    if (ws.isAlive === false) return ws.terminate();
+    if (ws.isAlive === false) { console.log("[ws] terminate: no pong"); return ws.terminate(); }
     ws.isAlive = false;
     try { ws.ping(); } catch (_) {}
   });

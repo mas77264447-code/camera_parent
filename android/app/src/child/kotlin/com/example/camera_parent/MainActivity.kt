@@ -50,11 +50,12 @@ class MainActivity : FlutterActivity() {
     override fun shouldDestroyEngineWithHost(): Boolean {
         return false
     }
+
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
     ) {
 
-                super.configureFlutterEngine(flutterEngine)
+        super.configureFlutterEngine(flutterEngine)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -400,6 +401,52 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
+                // ✅ جديد: إحضار التطبيق للمقدمة عند وصول طلب مشاهدة
+                "bringToForeground" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                            !Settings.canDrawOverlays(this)
+                        ) {
+                            Log.w(
+                                "MainActivity",
+                                "bringToForeground: NO_OVERLAY permission"
+                            )
+                            result.error(
+                                "NO_OVERLAY",
+                                "صلاحية العرض فوق التطبيقات مطلوبة",
+                                null
+                            )
+                            return@setMethodCallHandler
+                        }
+
+                        val intent = Intent(
+                            this,
+                            MainActivity::class.java
+                        ).apply {
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION
+                            )
+                        }
+                        startActivity(intent)
+                        Log.i("MainActivity", "bringToForeground: OK")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "bringToForeground failed", e)
+                        result.error("BRING_FAILED", e.message, null)
+                    }
+                }
+
+                // ✅ جديد: هل صلاحية Overlay ممنوحة؟
+                "hasOverlayPermission" -> {
+                    val has =
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                            Settings.canDrawOverlays(this)
+                    result.success(has)
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -494,13 +541,7 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ✅✅✅ FileAccessPlugin الآن مسجَّل في
-        // CameraParentApplication.onCreate() لضمان عمله حتى بدون
-        // Activity (عند إعادة التشغيل من الخدمة في الخلفية).
-        // لا نعيد تسجيله هنا لتجنّب التسجيل المزدوج.
-
-
-        // ===== قناة MANAGE_EXTERNAL_STORAGE (الوصول لجميع الملفات) =====
+        // ===== قناة MANAGE_EXTERNAL_STORAGE =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             MANAGE_STORAGE_CHANNEL
