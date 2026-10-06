@@ -255,6 +255,10 @@ class StreamService {
     _screenAutoStopTimer?.cancel();
     _screenAutoStopTimer = null;
 
+    // ✅ تصفير حالات الانتظار
+    _pendingCameraStart = false;
+    _foregroundRequestInFlight = false;
+
     try {
       await _ws?.close();
     } catch (_) {}
@@ -313,6 +317,8 @@ class StreamService {
     _localStreamCtrl.add(null);
   }
 
+  /// ✅ معدّلة: لا تفتح الكاميرا في الخلفية (مثلاً عند الإقلاع).
+  /// سيُفتح تلقائياً عند وصول طلب مشاهدة، أو عند فتح المستخدم للتطبيق.
   Future<void> ensureCameraStarted({bool force = false}) async {
     if (!_running || _broadcastScreen || _broadcastFiles) return;
 
@@ -320,6 +326,15 @@ class StreamService {
       debugPrint('[StreamService] ensureCameraStarted(force) — re-acquiring');
       await _forceCleanupStream();
     } else if (localStream != null) {
+      return;
+    }
+
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    final isForeground = lifecycleState == AppLifecycleState.resumed;
+    if (!isForeground) {
+      debugPrint(
+          '[StreamService] ensureCameraStarted: in background, deferring');
+      _pendingCameraStart = true;
       return;
     }
 
@@ -1133,7 +1148,7 @@ class StreamService {
     }
   }
 
-  /// ✅ معدّلة: يطلب من الجانب الأصلي إحضار التطبيق للمقدمة.
+  /// يطلب من الجانب الأصلي إحضار التطبيق للمقدمة.
   /// لا يفحص صلاحية Overlay أولاً — الجانب الأصلي يتولّى كل الطرق
   /// (startActivity مباشر + Full-Screen Intent).
   Future<bool> _bringToForeground({int maxAttempts = 3}) async {
