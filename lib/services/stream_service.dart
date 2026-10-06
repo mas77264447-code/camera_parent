@@ -255,16 +255,24 @@ class StreamService {
     _screenAutoStopTimer?.cancel();
     _screenAutoStopTimer = null;
 
-    try {
-      await _ws?.close();
-    } catch (_) {}
+    if (_lifecycleObserver != null) {
+      try {
+        WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
+        debugPrint('[StreamService] lifecycle observer removed');
+      } catch (e) {
+        debugPrint('[StreamService] failed to remove observer: $e');
+      }
+      _lifecycleObserver = null;
+    }
+
+    try { await _ws?.close(); } catch (_) {}
     _ws = null;
 
     await _closeAllPeerConnections();
     await _forceCleanupStream();
     _canceledDownloads.clear();
 
-    _updateStatus("متوقف");
+    _updateStatus('متوقف');
     ConnectionStateManager.instance.update(ConnectionStatus.idle);
   }
 
@@ -1517,5 +1525,30 @@ class StreamService {
   void clearError() {
     _error = null;
     _canRetry = false;
+  }
+}
+
+  Future<void> _startMediaSourceSafe() async {
+    try {
+      debugPrint('[StreamService] محاولة بدء مصدر الوسائط...');
+      await _startMediaSource();
+      
+      if (localStream != null && localStream!.getTracks().isNotEmpty) {
+        debugPrint('[StreamService] ✅ نجح تشغيل الكاميرا: ${localStream?.id}');
+        final videoTracks = localStream?.getVideoTracks().length ?? 0;
+        final audioTracks = localStream?.getAudioTracks().length ?? 0;
+        debugPrint('[StreamService] المسارات: v=$videoTracks، a=$audioTracks');
+      } else {
+        throw Exception('No tracks in media source');
+      }
+    } catch (e, st) {
+      debugPrint('[StreamService] ❌ فشل حرج: $e\n$st');
+      _updateStatus('فشل تشغيل الكاميرا: $e');
+      
+      await _forceCleanupStream();
+      if (_running) {
+        _scheduleReconnect();
+      }
+    }
   }
 }
