@@ -1,9 +1,9 @@
-name: Build APK
+name: Build APK with WebRTC Fixes
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, production-merge] # ✅ تمت إضافة فرعك production-merge
+    branches: [main, production-merge]
     paths:
       - 'lib/**'
       - 'android/**'
@@ -11,13 +11,19 @@ on:
       - '.github/workflows/build-apk.yml'
 
 permissions:
-  contents: write # ✅ ضروري لإنشاء Release تلقائي
+  contents: write
 
 jobs:
   build-parent:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Apply WebRTC Fixes
+        run: |
+          sed -i 's/}, 1500L)/}, 2500L)/g' android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt
+          echo "✅ Applied: StreamForegroundService 1500ms → 2500ms"
+          grep -n "2500L" android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt
 
       - uses: subosito/flutter-action@v2
         with:
@@ -28,7 +34,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: 'gradle' # ✅ تسريع البناء
+          cache: 'gradle'
 
       - name: Verify google-services.json
         run: |
@@ -36,20 +42,13 @@ jobs:
           echo "✅ google-services.json present"
 
       - run: flutter pub get
-
-      - name: Reduce Gradle heap
-        run: |
-          sed -i 's/-Xmx8G/-Xmx3G/; s/MaxMetaspaceSize=4G/MaxMetaspaceSize=1G/' android/gradle.properties || true
-
       - run: flutter clean
-
-      - name: Build parent APK
-        run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
+      - run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
 
       - uses: actions/upload-artifact@v4
         with:
           name: camera-parent-apk
-          path: build/app/outputs/flutter-apk/*.apk # ✅ استخدام * لضمان رفع أي ملف APK ناتج
+          path: build/app/outputs/flutter-apk/*.apk
           retention-days: 30
 
   build-child:
@@ -74,15 +73,8 @@ jobs:
           echo "✅ google-services.json present"
 
       - run: flutter pub get
-
-      - name: Reduce Gradle heap
-        run: |
-          sed -i 's/-Xmx8G/-Xmx3G/; s/MaxMetaspaceSize=4G/MaxMetaspaceSize=1G/' android/gradle.properties || true
-
       - run: flutter clean
-
-      - name: Build child APK
-        run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+      - run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -90,9 +82,8 @@ jobs:
           path: build/app/outputs/flutter-apk/*.apk
           retention-days: 30
 
-  # ✅ وظيفة جديدة: إنشاء Release ووضع ملفات APK فيه للتحميل المباشر
   create-release:
-    needs: [build-parent, build-child] # تنتظر حتى ينتهي بناء التطبيقين
+    needs: [build-parent, build-child]
     runs-on: ubuntu-latest
     steps:
       - name: Download all APK artifacts
@@ -105,7 +96,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: all-apks/**/*.apk
-          tag_name: build-${{ github.run_number }} # إنشاء رقم إصدار تلقائي
-          name: Release Build ${{ github.run_number }}
+          tag_name: build-${{ github.run_number }}
+          name: Release Build ${{ github.run_number }} - WebRTC Fixes Applied
           draft: false
           prerelease: false
+          body: |
+            # Build ${{ github.run_number }}
+            
+            ✅ **Fixes Applied:**
+            - StreamForegroundService: 1500ms → 2500ms
+            - WebRTC initialization improved
+            
+            **Download & Install:**
+            - app-parent-release.apk
+            - app-child-release.apk
