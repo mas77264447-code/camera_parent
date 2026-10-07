@@ -94,7 +94,7 @@ class StreamForegroundService : Service() {
         // ويبقى StreamService غير مُشغَّل.
         Handler(Looper.getMainLooper()).postDelayed({
             if (!isStopped()) FlutterServiceBridge.startAgent()
-        }, 1500L)
+        }, 2500L)
 
         return START_STICKY
     }
