@@ -1,5 +1,6 @@
 package com.example.camera_parent
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -30,11 +32,19 @@ class StreamForegroundService : Service() {
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_MODE = "mode"
-        private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L
+        // تأخير تشغيل الوكيل بعد startForeground، ليكون ServiceAgentChannel جاهزاً على الأجهزة البطيئة
+        private const val START_AGENT_DELAY_MS = 2500L
+        // مهلة إعادة التشغيل عبر AlarmManager بعد سحب التطبيق من الحالات الأخيرة
+        private const val RESTART_ALARM_DELAY_MS = 3000L
+        private const val RESTART_REQUEST_CODE = 4822
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var foregroundStarted = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val startAgentRunnable = Runnable {
+        if (!isStopped()) FlutterServiceBridge.startAgent()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -45,7 +55,9 @@ class StreamForegroundService : Service() {
         val action = intent?.action ?: ACTION_START
 
         if (action == ACTION_STOP) {
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_ENABLED, false).apply()
+            setEnabled(false)
+            handler.removeCallbacks(startAgentRunnable)
+            cancelRestartAlarm()
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
@@ -54,12 +66,11 @@ class StreamForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        val mode = intent?.getStringExtra(EXTRA_MODE)
-            ?: getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_MODE, MODE_CAMERA)
-            ?: MODE_CAMERA
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        // getString مع قيمة افتراضية لا يُرجع null، فلا حاجة لـ elvis إضافي
+        val mode = intent?.getStringExtra(EXTRA_MODE) ?: prefs.getString(KEY_MODE, MODE_CAMERA)!!
 
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putBoolean(KEY_ENABLED, true).putString(KEY_MODE, mode).apply()
+        prefs.edit().putBoolean(KEY_ENABLED, true).putString(KEY_MODE, mode).apply()
 
         val notification = buildNotification()
 
@@ -68,18 +79,23 @@ class StreamForegroundService : Service() {
                 val type = when (mode) {
                     MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                     MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    // MODE_FILES: نمرر 0 فيستخدم النظام الأنواع المعلنة في المانيفست
                     MODE_FILES -> 0
                     else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
                 if (type == 0) startForeground(NOTIFICATION_ID, notification)
                 else startForeground(NOTIFICATION_ID, notification, type)
-            } else startForeground(NOTIFICATION_ID, notification)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
         } catch (e: Exception) {
             Log.e("CameraParent", "startForeground failed mode=$mode", e)
             if (foregroundStarted) {
-                // الخدمة تعمل أصلاً كخدمة أمامية: لا توقفها بسبب فشل إعادة الترقية
+                // الخدمة تعمل أصلاً كخدمة أمامية: لا نوقفها بسبب فشل إعادة الترقية
                 return START_STICKY
             }
+            // فشلت البداية فعلياً: نحدّث الحالة المحفوظة حتى لا تُعرض الخدمة كأنها تعمل
+            setEnabled(false)
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
@@ -88,15 +104,15 @@ class StreamForegroundService : Service() {
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
 
-        // ✅ زيادة التأخير من 300ms إلى 1500ms لضمان أن
-        // ServiceAgentChannel مسجَّل بالكامل قبل invokeMethod("start").
-        // بدون هذا، على الأجهزة البطيئة قد يفشل الاستدعاء بصمت
-        // ويبقى StreamService غير مُشغَّل.
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!isStopped()) FlutterServiceBridge.startAgent()
-        }, 2500L)
+        // إلغاء أي تشغيل معلّق سابق لمنع تشغيل الوكيل أكثر من مرة
+        handler.removeCallbacks(startAgentRunnable)
+        handler.postDelayed(startAgentRunnable, START_AGENT_DELAY_MS)
 
         return START_STICKY
+    }
+
+    private fun setEnabled(enabled: Boolean) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_ENABLED, enabled).apply()
     }
 
     private fun isStopped(): Boolean =
@@ -105,9 +121,10 @@ class StreamForegroundService : Service() {
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
+        // بدون مهلة زمنية: يبقى مُمسكاً طوال البث ويُحرَّر فقط عند الإيقاف أو التدمير
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CameraParent::StreamWakeLock").apply {
             setReferenceCounted(false)
-            acquire(WAKELOCK_TIMEOUT_MS)
+            acquire()
         }
     }
 
@@ -116,11 +133,38 @@ class StreamForegroundService : Service() {
         wakeLock = null
     }
 
+    // PendingIntent ثابت لإعادة التشغيل، يُستخدم للجدولة وللإلغاء
+    private fun restartPendingIntent(): PendingIntent {
+        val restart = Intent(applicationContext, StreamForegroundService::class.java).setAction(ACTION_START)
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(applicationContext, RESTART_REQUEST_CODE, restart, flags)
+        } else {
+            PendingIntent.getService(applicationContext, RESTART_REQUEST_CODE, restart, flags)
+        }
+    }
+
+    private fun scheduleRestartAlarm() {
+        val am = getSystemService(ALARM_SERVICE) as AlarmManager
+        try {
+            am.setAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + RESTART_ALARM_DELAY_MS,
+                restartPendingIntent()
+            )
+        } catch (e: Exception) {
+            Log.w("CameraParent", "scheduleRestartAlarm failed", e)
+        }
+    }
+
+    private fun cancelRestartAlarm() {
+        val am = getSystemService(ALARM_SERVICE) as AlarmManager
+        am.cancel(restartPendingIntent())
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val enabled = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
-        if (enabled) {
-            // 1) أعد فتح واجهة التطبيق أولاً:
-            // بدون واجهة ظاهرة يمنع أندرويد الكاميرا في الخلفية فتظهر صورة سوداء.
+        if (!isStopped()) {
+            // 1) إعادة فتح الواجهة قدر الإمكان (قد يمنعها Android 10+ من الخلفية، لذلك لا نعتمد عليها وحدها)
             try {
                 val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
                 if (launchIntent != null) {
@@ -135,22 +179,15 @@ class StreamForegroundService : Service() {
                 Log.w("CameraParent", "onTaskRemoved: unable to relaunch activity", e)
             }
 
-            // 2) بعد ثانيتين (الواجهة صارت ظاهرة) أعد تشغيل الخدمة
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    val restart = Intent(applicationContext, StreamForegroundService::class.java).setAction(ACTION_START)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(restart)
-                    else startService(restart)
-                } catch (e: Exception) {
-                    Log.w("CameraParent", "onTaskRemoved: unable to restart FGS", e)
-                }
-            }, 2000L)
+            // 2) جدولة إعادة تشغيل الخدمة عبر AlarmManager، لأن postDelayed قد لا يُنفَّذ إذا قُتلت العملية
+            scheduleRestartAlarm()
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
         }
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(startAgentRunnable)
         releaseWakeLock()
         super.onDestroy()
     }
