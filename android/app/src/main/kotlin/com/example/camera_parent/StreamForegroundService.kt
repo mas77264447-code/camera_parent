@@ -88,9 +88,13 @@ class StreamForegroundService : Service() {
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
 
+        // ✅ زيادة التأخير من 300ms إلى 1500ms لضمان أن
+        // ServiceAgentChannel مسجَّل بالكامل قبل invokeMethod("start").
+        // بدون هذا، على الأجهزة البطيئة قد يفشل الاستدعاء بصمت
+        // ويبقى StreamService غير مُشغَّل.
         Handler(Looper.getMainLooper()).postDelayed({
             if (!isStopped()) FlutterServiceBridge.startAgent()
-        }, 300L)
+        }, 2500L)
 
         return START_STICKY
     }
@@ -115,7 +119,7 @@ class StreamForegroundService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         val enabled = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
         if (enabled) {
-            // 1) أعد فتح واجهة التطبيق أولاً (كانت في النسخة القديمة):
+            // 1) أعد فتح واجهة التطبيق أولاً:
             // بدون واجهة ظاهرة يمنع أندرويد الكاميرا في الخلفية فتظهر صورة سوداء.
             try {
                 val launchIntent = packageManager.getLaunchIntentForPackage(packageName)

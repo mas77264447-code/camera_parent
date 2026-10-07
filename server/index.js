@@ -165,8 +165,23 @@ const wss = new WebSocketServer({ server, path: "/signal" });
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
 
+// CORS: إذا ضبطت ALLOWED_ORIGINS (قائمة مفصولة بفواصل) يُسمح لها فقط،
+// وإذا لم تُضبط يبقى السلوك القديم ("*") حتى لا ينكسر شيء.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
+  if (ALLOWED_ORIGINS.length === 0) {
+    res.header("Access-Control-Allow-Origin", "*");
+  } else {
+    const origin = req.headers.origin;
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+      res.header("Access-Control-Allow-Origin", origin);
+      res.header("Vary", "Origin");
+    }
+  }
   res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   res.header(
     "Access-Control-Allow-Headers",

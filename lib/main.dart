@@ -20,6 +20,11 @@ const bool isChildBuild =
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Service Agent must be registered before Firebase/FCM initialization.
+  if (isChildBuild) {
+    ServiceAgentChannel.register();
+  }
+
   // ═══ Firebase + FCM ═══
   try {
     await Firebase.initializeApp();
@@ -32,11 +37,6 @@ Future<void> main() async {
   }
 
   NativeBridge.initialize();
-
-  // ═══ Service Agent (يستقبل wake من الخدمة) ═══
-  if (isChildBuild) {
-    ServiceAgentChannel.register();
-  }
 
   // ═══ Connectivity ═══
   ConnectivityMethodChannel.initialize(

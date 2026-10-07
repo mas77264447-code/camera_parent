@@ -83,6 +83,12 @@ class StreamService {
   bool _localMicMuted = false;
   bool _usingFrontCamera = false;
 
+  // حالة الانتظار لفتح الكاميرا بعد إحضار التطبيق للمقدمة
+  bool _pendingCameraStart = false;
+  bool _foregroundRequestInFlight = false;
+  String? _deferredViewerId;
+  String? _deferredCallerName;
+
   String _status = "جاري التجهيز...";
   String? _error;
   bool _canRetry = false;
@@ -202,6 +208,38 @@ class StreamService {
   Future<void> _onAppResumed() async {
     if (!_running || !_cameraAcquiredInBackground) return;
     if (_broadcastScreen || _broadcastFiles) return;
+
+    // إذا كانت هناك محاولة فتح معلّقة، نفّذها الآن
+    if (_pendingCameraStart && localStream == null) {
+      debugPrint('[StreamService] app resumed — starting pending camera');
+      _pendingCameraStart = false;
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (!_running) return;
+
+      await _startMediaSource();
+      if (localStream == null) return;
+
+      // fix: use deferred viewer instead of empty _peerConnections
+      final deferredId = _deferredViewerId;
+      final deferredName = _deferredCallerName ?? 'Unknown';
+      _deferredViewerId = null;
+      _deferredCallerName = null;
+
+      if (deferredId != null) {
+        final old = _peerConnections.remove(deferredId);
+        _pendingRemoteIceByViewer.remove(deferredId);
+        try {
+          await old?.close();
+        } catch (_) {}
+        if (!_running) return;
+        if (localStream != null && _hasLiveVideoTrack()) {
+          await _sendOfferTo(deferredId, deferredName);
+        }
+      }
+      return;
+    }
+
+    if (!_cameraAcquiredInBackground) return;
     _cameraAcquiredInBackground = false;
     debugPrint('[StreamService] app resumed — camera was opened in background, re-acquiring');
 
@@ -228,7 +266,15 @@ class StreamService {
     _screenAutoStopTimer?.cancel();
     _screenAutoStopTimer = null;
 
-    try { await _ws?.close(); } catch (_) {}
+    // ✅ تصفير حالات الانتظار
+    _pendingCameraStart = false;
+    _foregroundRequestInFlight = false;
+    _deferredViewerId = null;
+    _deferredCallerName = null;
+
+    try {
+      await _ws?.close();
+    } catch (_) {}
     _ws = null;
 
     await _closeAllPeerConnections();
@@ -278,7 +324,8 @@ class StreamService {
     _localStreamCtrl.add(null);
   }
 
-  /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
+  /// ✅ معدّلة: لا تفتح الكاميرا في الخلفية (مثلاً عند الإقلاع).
+  /// سيُفتح تلقائياً عند وصول طلب مشاهدة، أو عند فتح المستخدم للتطبيق.
   Future<void> ensureCameraStarted({bool force = false}) async {
     if (!_running || _broadcastScreen || _broadcastFiles) return;
 
@@ -286,6 +333,15 @@ class StreamService {
       debugPrint('[StreamService] ensureCameraStarted(force) — re-acquiring');
       await _forceCleanupStream();
     } else if (localStream != null) {
+      return;
+    }
+
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    final isForeground = lifecycleState == AppLifecycleState.resumed;
+    if (!isForeground) {
+      debugPrint(
+          '[StreamService] ensureCameraStarted: in background, deferring');
+      _pendingCameraStart = true;
       return;
     }
 
@@ -915,6 +971,40 @@ class StreamService {
 
       _broadcastScreen = newScreen;
       _broadcastFiles = newFiles;
+
+      // إذا التطبيق في الخلفية، أحضره أولاً قبل فتح الكاميرا
+      if (!_broadcastFiles && !_broadcastScreen) {
+        final lifecycleState = WidgetsBinding.instance.lifecycleState;
+        final isForeground = lifecycleState == AppLifecycleState.resumed;
+        if (!isForeground) {
+          _pendingCameraStart = true;
+          _deferredViewerId = viewerId;
+          _deferredCallerName = callerName;
+          final ok = await _bringToForeground();
+          if (!ok) {
+            debugPrint('[StreamService] bringToForeground failed — '
+                'camera will start when app returns to foreground');
+            return;
+          }
+          // نجح bringToForeground: افتح الكاميرا فورًا ثم أرسل offer.
+          debugPrint(
+              '[StreamService] _approveViewer: foregrounded, starting camera');
+          await Future.delayed(const Duration(milliseconds: 800));
+          if (!_running) return;
+          await _startMediaSource();
+          if (localStream == null) {
+            debugPrint(
+                '[StreamService] _approveViewer: camera still null, leaving deferred');
+            return;
+          }
+          _deferredViewerId = null;
+          _deferredCallerName = null;
+          _pendingCameraStart = false;
+          await _sendOfferTo(viewerId, callerName);
+          return;
+        }
+      }
+
       await _startMediaSource();
       await _sendOfferTo(viewerId, callerName);
     } finally {
@@ -961,10 +1051,33 @@ class StreamService {
     }
 
     if (!_broadcastFiles) {
+      // إصلاح race: اضبط deferred قبل startMediaSource حتى لا تفوت
+      // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
+      _deferredViewerId = viewerId;
+      _deferredCallerName = callerName;
+
       if (localStream == null) {
+        final lifecycleBefore = WidgetsBinding.instance.lifecycleState;
+        if (lifecycleBefore != AppLifecycleState.resumed) {
+          debugPrint(
+              '[StreamService] _handleApprovedViewer: background, deferring viewer=$viewerId');
+          _pendingCameraStart = true;
+          return;
+        }
         await _startMediaSource();
       }
     }
+
+    if (localStream == null && !_broadcastFiles) {
+      debugPrint(
+          '[StreamService] deferring offer to $viewerId until camera is ready');
+      _pendingCameraStart = true;
+      return;
+    }
+
+    _deferredViewerId = null;
+    _deferredCallerName = null;
+
     await _sendOfferTo(viewerId, callerName);
   }
 
@@ -1093,8 +1206,40 @@ class StreamService {
     }
   }
 
-  /// يمنع تداخل أكثر من عرض (offer) لنفس المشاهد في نفس الوقت؛
-  /// تداخلها كان يجعل المشاهد يهدم الاتصال ويبنيه من جديد فلا يستقر الفيديو.
+  /// يطلب من الجانب الأصلي إحضار التطبيق للمقدمة.
+  /// لا يفحص صلاحية Overlay أولاً — الجانب الأصلي يتولّى كل الطرق
+  /// (startActivity مباشر + Full-Screen Intent).
+  Future<bool> _bringToForeground({int maxAttempts = 3}) async {
+    if (_foregroundRequestInFlight) return false;
+    _foregroundRequestInFlight = true;
+    try {
+      const channel = MethodChannel('camera_parent/foreground_service');
+
+      for (int i = 0; i < maxAttempts; i++) {
+        try {
+          final ok = await channel.invokeMethod<bool>('bringToForeground');
+          debugPrint('[StreamService] bring attempt ${i + 1} → $ok');
+
+          // انتظر لنتأكد أن التطبيق فعلاً في المقدمة
+          await Future.delayed(const Duration(milliseconds: 900));
+          final state = WidgetsBinding.instance.lifecycleState;
+          if (state == AppLifecycleState.resumed) {
+            debugPrint('[StreamService] bringToForeground SUCCESS');
+            return true;
+          }
+          debugPrint('[StreamService] still in background (state=$state)');
+        } catch (e) {
+          debugPrint('[StreamService] bring attempt ${i + 1} error: $e');
+        }
+        await Future.delayed(const Duration(milliseconds: 700));
+      }
+      debugPrint('[StreamService] bringToForeground FAILED after $maxAttempts');
+      return false;
+    } finally {
+      _foregroundRequestInFlight = false;
+    }
+  }
+
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
     if (_offerInFlight.contains(viewerId)) {
       debugPrint('[StreamService] offer already in flight for $viewerId → skip');
@@ -1396,6 +1541,10 @@ class StreamService {
     if (viewerId == null) return;
 
     _approvedFileViewers.remove(viewerId);
+    if (_deferredViewerId == viewerId) {
+      _deferredViewerId = null;
+      _deferredCallerName = null;
+    }
 
     final pc = _peerConnections.remove(viewerId);
     _pendingRemoteIceByViewer.remove(viewerId);
