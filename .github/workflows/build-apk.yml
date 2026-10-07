@@ -19,12 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Apply WebRTC Fixes
-        run: |
-          sed -i 's/}, 1500L)/}, 2500L)/g' android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt
-          echo "✅ Applied: StreamForegroundService 1500ms → 2500ms"
-          grep -n "2500L" android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
