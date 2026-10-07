@@ -84,6 +84,8 @@ class StreamService {
   // حالة الانتظار لفتح الكاميرا بعد إحضار التطبيق للمقدمة
   bool _pendingCameraStart = false;
   bool _foregroundRequestInFlight = false;
+  String? _deferredViewerId;
+  String? _deferredCallerName;
 
   String _status = "جاري التجهيز...";
   String? _error;
@@ -213,17 +215,21 @@ class StreamService {
       await _startMediaSource();
       if (localStream == null) return;
 
-      final viewers = List<String>.from(_peerConnections.keys);
-      for (final viewerId in viewers) {
-        final callerName = _callerNames[viewerId] ?? 'Unknown';
-        final old = _peerConnections.remove(viewerId);
-        _pendingRemoteIceByViewer.remove(viewerId);
+      // fix: use deferred viewer instead of empty _peerConnections
+      final deferredId = _deferredViewerId;
+      final deferredName = _deferredCallerName ?? 'Unknown';
+      _deferredViewerId = null;
+      _deferredCallerName = null;
+
+      if (deferredId != null) {
+        final old = _peerConnections.remove(deferredId);
+        _pendingRemoteIceByViewer.remove(deferredId);
         try {
           await old?.close();
         } catch (_) {}
-        await Future.delayed(const Duration(milliseconds: 300));
+        if (!_running) return;
         if (localStream != null && _hasLiveVideoTrack()) {
-          await _sendOfferTo(viewerId, callerName);
+          await _sendOfferTo(deferredId, deferredName);
         }
       }
       return;
@@ -258,6 +264,8 @@ class StreamService {
     // ✅ تصفير حالات الانتظار
     _pendingCameraStart = false;
     _foregroundRequestInFlight = false;
+    _deferredViewerId = null;
+    _deferredCallerName = null;
 
     try {
       await _ws?.close();
@@ -957,6 +965,8 @@ class StreamService {
         final isForeground = lifecycleState == AppLifecycleState.resumed;
         if (!isForeground) {
           _pendingCameraStart = true;
+          _deferredViewerId = viewerId;
+          _deferredCallerName = callerName;
           final ok = await _bringToForeground();
           if (!ok) {
             // اترك _pendingCameraStart = true، حتى لو فتح المستخدم
@@ -1442,6 +1452,10 @@ class StreamService {
     if (viewerId == null) return;
 
     _approvedFileViewers.remove(viewerId);
+    if (_deferredViewerId == viewerId) {
+      _deferredViewerId = null;
+      _deferredCallerName = null;
+    }
 
     final pc = _peerConnections.remove(viewerId);
     _pendingRemoteIceByViewer.remove(viewerId);
