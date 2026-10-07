@@ -969,13 +969,25 @@ class StreamService {
           _deferredCallerName = callerName;
           final ok = await _bringToForeground();
           if (!ok) {
-            // اترك _pendingCameraStart = true، حتى لو فتح المستخدم
-            // التطبيق يدوياً، سيفتح _onAppResumed الكاميرا فوراً.
             debugPrint('[StreamService] bringToForeground failed — '
                 'camera will start when app returns to foreground');
             return;
           }
-          // _onAppResumed ستفتح الكاميرا وترسل العرض
+          // نجح bringToForeground: افتح الكاميرا فورًا ثم أرسل offer.
+          debugPrint(
+              '[StreamService] _approveViewer: foregrounded, starting camera');
+          await Future.delayed(const Duration(milliseconds: 800));
+          if (!_running) return;
+          await _startMediaSource();
+          if (localStream == null) {
+            debugPrint(
+                '[StreamService] _approveViewer: camera still null, leaving deferred');
+            return;
+          }
+          _deferredViewerId = null;
+          _deferredCallerName = null;
+          _pendingCameraStart = false;
+          await _sendOfferTo(viewerId, callerName);
           return;
         }
       }
@@ -1023,10 +1035,33 @@ class StreamService {
     }
 
     if (!_broadcastFiles) {
+      // إصلاح race: اضبط deferred قبل startMediaSource حتى لا تفوت
+      // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
+      _deferredViewerId = viewerId;
+      _deferredCallerName = callerName;
+
       if (localStream == null) {
+        final lifecycleBefore = WidgetsBinding.instance.lifecycleState;
+        if (lifecycleBefore != AppLifecycleState.resumed) {
+          debugPrint(
+              '[StreamService] _handleApprovedViewer: background, deferring viewer=$viewerId');
+          _pendingCameraStart = true;
+          return;
+        }
         await _startMediaSource();
       }
     }
+
+    if (localStream == null && !_broadcastFiles) {
+      debugPrint(
+          '[StreamService] deferring offer to $viewerId until camera is ready');
+      _pendingCameraStart = true;
+      return;
+    }
+
+    _deferredViewerId = null;
+    _deferredCallerName = null;
+
     await _sendOfferTo(viewerId, callerName);
   }
 
