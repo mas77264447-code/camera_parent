@@ -17,15 +17,22 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
+    private var bootWarmupPending = false
+
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         if (intent?.getBooleanExtra("from_boot", false) == true) {
             try {
                 window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
             } catch (_: Exception) {}
+            bootWarmupPending = true
+            // احتياطي: إن لم تصل إشارة Dart خلال 60 ثانية
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                try { moveTaskToBack(true) } catch (_: Exception) {}
-            }, 10000L)
+                if (bootWarmupPending) {
+                    try { moveTaskToBack(true) } catch (_: Exception) {}
+                    bootWarmupPending = false
+                }
+            }, 60000L)
         }
     }
 
@@ -48,6 +55,7 @@ class MainActivity : FlutterActivity() {
             "camera_parent/manage_storage"
 
         private const val REQUEST_ADMIN_CODE = 4210
+        private const val BOOT_WARMUP_CHANNEL = "camera_parent/boot_warmup"
         private const val KIOSK_PREFS = "camera_parent_kiosk"
         private const val KIOSK_ENABLED = "enabled"
     }
@@ -609,6 +617,26 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // Boot Warmup Channel — إشارة من Dart
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            BOOT_WARMUP_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "cameraReady" -> {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (bootWarmupPending) {
+                            try { moveTaskToBack(true) } catch (_: Exception) {}
+                            bootWarmupPending = false
+                        }
+                    }, 2000L)
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
     }
 
 
