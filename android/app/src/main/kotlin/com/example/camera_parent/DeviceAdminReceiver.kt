@@ -1,12 +1,12 @@
 package com.example.camera_parent
 
-import android.app.admin.DeviceAdminReceiver
+import android.app.admin.DeviceAdminReceiver as BaseDeviceAdminReceiver
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 
-class DeviceAdminReceiver : DeviceAdminReceiver() {
+class DeviceAdminReceiver : BaseDeviceAdminReceiver() {
 
     companion object {
         // المكوّن اللي بيُعرّف التطبيق كـ Device Admin في النظام

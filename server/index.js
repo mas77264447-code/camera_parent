@@ -66,77 +66,81 @@ if (!UPSTASH_URL || !UPSTASH_TOKEN) {
   process.exit(1);
 }
 
+// ═══════════════════════════════════════════════════════════
+// Redis (Upstash REST) — نرسل الأوامر كـ JSON إلى الجذر POST
+// بدلاً من بناء المسار من المدخلات، فلا يمكن حقن مفاتيح أو أوامر.
+// ═══════════════════════════════════════════════════════════
+async function redisCommand(...args) {
+  const res = await fetch(UPSTASH_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${UPSTASH_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) throw new Error(`Redis HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(`Redis: ${data.error}`);
+  return data.result;
+}
+
 const redis = {
+  // get: يرجع null عند الخطأ (سلوك قديم محفوظ)
   async get(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/get/${k}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
-      });
-      const data = await res.json();
-      return data.result || null;
+      return (await redisCommand("GET", String(k))) || null;
     } catch (e) {
+      console.error(`[Redis get error] ${e.message}`);
       return null;
     }
   },
+  // getStrict: يرمي عند فشل القراءة — يُستخدم حيث يكون الخطأ خطيراً (التسجيل)
+  async getStrict(k) {
+    return (await redisCommand("GET", String(k))) || null;
+  },
+  // set(k, v, { ex, nx }) — nx: يكتب فقط إذا لم يكن موجوداً
   async set(k, v, opts) {
     try {
       const value = typeof v === "string" ? v : JSON.stringify(v);
-      let url = `${UPSTASH_URL}/set/${k}/${encodeURIComponent(value)}`;
-      if (opts?.ex) url += `/EX/${opts.ex}`;
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
-      });
-      const data = await res.json();
-      return data.result ? "OK" : null;
+      const args = ["SET", String(k), value];
+      if (opts?.ex) args.push("EX", String(opts.ex));
+      if (opts?.nx) args.push("NX");
+      const result = await redisCommand(...args);
+      return result === "OK" ? "OK" : null;
     } catch (e) {
+      console.error(`[Redis set error] ${e.message}`);
       return null;
     }
   },
   async del(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/del/${k}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
-      });
-      const data = await res.json();
-      return data.result ? 1 : 0;
+      return Number(await redisCommand("DEL", String(k))) > 0 ? 1 : 0;
     } catch (e) {
+      console.error(`[Redis del error] ${e.message}`);
       return 0;
     }
   },
   async sadd(key, member) {
     try {
-      const res = await fetch(
-        `${UPSTASH_URL}/sadd/${key}/${encodeURIComponent(member)}`,
-        { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
-      );
-      const data = await res.json();
-      return data.result ? 1 : 0;
+      return Number(await redisCommand("SADD", String(key), String(member))) > 0 ? 1 : 0;
     } catch (e) {
+      console.error(`[Redis sadd error] ${e.message}`);
       return 0;
     }
   },
   async srem(key, member) {
     try {
-      const res = await fetch(
-        `${UPSTASH_URL}/srem/${key}/${encodeURIComponent(member)}`,
-        { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
-      );
-      const data = await res.json();
-      return data.result ? 1 : 0;
+      return Number(await redisCommand("SREM", String(key), String(member))) > 0 ? 1 : 0;
     } catch (e) {
+      console.error(`[Redis srem error] ${e.message}`);
       return 0;
     }
   },
   async smembers(key) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/smembers/${key}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
-      });
-      if (!res.ok) {
-        throw new Error(`Redis smembers HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      return Array.isArray(data.result) ? data.result : [];
+      const result = await redisCommand("SMEMBERS", String(key));
+      return Array.isArray(result) ? result : [];
     } catch (e) {
       console.error(`[Redis smembers error] ${key}:`, e.message);
       throw e;
@@ -144,9 +148,19 @@ const redis = {
   },
 };
 
+process.on("unhandledRejection", (err) => {
+  console.error("[unhandledRejection]", err && err.message ? err.message : err);
+});
+
 const app = express();
+// نثق بـ proxy واحد فقط (Render)، حتى لا يستطيع العميل تزوير X-Forwarded-For
+app.set("trust proxy", Number(process.env.TRUST_PROXY || 1));
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal" });
+const wss = new WebSocketServer({
+  server,
+  path: "/signal",
+  maxPayload: 1024 * 1024, // 1MB: أكبر من أي رسالة مشروعة (chunk ≈ 67KB)
+});
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
@@ -192,11 +206,7 @@ const authAttempts = new Map();
 const wsAttempts = new Map();
 
 function clientIp(req) {
-  return String(
-    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
-  )
-    .split(",")[0]
-    .trim();
+  return String(req.ip || req.socket.remoteAddress || "unknown");
 }
 
 function rateLimit(map, key, limit) {
@@ -251,14 +261,20 @@ function computeViewerKey(sessionId, adminToken) {
     .slice(0, 32);
 }
 
+// المفتاح الرئيسي لا يُسلَّم عبر HTTP إلا لمن يملك SETUP_SECRET من بيئة السيرفر.
+// الربط يتم مرة واحدة فقط، ويتم بشكل ذري عبر SET NX.
 app.post("/admin/claim", async (req, res) => {
-  const claimed = await redis.get("admin:claimed");
-  if (claimed) {
-    return res
-      .status(403)
-      .json({ error: "تم ربط هذا السيرفر بحساب والد بالفعل." });
+  const ip = clientIp(req);
+  if (!rateLimit(authAttempts, `claim:${ip}`, 12)) {
+    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
-  await redis.set("admin:claimed", String(Date.now()));
+  if (!process.env.SETUP_SECRET || !safeCompare(String(req.header("x-setup-secret") || ""), process.env.SETUP_SECRET)) {
+    return res.status(403).json({ error: "غير مصرح." });
+  }
+  const claimed = await redis.set("admin:claimed", String(Date.now()), { nx: true });
+  if (claimed !== "OK") {
+    return res.status(403).json({ error: "تم ربط هذا السيرفر بحساب والد بالفعل." });
+  }
   res.json({ data: { admin_token: ADMIN_TOKEN } });
 });
 
@@ -275,9 +291,14 @@ app.post("/admin/verify", (req, res) => {
   }
 });
 
+const TOKEN_RE = /^[a-f0-9]{32,128}$/;
+
 async function isValidOwnerToken(token) {
   if (typeof token !== "string" || token.length === 0) return false;
+  // المفتاح الرئيسي من البيئة قد يكون بأي صيغة، لذلك نقارنه أولاً
   if (safeCompare(token, ADMIN_TOKEN)) return true;
+  // بقية التوكنات مولّدة بـ hex فقط؛ أي شيء آخر يُرفض قبل الوصول إلى Redis
+  if (!TOKEN_RE.test(token)) return false;
   const owner = await redis.get(`parenttoken:${token}`);
   return !!owner;
 }
@@ -357,7 +378,13 @@ app.post("/parent/register", async (req, res) => {
   }
 
   const credKey = `parent:credentials:${username}`;
-  const existing = await redis.get(credKey);
+  let existing;
+  try {
+    existing = await redis.getStrict(credKey);
+  } catch (e) {
+    // فشل القراءة لا يجب أن يُعامل كأن الحساب غير موجود
+    return res.status(503).json({ error: "الخدمة غير متاحة مؤقتًا. حاول لاحقًا." });
+  }
   if (existing) {
     return res.status(409).json({ error: "اسم المستخدم مستخدم بالفعل." });
   }
@@ -366,7 +393,8 @@ app.post("/parent/register", async (req, res) => {
   const salt = crypto.randomBytes(16).toString("hex");
   const passwordHash = await hashPasswordAsync(password, salt);
 
-  await redis.set(
+  // SET NX: لا يكتب فوق حساب موجود حتى لو تسابق طلبان
+  const created = await redis.set(
     credKey,
     JSON.stringify({
       salt,
@@ -374,8 +402,12 @@ app.post("/parent/register", async (req, res) => {
       parentToken,
       username,
       createdAt: Date.now(),
-    })
+    }),
+    { nx: true }
   );
+  if (created !== "OK") {
+    return res.status(409).json({ error: "اسم المستخدم مستخدم بالفعل." });
+  }
 
   await redis.set(`parenttoken:${parentToken}`, username);
   console.log(`[parent] new account: ${username}`);
@@ -930,6 +962,7 @@ wss.on("connection", (ws, req) => {
   ws.on("message", async (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
+    if (!msg || typeof msg !== "object") return;
 
     const client = clients[clientId];
     if (!client) return;
@@ -1048,18 +1081,12 @@ wss.on("connection", (ws, req) => {
           `[ws] broadcaster: client=${clientId} session=${boundSession.slice(0, 8)}...`
         );
 
-        // ✅ إرسال ownerToken للطفل لاشتقاق مفتاح E2E
-        const sessionData =
-          typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession;
-        if (sessionData.ownerToken) {
-          send(clientId, {
-            type: "auth-ok",
-            ownerToken: sessionData.ownerToken,
-          });
-          console.log(
-            `[ws] sent auth-ok to broadcaster ${clientId.slice(0, 8)}...`
-          );
-        }
+        // لا يُرسل توكن الحساب (ownerToken) إلى الجهاز أبداً.
+        // الجهاز مُصادَق بـ deviceToken وحده، وهو مفتاح خاص بالجهاز ويمكن إلغاؤه بفك الاقتران.
+        send(clientId, { type: "auth-ok", sessionId: boundSession });
+        console.log(
+          `[ws] sent auth-ok to broadcaster ${clientId.slice(0, 8)}...`
+        );
 
         liveSession.viewers.forEach((info, viewerKey) => {
           send(clientId, {

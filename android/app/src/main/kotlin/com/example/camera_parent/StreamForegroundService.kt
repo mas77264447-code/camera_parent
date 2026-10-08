@@ -70,8 +70,6 @@ class StreamForegroundService : Service() {
         // getString مع قيمة افتراضية لا يُرجع null، فلا حاجة لـ elvis إضافي
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: prefs.getString(KEY_MODE, MODE_CAMERA)!!
 
-        prefs.edit().putBoolean(KEY_ENABLED, true).putString(KEY_MODE, mode).apply()
-
         val notification = buildNotification()
 
         try {
@@ -94,12 +92,17 @@ class StreamForegroundService : Service() {
                 // الخدمة تعمل أصلاً كخدمة أمامية: لا نوقفها بسبب فشل إعادة الترقية
                 return START_STICKY
             }
-            // فشلت البداية فعلياً: نحدّث الحالة المحفوظة حتى لا تُعرض الخدمة كأنها تعمل
-            setEnabled(false)
+            // فشلت البداية: لا نغيّر حالة "enabled" المحفوظة (فشل مؤقت لا يلغي نية المراقبة)
+            // ولا نحفظ الوضع المطلوب لأنه لم يُفعَّل
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
         foregroundStarted = true
+        // لا نحفظ الوضع والتفعيل إلا بعد نجاح startForeground
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_ENABLED, true)
+            .putString(KEY_MODE, mode)
+            .apply()
 
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)

@@ -36,6 +36,8 @@ jobs:
           echo "✅ google-services.json present"
 
       - run: flutter pub get
+      - name: Static analysis (errors fail the build)
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
       - run: flutter clean
       - run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
 
@@ -67,6 +69,8 @@ jobs:
           echo "✅ google-services.json present"
 
       - run: flutter pub get
+      - name: Static analysis (errors fail the build)
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
       - run: flutter clean
       - run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
 
@@ -89,7 +93,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: all-apks/**/*.apk
+          # APK الطفل لا يُنشر كإصدار عام: يبقى في artifacts الداخلية فقط
+          files: all-apks/**/*parent*.apk
           tag_name: build-${{ github.run_number }}
           name: Release Build ${{ github.run_number }} - WebRTC Fixes Applied
           draft: false
@@ -103,4 +108,3 @@ jobs:
             
             **Download & Install:**
             - app-parent-release.apk
-            - app-child-release.apk

@@ -495,7 +495,8 @@ class StreamService {
     ConnectionStateManager.instance.update(ConnectionStatus.reconnecting);
     _reconnectTimer?.cancel();
     _reconnectAttempts++;
-    final exp = math.pow(2, _reconnectAttempts).toInt();
+    // نحدّ الأس قبل الحساب حتى لا يفيض العدد بعد محاولات طويلة
+    final exp = math.pow(2, math.min(_reconnectAttempts, 6)).toInt();
     final seconds = math.min(30, exp);
     final delay = Duration(seconds: seconds);
     debugPrint(
@@ -525,10 +526,7 @@ class StreamService {
 
       switch (type) {
         case 'auth-ok':
-          final ownerToken = data['ownerToken']?.toString();
-          if (ownerToken != null && ownerToken.isNotEmpty) {
-            CryptoService.instance.initialize(ownerToken);
-          }
+          // الخادم لم يعد يرسل توكن الحساب إلى الجهاز؛ لا يوجد شيء يُهيَّأ هنا
           break;
         case 'join-request':
           _handleViewerRequest(data);
@@ -835,6 +833,7 @@ class StreamService {
       const chunkSize = 50000;
       int offset = startOffset;
       int index = startOffset ~/ chunkSize;
+      bool completed = false;
 
       while (true) {
         if (_canceledDownloads.contains(requestId)) {
@@ -854,30 +853,37 @@ class StreamService {
           offset: offset,
           length: chunkSize,
         );
-        if (chunk == null) break;
+        if (chunk == null) break; // فشل قراءة: لن يُعلن الاكتمال
 
-        final dataB64 = chunk['data'] as String?;
-        if (dataB64 == null || dataB64.isEmpty) break;
+        final dataB64 = (chunk['data'] as String?) ?? '';
+        final isEof = chunk['eof'] == true;
 
-        _ws?.add(jsonEncode({
-          'type': 'file-transfer-chunk',
-          'target': viewerId,
-          'requestId': requestId,
-          'index': index,
-          'data': dataB64,
-        }));
+        if (dataB64.isNotEmpty) {
+          _ws?.add(jsonEncode({
+            'type': 'file-transfer-chunk',
+            'target': viewerId,
+            'requestId': requestId,
+            'index': index,
+            'data': dataB64,
+          }));
+          offset += chunkSize;
+          index++;
+        }
 
-        offset += chunkSize;
-        index++;
-
-        if (chunk['eof'] == true) break;
+        if (isEof) {
+          completed = true;
+          break;
+        }
+        if (dataB64.isEmpty) break; // نتيجة غير متوقعة
         await Future.delayed(const Duration(milliseconds: 10));
       }
 
+      // إعلان الاكتمال فقط إذا وصلنا فعلاً إلى نهاية الملف
       _ws?.add(jsonEncode({
         'type': 'file-transfer-end',
         'target': viewerId,
         'requestId': requestId,
+        if (!completed) 'error': 'read-incomplete',
       }));
     } catch (e) {
       _ws?.add(jsonEncode({

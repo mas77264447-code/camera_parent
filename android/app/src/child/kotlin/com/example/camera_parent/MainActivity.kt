@@ -164,19 +164,28 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
 
                 "start" -> {
-                    val intent = Intent(this, StreamForegroundService::class.java)
-                        .setAction(StreamForegroundService.ACTION_START)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
-                    else startService(intent)
-                    result.success(true)
+                    try {
+                        val intent = Intent(this, StreamForegroundService::class.java)
+                            .setAction(StreamForegroundService.ACTION_START)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+                        else startService(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        // قد يمنع أندرويد بدء الخدمة من الخلفية
+                        result.error("START_FAILED", e.message, null)
+                    }
                 }
 
                 "stop" -> {
-                    startService(
-                        Intent(this, StreamForegroundService::class.java)
-                            .setAction(StreamForegroundService.ACTION_STOP)
-                    )
-                    result.success(true)
+                    try {
+                        startService(
+                            Intent(this, StreamForegroundService::class.java)
+                                .setAction(StreamForegroundService.ACTION_STOP)
+                        )
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("STOP_FAILED", e.message, null)
+                    }
                 }
 
                 // ✅ إحضار التطبيق للمقدمة (يعمل حتى بدون صلاحية Overlay)
