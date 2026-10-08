@@ -24,8 +24,8 @@ class MainActivity : FlutterActivity() {
                 window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
             } catch (_: Exception) {}
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                try { finishAndRemoveTask() } catch (_: Exception) { finish() }
-            }, 6000L)
+                try { moveTaskToBack(true) } catch (_: Exception) {}
+            }, 10000L)
         }
     }
 
