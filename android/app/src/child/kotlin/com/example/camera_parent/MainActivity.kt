@@ -23,6 +23,19 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (intent?.getBooleanExtra("from_boot", false) == true) {
+            try {
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+            } catch (_: Exception) {}
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try { finishAndRemoveTask() } catch (_: Exception) { finish() }
+            }, 6000L)
+        }
+    }
+
+
     companion object {
         private const val ADMIN_CHANNEL = "camera_parent/device_admin"
         private const val FOREGROUND_SERVICE_CHANNEL = "camera_parent/foreground_service"
