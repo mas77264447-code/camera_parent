@@ -29,6 +29,13 @@ class _StreamLifecycleObserver with WidgetsBindingObserver {
   }
 }
 
+/// طلب كاميرا وصل والتطبيق في الخلفية، وينتظر فتح التطبيق.
+class _AwaitingViewer {
+  _AwaitingViewer(this.name, this.source);
+  final String name;
+  final String source;
+}
+
 class StreamService {
   StreamService._();
   static final StreamService instance = StreamService._();
@@ -87,6 +94,9 @@ class StreamService {
 
   // حالة الانتظار لفتح الكاميرا بعد إحضار التطبيق للمقدمة
   bool _pendingCameraStart = false;
+
+  /// الطلبات التي وصلت والتطبيق في الخلفية (لا تُوافَق إلا بعد فتح الكاميرا).
+  final Map<String, _AwaitingViewer> _awaitingForeground = {};
   bool _foregroundRequestInFlight = false;
   String? _deferredViewerId;
   String? _deferredCallerName;
@@ -238,6 +248,16 @@ class StreamService {
   /// عند عودة التطبيق للمقدمة: إذا كانت الكاميرا في انتظار الفتح، افتحها الآن.
   Future<void> _onAppResumed() async {
     if (!_running) return;
+
+    // طلبات وصلت والتطبيق في الخلفية: نفّذها الآن بعد فتح التطبيق.
+    if (_awaitingForeground.isNotEmpty) {
+      final waiting = Map<String, _AwaitingViewer>.from(_awaitingForeground);
+      _awaitingForeground.clear();
+      for (final e in waiting.entries) {
+        await _approveViewer(e.key, e.value.name, e.value.source);
+      }
+    }
+
     if (_broadcastScreen || _broadcastFiles) return;
 
     // إصلاح: إذا كان هناك مشاهد معلّق، اعتبر الكاميرا "معلّقة"
@@ -306,6 +326,7 @@ class StreamService {
     _pendingCameraStart = false;
     _foregroundRequestInFlight = false;
     _deferredViewerId = null;
+    _awaitingForeground.clear();
     _deferredCallerName = null;
 
     try {
@@ -957,6 +978,20 @@ class StreamService {
     final requestedSource = data['source'] as String? ?? 'camera';
     if (viewerId == null) return;
 
+    final isForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    if (requestedSource == 'camera' && !isForeground) {
+      // الكاميرا لا تُفتح من الخلفية: لا نوافق الآن، وننتظر فتح التطبيق.
+      _awaitingForeground[viewerId] =
+          _AwaitingViewer(callerName, requestedSource);
+      _ws?.add(jsonEncode({
+        'type': 'viewer-status',
+        'target': viewerId,
+        'status': 'waiting_child_open',
+      }));
+      return;
+    }
+
     final trusted =
         _trustedSessionId != null && _trustedSessionId == _sessionId;
     if (_autoApproveViewers || trusted) {
@@ -993,7 +1028,7 @@ class StreamService {
     }
   }
 
-  /// معدّلة: إحضار التطبيق للمقدمة قبل فتح الكاميرا
+  /// لا تُرسل الموافقة للوالد إلا بعد نجاح فتح مصدر البث فعلاً.
   Future<void> _approveViewer(
       String viewerId, String callerName, String requestedSource) async {
     if (_approvalInFlight.contains(viewerId) ||
@@ -1004,57 +1039,36 @@ class StreamService {
     _approvalInFlight.add(viewerId);
     unawaited(_rememberTrustedSession());
 
-    if (requestedSource == 'files') {
-      _approvedFileViewers.add(viewerId);
-    }
-
     try {
-      _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
-
       final newScreen = requestedSource == 'screen';
       final newFiles = requestedSource == 'files';
 
       if (_broadcastScreen != newScreen && localStream != null) {
         await _forceCleanupStream();
       }
-
       _broadcastScreen = newScreen;
       _broadcastFiles = newFiles;
 
-      // إذا التطبيق في الخلفية، أحضره أولاً قبل فتح الكاميرا
-      if (!_broadcastFiles && !_broadcastScreen) {
-        final lifecycleState = WidgetsBinding.instance.lifecycleState;
-        final isForeground = lifecycleState == AppLifecycleState.resumed;
-        if (!isForeground) {
-          _pendingCameraStart = true;
-          _deferredViewerId = viewerId;
-          _deferredCallerName = callerName;
-          final ok = await _bringToForeground();
-          if (!ok) {
-            debugPrint('[StreamService] bringToForeground failed — '
-                'camera will start when app returns to foreground');
-            return;
-          }
-          // نجح bringToForeground: افتح الكاميرا فورًا ثم أرسل offer.
-          debugPrint(
-              '[StreamService] _approveViewer: foregrounded, starting camera');
-          await Future.delayed(const Duration(milliseconds: 800));
-          if (!_running) return;
-          await _startMediaSource();
-          if (localStream == null) {
-            debugPrint(
-                '[StreamService] _approveViewer: camera still null, leaving deferred');
-            return;
-          }
-          _deferredViewerId = null;
-          _deferredCallerName = null;
-          _pendingCameraStart = false;
-          await _sendOfferTo(viewerId, callerName);
-          return;
-        }
+      if (newFiles) {
+        _approvedFileViewers.add(viewerId);
+        _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
+        await _sendOfferTo(viewerId, callerName);
+        return;
       }
 
       await _startMediaSource();
+
+      if (localStream == null) {
+        debugPrint('[StreamService] _approveViewer: source not ready');
+        _ws?.add(jsonEncode({
+          'type': 'viewer-status',
+          'target': viewerId,
+          'status': 'camera_failed',
+        }));
+        return;
+      }
+
+      _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
       await _sendOfferTo(viewerId, callerName);
     } finally {
       _approvalInFlight.remove(viewerId);
@@ -1549,6 +1563,7 @@ class StreamService {
     if (viewerId == null) return;
 
     _approvedFileViewers.remove(viewerId);
+    _awaitingForeground.remove(viewerId);
     if (_deferredViewerId == viewerId) {
       _deferredViewerId = null;
       _deferredCallerName = null;

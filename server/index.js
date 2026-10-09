@@ -1201,6 +1201,21 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
+    if (msg.type === "viewer-status") {
+      const liveSession = live[client.sessionId];
+      if (
+        client.role !== "broadcaster" ||
+        !liveSession ||
+        liveSession.broadcaster !== clientId
+      ) return;
+      if (!liveSession.viewers.get(msg.target)) return;
+      sendToViewer(liveSession, msg.target, {
+        type: "viewer-status",
+        status: String(msg.status || ""),
+      });
+      return;
+    }
+
     if (msg.type === "approve-viewer") {
       const liveSession = live[client.sessionId];
       if (

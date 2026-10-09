@@ -32,6 +32,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   WebSocket? _ws;
   String? _broadcasterId;
   String _status = "جاري الاتصال...";
+  Timer? _offerTimer;
   bool _remoteAudioMuted = false;
 
   bool _textureRefreshedForThisTrack = false;
@@ -528,6 +529,23 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           if (mounted) {
             setState(() => _status = "تمت الموافقة - جاري الاتصال...");
           }
+          _offerTimer?.cancel();
+          _offerTimer = Timer(const Duration(seconds: 25), () {
+            if (!mounted || _pc != null) return;
+            setState(() => _status = "تعذّر بدء البث من الجهاز - أعد المحاولة");
+          });
+          break;
+        case "viewer-status":
+          final st = msg["status"] as String?;
+          if (mounted) {
+            setState(() {
+              if (st == "waiting_child_open") {
+                _status = "افتح تطبيق الكاميرا على الجهاز الآخر...";
+              } else if (st == "camera_failed") {
+                _status = "تعذّر تشغيل الكاميرا على الجهاز";
+              }
+            });
+          }
           break;
         case "join-rejected":
           _rejected = true;
@@ -768,6 +786,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
+    _offerTimer?.cancel();
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
     _diagTimer?.cancel();
