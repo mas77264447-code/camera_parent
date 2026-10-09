@@ -1595,6 +1595,7 @@ class StreamService {
     await prefs.remove('session_id');
     await prefs.remove('device_name');
     await prefs.remove('is_paired');
+    await prefs.remove('trusted_session_id');
     await prefs.remove('auto_approve_viewers');
     return true;
   }
