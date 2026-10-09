@@ -1,5 +1,6 @@
 package com.example.camera_parent
 
+import android.Manifest
 import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -7,6 +8,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
@@ -16,6 +18,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 
 class StreamForegroundService : Service() {
 
@@ -32,18 +35,60 @@ class StreamForegroundService : Service() {
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_MODE = "mode"
-        // تأخير تشغيل الوكيل بعد startForeground، ليكون ServiceAgentChannel جاهزاً على الأجهزة البطيئة
+
         private const val START_AGENT_DELAY_MS = 2500L
-        // مهلة إعادة التشغيل عبر AlarmManager بعد سحب التطبيق من الحالات الأخيرة
+        private val RETRY_DELAYS_MS = longArrayOf(2500L, 5000L, 10000L)
+
         private const val RESTART_ALARM_DELAY_MS = 3000L
         private const val RESTART_REQUEST_CODE = 4822
+
+        private const val TAG = "CameraParent"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var foregroundStarted = false
+    private var retryIndex = 0
     private val handler = Handler(Looper.getMainLooper())
+
     private val startAgentRunnable = Runnable {
-        if (!isStopped()) FlutterServiceBridge.startAgent()
+        if (isStopped()) {
+            Log.i(TAG, "startAgent skipped: service stopped")
+            return@Runnable
+        }
+
+        val ready = try {
+            FlutterServiceBridge.isAgentReady()
+        } catch (e: Throwable) {
+            Log.w(TAG, "isAgentReady() threw, assuming not ready", e)
+            false
+        }
+
+        if (!ready) {
+            Log.w(TAG, "Flutter agent not ready yet (attempt ${retryIndex + 1})")
+            scheduleAgentRetry()
+            return@Runnable
+        }
+
+        try {
+            FlutterServiceBridge.startAgent()
+            retryIndex = 0
+            Log.i(TAG, "Flutter agent startAgent() invoked successfully")
+        } catch (e: Throwable) {
+            Log.e(TAG, "startAgent() failed, will retry", e)
+            scheduleAgentRetry()
+        }
+    }
+
+    private fun scheduleAgentRetry() {
+        if (retryIndex >= RETRY_DELAYS_MS.size) {
+            Log.e(TAG, "All agent retries exhausted. Camera stream will not start.")
+            return
+        }
+        val delay = RETRY_DELAYS_MS[retryIndex]
+        retryIndex++
+        handler.removeCallbacks(startAgentRunnable)
+        handler.postDelayed(startAgentRunnable, delay)
+        Log.i(TAG, "Scheduled agent retry #$retryIndex in ${delay}ms")
     }
 
     override fun onCreate() {
@@ -55,10 +100,13 @@ class StreamForegroundService : Service() {
         val action = intent?.action ?: ACTION_START
 
         if (action == ACTION_STOP) {
+            Log.i(TAG, "Stop action received")
             setEnabled(false)
             handler.removeCallbacks(startAgentRunnable)
             cancelRestartAlarm()
-            FlutterServiceBridge.stopAgent()
+            try { FlutterServiceBridge.stopAgent() } catch (e: Throwable) {
+                Log.w(TAG, "stopAgent() failed", e)
+            }
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -67,8 +115,22 @@ class StreamForegroundService : Service() {
         }
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        // getString مع قيمة افتراضية لا يُرجع null، فلا حاجة لـ elvis إضافي
-        val mode = intent?.getStringExtra(EXTRA_MODE) ?: prefs.getString(KEY_MODE, MODE_CAMERA)!!
+        val mode = intent?.getStringExtra(EXTRA_MODE)
+            ?: prefs.getString(KEY_MODE, MODE_CAMERA)
+            ?: MODE_CAMERA
+
+        if (!hasRequiredPermissions(mode)) {
+            Log.e(TAG, "Missing permissions for mode=$mode - aborting service start")
+            setEnabled(false)
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+
+        if (Build.VERSION.SDK_INT >= 35 && mode == MODE_CAMERA) {
+            Log.w(TAG, "Android 15+: camera FGS from BOOT_COMPLETED may be blocked by system")
+        }
+
+        prefs.edit().putBoolean(KEY_ENABLED, true).putString(KEY_MODE, mode).apply()
 
         val notification = buildNotification()
 
@@ -77,41 +139,59 @@ class StreamForegroundService : Service() {
                 val type = when (mode) {
                     MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                     MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    // MODE_FILES: نمرر 0 فيستخدم النظام الأنواع المعلنة في المانيفست
                     MODE_FILES -> 0
-                    else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
                 if (type == 0) startForeground(NOTIFICATION_ID, notification)
                 else startForeground(NOTIFICATION_ID, notification, type)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            Log.i(TAG, "Foreground started, mode=$mode")
         } catch (e: Exception) {
-            Log.e("CameraParent", "startForeground failed mode=$mode", e)
+            Log.e(TAG, "startForeground failed mode=$mode", e)
             if (foregroundStarted) {
-                // الخدمة تعمل أصلاً كخدمة أمامية: لا نوقفها بسبب فشل إعادة الترقية
                 return START_STICKY
             }
-            // فشلت البداية: لا نغيّر حالة "enabled" المحفوظة (فشل مؤقت لا يلغي نية المراقبة)
-            // ولا نحفظ الوضع المطلوب لأنه لم يُفعَّل
+            setEnabled(false)
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
         foregroundStarted = true
-        // لا نحفظ الوضع والتفعيل إلا بعد نجاح startForeground
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putBoolean(KEY_ENABLED, true)
-            .putString(KEY_MODE, mode)
-            .apply()
 
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
 
-        // إلغاء أي تشغيل معلّق سابق لمنع تشغيل الوكيل أكثر من مرة
+        retryIndex = 0
         handler.removeCallbacks(startAgentRunnable)
         handler.postDelayed(startAgentRunnable, START_AGENT_DELAY_MS)
+        Log.i(TAG, "Agent start scheduled in ${START_AGENT_DELAY_MS}ms")
 
         return START_STICKY
+    }
+
+    private fun hasRequiredPermissions(mode: String): Boolean {
+        val needsCamera = mode == MODE_CAMERA
+        val needsMic = mode == MODE_CAMERA || mode == MODE_MICROPHONE
+
+        if (needsCamera &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "CAMERA permission not granted")
+            return false
+        }
+
+        if (needsMic &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "RECORD_AUDIO permission not granted")
+            return false
+        }
+
+        return true
     }
 
     private fun setEnabled(enabled: Boolean) {
@@ -124,7 +204,6 @@ class StreamForegroundService : Service() {
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        // بدون مهلة زمنية: يبقى مُمسكاً طوال البث ويُحرَّر فقط عند الإيقاف أو التدمير
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CameraParent::StreamWakeLock").apply {
             setReferenceCounted(false)
             acquire()
@@ -136,7 +215,6 @@ class StreamForegroundService : Service() {
         wakeLock = null
     }
 
-    // PendingIntent ثابت لإعادة التشغيل، يُستخدم للجدولة وللإلغاء
     private fun restartPendingIntent(): PendingIntent {
         val restart = Intent(applicationContext, StreamForegroundService::class.java).setAction(ACTION_START)
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -155,34 +233,24 @@ class StreamForegroundService : Service() {
                 SystemClock.elapsedRealtime() + RESTART_ALARM_DELAY_MS,
                 restartPendingIntent()
             )
+            Log.i(TAG, "Restart alarm scheduled in ${RESTART_ALARM_DELAY_MS}ms")
         } catch (e: Exception) {
-            Log.w("CameraParent", "scheduleRestartAlarm failed", e)
+            Log.w(TAG, "scheduleRestartAlarm failed", e)
         }
     }
 
     private fun cancelRestartAlarm() {
-        val am = getSystemService(ALARM_SERVICE) as AlarmManager
-        am.cancel(restartPendingIntent())
+        try {
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            am.cancel(restartPendingIntent())
+        } catch (e: Exception) {
+            Log.w(TAG, "cancelRestartAlarm failed", e)
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!isStopped()) {
-            // 1) إعادة فتح الواجهة قدر الإمكان (قد يمنعها Android 10+ من الخلفية، لذلك لا نعتمد عليها وحدها)
-            try {
-                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                if (launchIntent != null) {
-                    launchIntent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    )
-                    startActivity(launchIntent)
-                }
-            } catch (e: Exception) {
-                Log.w("CameraParent", "onTaskRemoved: unable to relaunch activity", e)
-            }
-
-            // 2) جدولة إعادة تشغيل الخدمة عبر AlarmManager، لأن postDelayed قد لا يُنفَّذ إذا قُتلت العملية
+            Log.i(TAG, "onTaskRemoved: scheduling restart via alarm & watchdog")
             scheduleRestartAlarm()
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
         }
@@ -192,6 +260,7 @@ class StreamForegroundService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(startAgentRunnable)
         releaseWakeLock()
+        Log.i(TAG, "onDestroy: service destroyed")
         super.onDestroy()
     }
 
@@ -199,8 +268,11 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "بث الكاميرا", NotificationManager.IMPORTANCE_LOW)
-                .apply { description = "إشعار البث المباشر شغال" }
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "بث الكاميرا",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply { description = "إشعار البث المباشر شغال" }
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
@@ -208,7 +280,10 @@ class StreamForegroundService : Service() {
     private fun buildNotification(): Notification {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         val pendingIntent = launchIntent?.let {
-            PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            PendingIntent.getActivity(
+                this, 0, it,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("مراقبة نشطة")

@@ -59,12 +59,23 @@
             <intent-filter><action android:name="android.app.action.DEVICE_ADMIN_ENABLED" /></intent-filter>
         </receiver>
 
-
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".StreamForegroundService"
             android:exported="false"
             android:stopWithTask="false"
+            android:directBootAware="true"
             android:foregroundServiceType="camera|microphone|mediaProjection"/>
 
         <meta-data android:name="flutterEmbedding" android:value="2"/>
@@ -75,7 +86,8 @@
 
         <service
             android:name=".WakeFcmService"
-            android:exported="false">
+            android:exported="false"
+            android:foregroundServiceType="camera|microphone">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
