@@ -144,6 +144,36 @@ class StreamService {
     if (_running && _sessionId == sessionId && _deviceToken == deviceToken) {
       debugPrint('[StreamService] already running');
       _statusCtrl.add(_status);
+
+      // إصلاح: إذا كان التطبيق في المقدمة والكاميرا غير مفعّلة، شغّلها فوراً.
+      // يعالج حالة فتح التطبيق يدوياً بعد الإقلاع بينما الـ FGS يعمل بالفعل.
+      try {
+        final lifecycleState = WidgetsBinding.instance.lifecycleState;
+        if (lifecycleState == AppLifecycleState.resumed &&
+            localStream == null &&
+            !_broadcastScreen &&
+            !_broadcastFiles) {
+          debugPrint('[StreamService] start(): foreground + no camera -> '
+              'triggering _startMediaSource');
+          _pendingCameraStart = true;
+          unawaited(_startMediaSource().then((_) async {
+            final deferredId = _deferredViewerId;
+            final deferredName = _deferredCallerName ?? 'Unknown';
+            _deferredViewerId = null;
+            _deferredCallerName = null;
+            _pendingCameraStart = false;
+            if (deferredId != null &&
+                localStream != null &&
+                _hasLiveVideoTrack()) {
+              await _sendOfferTo(deferredId, deferredName);
+            }
+          }).catchError((e) {
+            debugPrint('[StreamService] foreground camera start failed: $e');
+          }));
+        }
+      } catch (e) {
+        debugPrint('[StreamService] foreground camera start check failed: $e');
+      }
       return;
     }
     if (_running) await stop();
@@ -209,6 +239,12 @@ class StreamService {
   Future<void> _onAppResumed() async {
     if (!_running) return;
     if (_broadcastScreen || _broadcastFiles) return;
+
+    // إصلاح: إذا كان هناك مشاهد معلّق، اعتبر الكاميرا "معلّقة"
+    // حتى لو صُفّر _pendingCameraStart في مكان آخر.
+    if (localStream == null && _deferredViewerId != null) {
+      _pendingCameraStart = true;
+    }
 
     // إذا كانت هناك محاولة فتح معلّقة، نفّذها الآن
     if (_pendingCameraStart && localStream == null) {
