@@ -36,6 +36,14 @@ class MainActivity : FlutterActivity() {
     }
 
 
+    override fun onResume() {
+        super.onResume()
+        // التطبيق صار ظاهراً: الكاميرا ستُفتح، فنلغي تنبيه الإيقاظ
+        try {
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(WAKE_NOTIFICATION_ID)
+        } catch (_: Exception) {}
+    }
+
     companion object {
         private const val ADMIN_CHANNEL = "camera_parent/device_admin"
         private const val FOREGROUND_SERVICE_CHANNEL = "camera_parent/foreground_service"
@@ -424,7 +432,7 @@ class MainActivity : FlutterActivity() {
         val notif = NotificationCompat.Builder(this, WAKE_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("طلب مشاهدة جديد")
-            .setContentText("جارٍ فتح الكاميرا...")
+            .setContentText("اضغط هنا لتشغيل الكاميرا")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setFullScreenIntent(pending, true)
@@ -435,9 +443,8 @@ class MainActivity : FlutterActivity() {
 
         nm.notify(WAKE_NOTIFICATION_ID, notif)
 
-        Handler(Looper.getMainLooper()).postDelayed({
-            try { nm.cancel(WAKE_NOTIFICATION_ID) } catch (_: Exception) {}
-        }, 5000L)
+        // لا نلغي الإشعار تلقائياً: هو التنبيه الوحيد لفتح الكاميرا بعد إعادة التشغيل.
+        // يُلغى عند فتح التطبيق فعلاً (onResume).
     }
 
 
