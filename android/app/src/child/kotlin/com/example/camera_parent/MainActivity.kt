@@ -56,9 +56,8 @@ class MainActivity : FlutterActivity() {
         private const val WAKE_NOTIFICATION_ID = 9999
     }
 
-    override fun provideFlutterEngine(context: Context): FlutterEngine {
-        return (application as CameraParentApplication).ensureEngine()
-    }
+    // ✅ إصلاح: إخبار FlutterActivity بأن المحرك مخزّن
+    override fun getCachedEngineId(): String = CameraParentApplication.ENGINE_ID
 
     override fun shouldDestroyEngineWithHost(): Boolean = false
 
