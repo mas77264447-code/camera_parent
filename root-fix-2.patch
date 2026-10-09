@@ -1,0 +1,75 @@
+diff --git a/lib/services/stream_service.dart b/lib/services/stream_service.dart
+index b7354cd..69e15a7 100644
+--- a/lib/services/stream_service.dart
++++ b/lib/services/stream_service.dart
+@@ -1110,34 +1110,38 @@ class StreamService {
+       _broadcastFiles = newFiles;
+     }
+ 
++    // الكاميرا لا تُفتح من الخلفية: لا نرسل offer، ونعلّق الطلب حتى يُفتح التطبيق.
++    final isForeground =
++        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
++
+     if (!_broadcastFiles) {
+-      // إصلاح race: اضبط deferred قبل startMediaSource حتى لا تفوت
+-      // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
+-      _deferredViewerId = viewerId;
+-      _deferredCallerName = callerName;
++      if (!_broadcastScreen && localStream == null && !isForeground) {
++        debugPrint(
++            '[StreamService] viewer-joined in background, waiting viewer=$viewerId');
++        _awaitingForeground[viewerId] =
++            _AwaitingViewer(callerName, requestedSource ?? 'camera');
++        _ws?.add(jsonEncode({
++          'type': 'viewer-status',
++          'target': viewerId,
++          'status': 'waiting_child_open',
++        }));
++        return;
++      }
+ 
+       if (localStream == null) {
+-        final lifecycleBefore = WidgetsBinding.instance.lifecycleState;
+-        if (lifecycleBefore != AppLifecycleState.resumed) {
+-          debugPrint(
+-              '[StreamService] _handleApprovedViewer: background, deferring viewer=$viewerId');
+-          _pendingCameraStart = true;
++        await _startMediaSource();
++        if (localStream == null) {
++          _ws?.add(jsonEncode({
++            'type': 'viewer-status',
++            'target': viewerId,
++            'status': 'camera_failed',
++          }));
+           return;
+         }
+-        await _startMediaSource();
+       }
+     }
+ 
+-    if (localStream == null && !_broadcastFiles) {
+-      debugPrint(
+-          '[StreamService] deferring offer to $viewerId until camera is ready');
+-      _pendingCameraStart = true;
+-      return;
+-    }
+-
+-    _deferredViewerId = null;
+-    _deferredCallerName = null;
+-
++    _awaitingForeground.remove(viewerId);
+     await _sendOfferTo(viewerId, callerName);
+   }
+ 
+diff --git a/lib/screens/camera_viewer_screen.dart b/lib/screens/camera_viewer_screen.dart
+index 7ef87b7..df6bdc2 100644
+--- a/lib/screens/camera_viewer_screen.dart
++++ b/lib/screens/camera_viewer_screen.dart
+@@ -537,6 +537,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
+           break;
+         case "viewer-status":
+           final st = msg["status"] as String?;
++          _offerTimer?.cancel();
+           if (mounted) {
+             setState(() {
+               if (st == "waiting_child_open") {

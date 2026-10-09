@@ -537,6 +537,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           break;
         case "viewer-status":
           final st = msg["status"] as String?;
+          _offerTimer?.cancel();
           if (mounted) {
             setState(() {
               if (st == "waiting_child_open") {
