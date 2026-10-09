@@ -77,6 +77,10 @@ class StreamService {
 
   bool _autoApproveViewers = false;
 
+  /// الجلسة التي وافق الطفل عليها مرة واحدة على الأقل. تُحفظ في التخزين
+  /// ليبقى الإذن بعد إعادة التشغيل، فلا يحتاج الطفل نافذة موافقة لا تظهر.
+  String? _trustedSessionId;
+
   bool _remoteAudioMuted = false;
   bool _localMicMuted = false;
   bool _usingFrontCamera = false;
@@ -160,6 +164,7 @@ class StreamService {
 
     final prefs = await SharedPreferences.getInstance();
     _autoApproveViewers = prefs.getBool('auto_approve_viewers') ?? false;
+    _trustedSessionId = prefs.getString('trusted_session_id');
 
     _updateStatus("جاري الاتصال بالسيرفر...");
     ConnectionStateManager.instance.update(ConnectionStatus.connecting);
@@ -916,7 +921,9 @@ class StreamService {
     final requestedSource = data['source'] as String? ?? 'camera';
     if (viewerId == null) return;
 
-    if (_autoApproveViewers) {
+    final trusted =
+        _trustedSessionId != null && _trustedSessionId == _sessionId;
+    if (_autoApproveViewers || trusted) {
       await _approveViewer(viewerId, callerName, requestedSource);
       return;
     }
@@ -938,6 +945,18 @@ class StreamService {
     _ws?.add(jsonEncode({'type': 'reject-viewer', 'target': viewerId}));
   }
 
+  Future<void> _rememberTrustedSession() async {
+    final sid = _sessionId;
+    if (sid == null || _trustedSessionId == sid) return;
+    _trustedSessionId = sid;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('trusted_session_id', sid);
+    } catch (e) {
+      debugPrint('[StreamService] saving trusted session failed: $e');
+    }
+  }
+
   /// معدّلة: إحضار التطبيق للمقدمة قبل فتح الكاميرا
   Future<void> _approveViewer(
       String viewerId, String callerName, String requestedSource) async {
@@ -947,6 +966,7 @@ class StreamService {
       return;
     }
     _approvalInFlight.add(viewerId);
+    unawaited(_rememberTrustedSession());
 
     if (requestedSource == 'files') {
       _approvedFileViewers.add(viewerId);
