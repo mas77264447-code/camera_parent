@@ -1,9 +1,7 @@
 package com.example.camera_parent
 
-import android.Manifest
 import android.content.ContentUris
 import android.content.Context
-import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
@@ -12,7 +10,6 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
-import androidx.core.content.ContextCompat
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
@@ -30,7 +27,7 @@ object FileAccessPlugin {
                     "listDirectory" -> handleListDirectory(context, call, result)
                     "readFileChunk" -> handleReadFileChunk(call, result)
                     "getFileInfo" -> handleGetFileInfo(context, call, result)
-                    "hasStoragePermission" -> handleHasStoragePermission(context, result)
+                    "hasStoragePermission" -> handleHasStoragePermission(result)
                     "openAllFilesSettings" -> handleOpenAllFilesSettings(context, result)
                     else -> result.notImplemented()
                 }
@@ -41,41 +38,6 @@ object FileAccessPlugin {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // ✅ جديد: فحص الصلاحيات وقت التشغيل
-    // ═══════════════════════════════════════════════════════════
-
-    /// هل لدينا صلاحية "الوصول لجميع الملفات" (Android 11+)?
-    private fun hasAllFilesAccess(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            true
-        }
-    }
-
-    /// هل لدينا صلاحية قراءة الوسائط حسب نوعها؟
-    private fun hasMediaPermission(context: Context, type: String): Boolean {
-        // Android 13+ يحتاج صلاحيات مفصّلة
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val permission = when (type) {
-                "video" -> Manifest.permission.READ_MEDIA_VIDEO
-                "audio" -> Manifest.permission.READ_MEDIA_AUDIO
-                else -> Manifest.permission.READ_MEDIA_IMAGES
-            }
-            return ContextCompat.checkSelfPermission(context, permission) ==
-                    PackageManager.PERMISSION_GRANTED
-        }
-        // Android 12 وأقدم: READ_EXTERNAL_STORAGE
-        return ContextCompat.checkSelfPermission(
-            context, Manifest.permission.READ_EXTERNAL_STORAGE
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // listGallery
-    // ═══════════════════════════════════════════════════════════
-
     private fun handleListGallery(
         context: Context,
         call: MethodCall,
@@ -83,17 +45,6 @@ object FileAccessPlugin {
     ) {
         val type = call.argument<String>("type") ?: "image"
         val limit = call.argument<Int>("limit") ?: 500
-
-        // ✅ فحص الصلاحية قبل الاستعلام
-        if (!hasMediaPermission(context, type) && !hasAllFilesAccess()) {
-            Log.w(TAG, "listGallery($type): missing permission")
-            result.error(
-                "PERMISSION_DENIED",
-                "صلاحية الوصول للوسائط غير ممنوحة. فعّل \"الوصول لجميع الملفات\" على جهاز الطفل.",
-                null
-            )
-            return
-        }
 
         val collection = when (type) {
             "video" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
@@ -117,9 +68,6 @@ object FileAccessPlugin {
         )
 
         val items = mutableListOf<Map<String, Any?>>()
-        var queryFailed = false
-        var queryError: String? = null
-
         try {
             val cursor: Cursor? = context.contentResolver.query(
                 collection,
@@ -128,65 +76,38 @@ object FileAccessPlugin {
                 null,
                 "${MediaStore.MediaColumns.DATE_ADDED} DESC"
             )
+            cursor?.use {
+                val idCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val nameCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                val sizeCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                val mimeCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
+                val dateCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
 
-            if (cursor == null) {
-                queryFailed = true
-                queryError = "contentResolver.query رجع null"
-                Log.e(TAG, "listGallery($type): cursor is null")
-            } else {
-                cursor.use {
-                    val idCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-                    val nameCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                    val sizeCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
-                    val mimeCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
-                    val dateCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
-
-                    var count = 0
-                    while (it.moveToNext() && count < limit) {
-                        val id = it.getLong(idCol)
-                        val uri: Uri = ContentUris.withAppendedId(collection, id)
-                        items.add(
-                            mapOf(
-                                "uri" to uri.toString(),
-                                "name" to (it.getString(nameCol) ?: "file_$id"),
-                                "size" to it.getLong(sizeCol),
-                                "mime" to (it.getString(mimeCol) ?: "application/octet-stream"),
-                                "date" to it.getLong(dateCol) * 1000L,
-                                "isDirectory" to false,
-                                "source" to "gallery"
-                            )
+                var count = 0
+                while (it.moveToNext() && count < limit) {
+                    val id = it.getLong(idCol)
+                    val uri: Uri = ContentUris.withAppendedId(collection, id)
+                    items.add(
+                        mapOf(
+                            "uri" to uri.toString(),
+                            "name" to (it.getString(nameCol) ?: "file_$id"),
+                            "size" to it.getLong(sizeCol),
+                            "mime" to (it.getString(mimeCol) ?: "application/octet-stream"),
+                            "date" to it.getLong(dateCol) * 1000L,
+                            "isDirectory" to false,
+                            "source" to "gallery"
                         )
-                        count++
-                    }
+                    )
+                    count++
                 }
             }
-        } catch (e: SecurityException) {
-            queryFailed = true
-            queryError = "SecurityException: ${e.message}"
-            Log.e(TAG, "listGallery($type) SecurityException", e)
         } catch (e: Exception) {
-            queryFailed = true
-            queryError = "Exception: ${e.message}"
-            Log.e(TAG, "listGallery($type) failed", e)
-        }
-
-        // ✅ إرجاع خطأ صريح عند الفشل
-        if (queryFailed) {
-            result.error(
-                "QUERY_FAILED",
-                queryError ?: "فشل قراءة المعرض",
-                null
-            )
-            return
+            Log.e(TAG, "listGallery failed: ${e.message}", e)
         }
 
         Log.d(TAG, "listGallery($type) returned ${items.size} items")
         result.success(items)
     }
-
-    // ═══════════════════════════════════════════════════════════
-    // listDirectory
-    // ═══════════════════════════════════════════════════════════
 
     private fun handleListDirectory(
         context: Context,
@@ -195,7 +116,6 @@ object FileAccessPlugin {
     ) {
         val requestedPath = call.argument<String>("path")
 
-        // الجذر — قائمة الاختصارات
         if (requestedPath == null || requestedPath.isEmpty()) {
             val roots = listStandardRoots(context)
             result.success(mapOf(
@@ -206,18 +126,9 @@ object FileAccessPlugin {
             return
         }
 
-        // mediastore://
         if (requestedPath.startsWith("mediastore://")) {
             val kind = requestedPath.removePrefix("mediastore://")
             val items = listMediaByKind(context, kind)
-            if (items == null) {
-                result.error(
-                    "PERMISSION_DENIED",
-                    "صلاحية قراءة الوسائط غير ممنوحة",
-                    null
-                )
-                return
-            }
             result.success(mapOf(
                 "path" to requestedPath,
                 "parent" to "/",
@@ -226,8 +137,13 @@ object FileAccessPlugin {
             return
         }
 
-        // مسار نظام
-        if (!hasAllFilesAccess()) {
+        val hasManage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true
+        }
+
+        if (!hasManage) {
             result.success(mapOf(
                 "path" to requestedPath,
                 "parent" to "/",
@@ -286,7 +202,13 @@ object FileAccessPlugin {
     private fun listStandardRoots(context: Context): List<Map<String, Any?>> {
         val roots = mutableListOf<Map<String, Any?>>()
 
-        if (hasAllFilesAccess()) {
+        val hasManage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true
+        }
+
+        if (hasManage) {
             try {
                 val internal = Environment.getExternalStorageDirectory()
                 if (internal != null && internal.exists()) {
@@ -321,20 +243,7 @@ object FileAccessPlugin {
         )
     }
 
-    /// ✅ إرجاع null عند فشل الصلاحية
-    private fun listMediaByKind(context: Context, kind: String): List<Map<String, Any?>>? {
-        // فحص الصلاحية
-        val mediaType = when (kind) {
-            "video" -> "video"
-            "audio" -> "audio"
-            "all" -> "image"  // عام
-            else -> "image"
-        }
-        if (!hasMediaPermission(context, mediaType) && !hasAllFilesAccess()) {
-            Log.w(TAG, "listMediaByKind($kind): missing permission")
-            return null
-        }
-
+    private fun listMediaByKind(context: Context, kind: String): List<Map<String, Any?>> {
         val collection = when (kind) {
             "video" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
@@ -389,18 +298,11 @@ object FileAccessPlugin {
                     count++
                 }
             }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "listMediaByKind($kind) SecurityException", e)
-            return null
         } catch (e: Exception) {
             Log.e(TAG, "listMediaByKind($kind) failed: ${e.message}", e)
         }
         return items
     }
-
-    // ═══════════════════════════════════════════════════════════
-    // getFileInfo
-    // ═══════════════════════════════════════════════════════════
 
     private fun handleGetFileInfo(
         context: Context,
@@ -415,25 +317,20 @@ object FileAccessPlugin {
         val uri = Uri.parse(uriString)
 
         if (uri.scheme == "content") {
-            try {
-                context.contentResolver.query(
-                    uri,
-                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                    null, null, null
-                )?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                        result.success(mapOf(
-                            "name" to (if (nameIdx >= 0) cursor.getString(nameIdx) else "file"),
-                            "size" to (if (sizeIdx >= 0) cursor.getLong(sizeIdx) else 0L)
-                        ))
-                        return
-                    }
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    result.success(mapOf(
+                        "name" to (if (nameIdx >= 0) cursor.getString(nameIdx) else "file"),
+                        "size" to (if (sizeIdx >= 0) cursor.getLong(sizeIdx) else 0L)
+                    ))
+                    return
                 }
-            } catch (e: SecurityException) {
-                result.error("PERMISSION_DENIED", "لا صلاحية للوصول للملف", null)
-                return
             }
             result.error("NOT_FOUND", "الملف غير موجود", null)
         } else {
@@ -449,10 +346,6 @@ object FileAccessPlugin {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // readFileChunk
-    // ═══════════════════════════════════════════════════════════
-
     private fun handleReadFileChunk(
         call: MethodCall,
         result: MethodChannel.Result
@@ -465,20 +358,12 @@ object FileAccessPlugin {
         val length = call.argument<Number>("length")?.toInt() ?: 65536
 
         val uri = Uri.parse(uriString)
-        val stream = try {
-            if (uri.scheme == "content") {
-                CameraParentApplication.appContext()
-                    ?.contentResolver?.openInputStream(uri)
-            } else {
-                val f = File(uriString)
-                if (!f.exists() || f.isDirectory) null else FileInputStream(f)
-            }
-        } catch (e: SecurityException) {
-            result.error("PERMISSION_DENIED", "لا صلاحية لقراءة الملف", null)
-            return
-        } catch (e: Exception) {
-            result.error("OPEN_FAILED", "تعذّر فتح الملف: ${e.message}", null)
-            return
+        val stream = if (uri.scheme == "content") {
+            CameraParentApplication.AppHolder.context
+                ?.contentResolver?.openInputStream(uri)
+        } else {
+            val f = File(uriString)
+            if (!f.exists() || f.isDirectory) null else FileInputStream(f)
         } ?: run {
             result.error("OPEN_FAILED", "تعذّر فتح الملف", null)
             return
@@ -509,28 +394,14 @@ object FileAccessPlugin {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // hasStoragePermission
-    // ═══════════════════════════════════════════════════════════
-
-    private fun handleHasStoragePermission(
-        context: Context,
-        result: MethodChannel.Result
-    ) {
-        // ✅ فحص شامل: جميع الملفات + صلاحيات الوسائط
-        val hasAll = hasAllFilesAccess()
-        val hasImages = hasMediaPermission(context, "image")
-        val hasVideos = hasMediaPermission(context, "video")
-
-        // يحتاج إما All Files أو (صلاحية الصور + صلاحية الفيديو)
-        val granted = hasAll || (hasImages && hasVideos)
-
-        result.success(granted)
+    private fun handleHasStoragePermission(result: MethodChannel.Result) {
+        val hasManage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true
+        }
+        result.success(hasManage)
     }
-
-    // ═══════════════════════════════════════════════════════════
-    // openAllFilesSettings
-    // ═══════════════════════════════════════════════════════════
 
     private fun handleOpenAllFilesSettings(
         context: Context,
@@ -552,10 +423,6 @@ object FileAccessPlugin {
             result.success(false)
         }
     }
-
-    // ═══════════════════════════════════════════════════════════
-    // guessMime
-    // ═══════════════════════════════════════════════════════════
 
     private fun guessMime(name: String): String {
         return when {

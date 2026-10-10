@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../services/camera_service.dart';
-import '../services/crypto_service.dart';
 
 class DeviceFilesScreen extends StatefulWidget {
   final String sessionId;
@@ -41,7 +40,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
   String? _parentPath;
   bool _loading = false;
   Timer? _loadTimeout;
-  Timer? _pingTimer; // ✅ إصلاح: ping للحفاظ على الاتصال
 
   final Map<String, _TransferState> _transfers = {};
 
@@ -58,7 +56,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
   @override
   void dispose() {
     _loadTimeout?.cancel();
-    _pingTimer?.cancel(); // ✅ إصلاح
     _tabs.dispose();
     try {
       if (_ws?.readyState == WebSocket.open) {
@@ -82,20 +79,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
       _ws = await WebSocket.connect(wsUrl)
           .timeout(const Duration(seconds: 10));
 
-      // ✅ إصلاح: listen قبل add
-      _ws!.listen(
-        _handleMessage,
-        onError: (e) {
-          debugPrint('[Files] ws error: $e');
-          if (mounted) setState(() => _status = 'خطأ في الاتصال');
-        },
-        onDone: () {
-          _pingTimer?.cancel();
-          if (mounted) setState(() => _status = 'انقطع الاتصال');
-        },
-        cancelOnError: true,
-      );
-
       _ws!.add(jsonEncode({
         'type': 'register',
         'role': 'viewer',
@@ -105,22 +88,19 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
         'requestedSource': 'files',
       }));
 
-      // ✅ إصلاح: ping كل 15 ثانية
-      _pingTimer?.cancel();
-      _pingTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-        if (_ws?.readyState == WebSocket.open) {
-          try {
-            _ws!.add(jsonEncode({
-              'type': 'ping',
-              'timestamp': DateTime.now().millisecondsSinceEpoch,
-            }));
-          } catch (_) {}
-        }
-      });
+      _ws!.listen(
+        _handleMessage,
+        onError: (e) {
+          if (mounted) setState(() => _status = 'خطأ في الاتصال');
+        },
+        onDone: () {
+          if (mounted) setState(() => _status = 'انقطع الاتصال');
+        },
+        cancelOnError: true,
+      );
 
       setState(() => _status = 'جاري التحقق من الجهاز...');
     } catch (e) {
-      debugPrint('[Files] connect error: $e');
       if (mounted) setState(() => _status = 'فشل الاتصال: $e');
     }
   }
@@ -129,7 +109,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
     try {
       final msg = jsonDecode(raw as String);
       final type = msg['type'] as String?;
-      debugPrint('[Files] ← $type');
 
       switch (type) {
         case 'viewer-approved':
@@ -180,8 +159,7 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
             if (!ok) {
               _status = 'خطأ: ${errorMsg.isEmpty ? 'unknown' : errorMsg}';
               if (errorMsg.contains('الصلاحيات غير ممنوحة') ||
-                  errorMsg.contains('صلاحية') ||
-                  errorMsg.contains('PERMISSION')) {
+                  errorMsg.contains('صلاحية')) {
                 _permissionMissingOnChild = true;
               }
               return;
@@ -219,26 +197,13 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
           final state = _transfers[requestId];
           if (state == null || state.canceled || state.paused) return;
           try {
-            final encrypted = base64Decode(data);
-
-            Uint8List decrypted;
-            if (CryptoService.instance.isInitialized) {
-              try {
-                decrypted = CryptoService.instance.decrypt(encrypted);
-              } catch (e) {
-                debugPrint('[Files] decrypt failed: $e');
-                return;
-              }
-            } else {
-              decrypted = encrypted;
-            }
-
+            final bytes = base64Decode(data);
             if (state.mode == TransferMode.preview) {
-              state.chunks.add(decrypted);
+              state.chunks.add(bytes);
             } else {
-              state.sink?.add(decrypted);
+              state.sink?.add(bytes);
             }
-            state.received += decrypted.length;
+            state.received += bytes.length;
             setState(() {});
           } catch (e) {
             debugPrint('[Files] chunk error: $e');
@@ -283,10 +248,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
 
   void _preview(String uri, String name, String mime) {
     if (_ws?.readyState != WebSocket.open || !_approved) return;
-    if (!CryptoService.instance.isInitialized) {
-      setState(() => _status = 'E2E غير مُهيَّأ');
-      return;
-    }
     final requestId = _uid();
     setState(() {
       _transfers[requestId] = _TransferState(
@@ -307,10 +268,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
 
   Future<void> _startDownload(String uri, String name, String mime) async {
     if (_ws?.readyState != WebSocket.open || !_approved) return;
-    if (!CryptoService.instance.isInitialized) {
-      setState(() => _status = 'E2E غير مُهيَّأ');
-      return;
-    }
     final dest = await _askSaveLocation(name);
     if (dest == null) return;
 
@@ -340,6 +297,7 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
     }));
   }
 
+  // ✅ إيقاف مؤقت
   Future<void> _pauseTransfer(String requestId) async {
     final state = _transfers[requestId];
     if (state == null || state.paused || state.canceled) return;
@@ -368,6 +326,7 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
     }
   }
 
+  // ✅ استئناف
   Future<void> _resumeTransfer(String oldRequestId) async {
     final state = _transfers[oldRequestId];
     if (state == null || !state.paused || state.canceled) return;
@@ -398,6 +357,7 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
     }
   }
 
+  // ✅ إلغاء نهائي
   Future<void> _cancelTransfer(String requestId) async {
     final state = _transfers[requestId];
     if (state == null) return;
@@ -792,6 +752,7 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
     );
   }
 
+  // ✅ شريط التحميل مع أزرار ⏸️ / ▶️ / ❌
   Widget _buildTransferBanner() {
     final entries = _transfers.entries.toList();
     return Container(

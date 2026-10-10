@@ -30,7 +30,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
   bool _renderersReady = false;
-  bool _showLocalPreview = true;
+  bool _showLocalPreview = false;
 
   StreamSubscription? _statusSub;
   StreamSubscription? _callersSub;
@@ -61,7 +61,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
     await Permission.notification.request();
-    if (!mounted) return;
     if (!cam.isGranted || !mic.isGranted) {
       setState(() => _status = "مطلوب صلاحيات الكاميرا والميكروفون");
       return;
@@ -73,16 +72,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       _renderersReady = true;
     } catch (_) {}
 
-    if (!mounted) return;
-
-    _statusSub = _svc.onStatus.listen((s) {
-      if (mounted) setState(() => _status = s);
-    });
-    _callersSub = _svc.onCallers.listen((c) {
-      if (mounted) setState(() => _callers = c);
-    });
+    _statusSub = _svc.onStatus.listen((s) => setState(() => _status = s));
+    _callersSub = _svc.onCallers.listen((c) => setState(() => _callers = c));
     _remoteSub = _svc.onRemoteStreams.listen((r) {
-      if (!mounted) return;
       setState(() => _remoteStreams = r);
       final active = _svc.activeViewerId;
       if (active != null) {
@@ -90,7 +82,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       }
     });
     _pendingSub = _svc.onPendingRequests.listen((p) {
-      if (!mounted) return;
       setState(() => _pending = p);
       _maybeShowApprovalDialog();
     });
@@ -98,11 +89,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       if (mounted) setState(() => _activeRemote = s);
     });
     _localSub = _svc.onLocalStream.listen((s) {
-      if (!mounted) return;
-      setState(() => _local = s);
-      if (_showLocalPreview && _renderersReady) {
-        _localRenderer.srcObject = s;
-      }
+      if (mounted) setState(() => _local = s);
     });
 
     await _svc.start(
@@ -110,17 +97,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       deviceToken: widget.deviceToken,
       cameraName: widget.cameraName,
     );
-
-    // بعد إعادة تشغيل التطبيق تكون الخدمة جديدة ولا يوجد بث قديم؛
-    // ابدأ الكاميرا فوراً ولا تنتظر طلب مشاهدة من الوالد.
-    await _svc.ensureCameraStarted();
-    if (mounted) {
-      final current = _svc.localStream;
-      setState(() => _local = current);
-      if (_showLocalPreview && _renderersReady) {
-        _localRenderer.srcObject = current;
-      }
-    }
   }
 
   /// ✅ إصلاح: تعرض النافذة لمشاهد واحد فقط في كل مرة، وتتجاهل أي مشاهد

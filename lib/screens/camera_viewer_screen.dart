@@ -41,12 +41,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   Timer? _healthCheckTimer;
   Timer? _pingTimer;
   Timer? _noMediaWatchdog;
-  Timer? _diagTimer;
-  Timer? _rendererBindTimer;
-  Timer? _videoFrameWatchdog;
-  int _videoStallChecks = 0;
-  bool _stallIceRestartTried = false;
-  String _diag = '';
 
   int _reconnectAttempts = 0;
   int _consecutiveFailures = 0;
@@ -72,10 +66,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _init();
-    _diagTimer = Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => _updateDiag(),
-    );
   }
 
   @override
@@ -87,129 +77,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         _scheduleReconnect();
       }
     }
-  }
-
-  String _short(Object? o) => o == null ? '-' : o.toString().split('.').last;
-
-  Future<void> _updateDiag() async {
-    if (_disposed || !mounted) return;
-    final pc = _pc;
-    final lines = <String>[];
-    lines.add('pc=${_short(pc?.connectionState)} ice=${_short(pc?.iceConnectionState)}');
-    final s = _remoteStream;
-    final vt = s?.getVideoTracks();
-    lines.add('tracks v=${vt?.length ?? 0} a=${s?.getAudioTracks().length ?? 0}'
-        ' enabled=${(vt != null && vt.isNotEmpty) ? vt.first.enabled : '-'}');
-    lines.add('renderer=${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}');
-    if (pc != null) {
-      try {
-        final reports = await pc.getStats();
-        var sawVideo = false;
-        for (final r in reports) {
-          if (r.type != 'inbound-rtp') continue;
-          final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
-          if (kind != 'video') continue;
-          sawVideo = true;
-          lines.add('rx bytes=${r.values['bytesReceived']} pkts=${r.values['packetsReceived']} lost=${r.values['packetsLost']}');
-          lines.add('frames rx=${r.values['framesReceived']} dec=${r.values['framesDecoded']} drop=${r.values['framesDropped']}');
-          lines.add('size=${r.values['frameWidth']}x${r.values['frameHeight']}');
-        }
-        if (!sawVideo) {
-          lines.add('rx: NO video inbound-rtp (reports=${reports.length})');
-        }
-      } catch (e) {
-        lines.add('stats error');
-      }
-    }
-    if (!mounted || _disposed) return;
-    setState(() => _diag = lines.join('\n'));
-  }
-
-  void _bindRemoteStream(MediaStream stream) {
-    _rendererBindTimer?.cancel();
-    try { _remoteRenderer.srcObject = null; } catch (_) {}
-
-    _rendererBindTimer = Timer(const Duration(milliseconds: 150), () {
-      if (_disposed || !mounted || !identical(_remoteStream, stream)) return;
-      try {
-        _remoteRenderer.srcObject = stream;
-        setState(() {});
-        debugPrint('[Viewer] renderer bound to stream ${stream.id}');
-      } catch (e) {
-        debugPrint('[Viewer] renderer bind failed: $e');
-      }
-      _startVideoFrameWatchdog();
-    });
-  }
-
-  /// إذا الفيديو موجود لكن الـ renderer ما زال 0x0:
-  /// - بعد ~4 ثواني: إعادة ربط الـ renderer (مشكلة عرض محلية).
-  /// - بعد ~10 ثواني: ICE Restart (مشكلة شبكة).
-  /// - بعد ~30 ثانية: التوقف وإبلاغ المستخدم بأن الكاميرا على الجهاز
-  ///   الآخر لا تُنتج إطارات (غالباً بسبب تشغيلها في الخلفية).
-  void _startVideoFrameWatchdog() {
-    _videoFrameWatchdog?.cancel();
-    _videoStallChecks = 0;
-    _stallIceRestartTried = false;
-
-    _videoFrameWatchdog = Timer.periodic(const Duration(seconds: 2), (timer) {
-      if (_disposed || !mounted) {
-        timer.cancel();
-        return;
-      }
-      final stream = _remoteStream;
-      if (stream == null) {
-        timer.cancel();
-        return;
-      }
-      if (stream.getVideoTracks().isEmpty) return;
-
-      if (_remoteRenderer.videoWidth > 0) {
-        debugPrint('[Watchdog] video OK ${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}');
-        if (mounted) setState(() => _status = "متصل ✓");
-        timer.cancel();
-        return;
-      }
-
-      _videoStallChecks++;
-      debugPrint('[Watchdog] renderer still 0x0 (check $_videoStallChecks)');
-
-      if (mounted && _videoStallChecks >= 2) {
-        setState(() => _status = "جاري استقبال الفيديو...");
-      }
-
-      if (_videoStallChecks == 2) {
-        try {
-          _remoteRenderer.srcObject = null;
-          Future.delayed(const Duration(milliseconds: 100), () {
-            if (_disposed || !mounted || !identical(_remoteStream, stream)) return;
-            try {
-              _remoteRenderer.srcObject = stream;
-              setState(() {});
-            } catch (_) {}
-          });
-        } catch (_) {}
-      } else if (_videoStallChecks >= 5 && !_stallIceRestartTried) {
-        _stallIceRestartTried = true;
-        debugPrint('[Watchdog] no video frames after ~10s — ICE restart');
-        if (mounted) setState(() => _status = "إعادة محاولة الاتصال...");
-        _tryIceRestart();
-      } else if (_videoStallChecks >= 15) {
-        debugPrint('[Watchdog] no video frames after ~30s — aborting');
-        if (mounted) {
-          setState(() => _status =
-              "تعذر استقبال الفيديو. تأكد من فتح تطبيق الكاميرا على الجهاز الآخر ومنحه صلاحية الكاميرا.");
-        }
-        timer.cancel();
-      }
-    });
-  }
-
-  void _cancelRendererTimers() {
-    _rendererBindTimer?.cancel();
-    _rendererBindTimer = null;
-    _videoFrameWatchdog?.cancel();
-    _videoFrameWatchdog = null;
   }
 
   void _refreshRemoteVideoTexture() {
@@ -414,7 +281,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         _onSignalMessage,
         onDone: () async {
           if (_rejected) return;
-          _cancelRendererTimers();
           try { await _pc?.close(); } catch (_) {}
           _pc = null;
           _remoteStream = null;
@@ -498,7 +364,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _pendingRemoteIce.clear();
     _reconnectAttempts = 0;
     _consecutiveFailures = 0;
-    _cancelRendererTimers();
     try { _remoteRenderer.srcObject = null; } catch (_) {}
 
     if (mounted) {
@@ -535,11 +400,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           _reconnectTimer = null;
           _noMediaWatchdog?.cancel();
           _noMediaWatchdog = null;
-          final oldPc2 = _pc;
-          _pc = null;
-          if (oldPc2 != null) {
-            try { await oldPc2.close(); } catch (_) {}
-          }
+          try { await _pc?.close(); } catch (_) {}
           if (mounted) {
             setState(() => _status = "صاحب الكاميرا رفض طلب الاتصال");
           }
@@ -570,25 +431,24 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
     _broadcasterId = msg["from"].toString();
 
-    final oldPc = _pc;
-    _pc = null;
-    if (oldPc != null) {
-      try { await oldPc.close(); } catch (_) {}
+    if (_pc != null) {
+      try { await _pc!.close(); } catch (_) {}
+      _pc = null;
     }
     _remoteStream = null;
-    _cancelRendererTimers();
     _textureRefreshedForThisTrack = false;
     _remoteDescSet = false;
     _pendingRemoteIce.clear();
     try { _remoteRenderer.srcObject = null; } catch (_) {}
 
     try {
-      final pc = await createPeerConnection({"iceServers": _iceServers});
-      _pc = pc;
+      _pc = await createPeerConnection({"iceServers": _iceServers});
 
-      pc.onTrack = (event) {
-        if (_pc != pc) return;
-        debugPrint('[PC] onTrack kind=${event.track.kind} streams=${event.streams.length}');
+      // ✅✅✅ التعديل: onTrack محسّن
+      _pc!.onTrack = (event) {
+        debugPrint('[PC] onTrack received');
+        debugPrint('[PC] kind=${event.track.kind}');
+        debugPrint('[PC] streams count=${event.streams.length}');
 
         if (event.streams.isEmpty) {
           debugPrint('[PC] onTrack called but streams is empty!');
@@ -596,28 +456,47 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
 
         final stream = event.streams[0];
-        debugPrint('[PC] stream id=${stream.id} '
-            'video=${stream.getVideoTracks().length} audio=${stream.getAudioTracks().length}');
+        debugPrint('[PC] stream id=${stream.id}');
+        debugPrint('[PC] video tracks=${stream.getVideoTracks().length}');
+        debugPrint('[PC] audio tracks=${stream.getAudioTracks().length}');
 
         _remoteStream = stream;
         _noMediaWatchdog?.cancel();
         _noMediaWatchdog = null;
 
-        // لا تعلن "متصل ✓" هنا — انتظر أول إطار فيديو فعلي
-        if (mounted) {
-          if (stream.getVideoTracks().isEmpty) {
-            setState(() => _status =
-                "متصل (بدون فيديو) — الكاميرا لا تعمل على الجهاز الآخر");
-          } else {
-            setState(() => _status = "جاري استقبال الفيديو...");
-          }
-        }
+        if (mounted) setState(() => _status = "متصل ✓");
 
+        // ✅✅✅ إعادة تعيين renderer بقوة
         _textureRefreshedForThisTrack = true;
-        _bindRemoteStream(stream);
+        try {
+          _remoteRenderer.srcObject = null;
+        } catch (_) {}
+
+        Future.delayed(const Duration(milliseconds: 150), () {
+          if (!mounted || _remoteStream == null) return;
+          try {
+            _remoteRenderer.srcObject = _remoteStream;
+            setState(() {});
+            debugPrint('[PC] ✅ renderer updated with remote stream');
+          } catch (e) {
+            debugPrint('[PC] renderer update failed: $e');
+          }
+        });
+
+        // إعادة إضافية بعد 1.5 ثانية
+        Future.delayed(const Duration(milliseconds: 1500), () {
+          if (!mounted || _remoteStream == null) return;
+          if (_remoteRenderer.srcObject == null) {
+            debugPrint('[PC] renderer still null — retrying');
+            try {
+              _remoteRenderer.srcObject = _remoteStream;
+              setState(() {});
+            } catch (_) {}
+          }
+        });
       };
 
-      pc.onIceCandidate = (candidate) {
+      _pc!.onIceCandidate = (candidate) {
         try {
           _ws?.add(jsonEncode({
             "type": "ice",
@@ -633,35 +512,44 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
       };
 
-      pc.onConnectionState = (state) {
-        debugPrint("[PC] state=$state (current=${_pc == pc})");
-        if (_pc != pc) return;
+      _pc!.onConnectionState = (state) {
+        debugPrint("[PC] state=$state");
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-          debugPrint("[PC] failed — ICE restart only (NOT WS reconnect)");
-          _tryIceRestart();
+          try { _remoteRenderer.srcObject = null; } catch (_) {}
+          if (mounted) {
+            setState(() => _status = "انقطع الاتصال — جاري إعادة المحاولة...");
+          }
+          _scheduleReconnect();
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+          try { _remoteRenderer.srcObject = null; } catch (_) {}
+          if (mounted) {
+            setState(() => _status = "انقطع الاتصال بجهاز الكاميرا");
+          }
+          _scheduleReconnect();
         }
       };
 
-      pc.onIceConnectionState = (state) {
-        debugPrint("[ICE] state=$state (current=${_pc == pc})");
-        if (_pc != pc) return;
-        if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
-            state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-          debugPrint('[ICE] $state — ICE restart only');
+      _pc!.onIceConnectionState = (state) {
+        debugPrint("[ICE] state=$state");
+        if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+          debugPrint('[ICE] disconnected — attempting restart');
           _tryIceRestart();
+        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          debugPrint('[ICE] failed — full reconnect');
+          _scheduleReconnect();
         }
       };
 
-      await pc.setRemoteDescription(RTCSessionDescription(sdp, "offer"));
+      await _pc!.setRemoteDescription(RTCSessionDescription(sdp, "offer"));
 
       _remoteDescSet = true;
       for (final c in _pendingRemoteIce) {
-        try { await pc.addCandidate(c); } catch (_) {}
+        try { await _pc!.addCandidate(c); } catch (_) {}
       }
       _pendingRemoteIce.clear();
 
-      final answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      final answer = await _pc!.createAnswer();
+      await _pc!.setLocalDescription(answer);
 
       _ws?.add(jsonEncode({
         "type": "answer",
@@ -677,13 +565,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   Future<void> _handleBroadcasterLeft() async {
-    _cancelRendererTimers();
     try { _remoteRenderer.srcObject = null; } catch (_) {}
-    final oldPc = _pc;
+    try { await _pc?.close(); } catch (_) {}
     _pc = null;
-    if (oldPc != null) {
-      try { await oldPc.close(); } catch (_) {}
-    }
     _remoteStream = null;
     _broadcasterId = null;
     _textureRefreshedForThisTrack = false;
@@ -743,7 +627,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
     _noMediaWatchdog?.cancel();
-    _cancelRendererTimers();
 
     final socket = _ws;
     try {
@@ -770,9 +653,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _reconnectTimer?.cancel();
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
-    _diagTimer?.cancel();
     _noMediaWatchdog?.cancel();
-    _cancelRendererTimers();
 
     try {
       if (_ws?.readyState == WebSocket.open) {
@@ -830,22 +711,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
               child: Stack(
                 children: [
                   Positioned.fill(child: RTCVideoView(_remoteRenderer)),
-                  Positioned(
-                    top: 4,
-                    left: 4,
-                    right: 4,
-                    child: IgnorePointer(
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        color: Colors.black54,
-                        child: Text(
-                          _diag,
-                          style: const TextStyle(
-                              color: Colors.greenAccent, fontSize: 10),
-                        ),
-                      ),
-                    ),
-                  ),
                   if (isScreenShare && _remoteStream != null)
                     Positioned(
                       top: 12,

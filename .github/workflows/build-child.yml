@@ -1,0 +1,79 @@
+name: Build Child APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, fix/audit-2026-10, test/main-snap2]
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/build-child.yml'
+
+jobs:
+  build-child:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Verify google-services.json
+        run: |
+          test -f android/app/google-services.json || (echo "google-services.json missing!" && exit 1)
+          echo "google-services.json present"
+
+      - name: Setup release signing (if secrets exist)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.jks
+            printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > android/key.properties
+            echo "Using stable release keystore"
+          else
+            echo "No keystore secrets - falling back to debug signing"
+          fi
+
+      - run: flutter pub get
+
+      - name: Static analysis (errors fail the build)
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+
+      - name: Reduce Gradle heap
+        run: |
+          sed -i 's/-Xmx8G/-Xmx3G/; s/MaxMetaspaceSize=4G/MaxMetaspaceSize=1G/' android/gradle.properties || true
+
+      - run: flutter clean
+
+      - name: Build child APK
+        run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+
+      - name: Publish child APK to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="child-build-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --title "child build ${{ github.run_number }}" \
+            --notes "branch ${{ github.ref_name }}" \
+            --prerelease --target ${{ github.sha }} 2>/dev/null || true
+          for i in 1 2 3 4 5; do
+            gh release upload "$TAG" \
+              build/app/outputs/flutter-apk/app-child-release.apk --clobber && break
+            sleep 6
+          done
