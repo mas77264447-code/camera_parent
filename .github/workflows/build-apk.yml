@@ -1,9 +1,9 @@
-name: Build APK with WebRTC Fixes
+name: Build APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, production-merge, build-backup-before-fixes]
+    branches: [main, production-merge, build-backup-before-fixes, fix/audit-2026-10]
     paths:
       - 'lib/**'
       - 'android/**'
@@ -32,18 +32,33 @@ jobs:
 
       - name: Verify google-services.json
         run: |
-          test -f android/app/google-services.json || (echo "❌ google-services.json missing!" && exit 1)
-          echo "✅ google-services.json present"
+          test -f android/app/google-services.json || (echo "google-services.json missing!" && exit 1)
+          echo "google-services.json present"
 
       - run: flutter pub get
       - run: flutter clean
       - run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload parent APK to artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
-          name: camera-parent-apk
-          path: build/app/outputs/flutter-apk/*.apk
+          name: parent-apk
+          path: build/app/outputs/flutter-apk/app-parent-release.apk
           retention-days: 1
+          if-no-files-found: warn
+
+      - name: Upload parent APK to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/app/outputs/flutter-apk/app-parent-release.apk
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          draft: false
+          prerelease: false
+          body: |
+            Build ${{ github.run_number }} - ${{ github.sha }}
+            Branch: ${{ github.ref_name }}
 
   build-child:
     runs-on: ubuntu-latest
@@ -63,44 +78,30 @@ jobs:
 
       - name: Verify google-services.json
         run: |
-          test -f android/app/google-services.json || (echo "❌ google-services.json missing!" && exit 1)
-          echo "✅ google-services.json present"
+          test -f android/app/google-services.json || (echo "google-services.json missing!" && exit 1)
+          echo "google-services.json present"
 
       - run: flutter pub get
       - run: flutter clean
       - run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload child APK to artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
-          name: camera-child-apk
-          path: build/app/outputs/flutter-apk/*.apk
+          name: child-apk
+          path: build/app/outputs/flutter-apk/app-child-release.apk
           retention-days: 1
+          if-no-files-found: warn
 
-  create-release:
-    needs: [build-parent, build-child]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all APK artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-apks
-          merge-multiple: true
-
-      - name: Create Release
+      - name: Upload child APK to release
         uses: softprops/action-gh-release@v2
         with:
-          files: all-apks/**/*.apk
-          tag_name: build-${{ github.run_number }}
-          name: Release Build ${{ github.run_number }} - WebRTC Fixes Applied
+          files: build/app/outputs/flutter-apk/app-child-release.apk
+          tag_name: build-${{ github.run_number }}-child
+          name: Build ${{ github.run_number }} - Child
           draft: false
           prerelease: false
           body: |
-            # Build ${{ github.run_number }}
-            
-            ✅ **Fixes Applied:**
-            - StreamForegroundService: 1500ms → 2500ms
-            - WebRTC initialization improved
-            
-            **Download & Install:**
-            - app-parent-release.apk
-            - app-child-release.apk
+            Build ${{ github.run_number }} - Child APK
+            Branch: ${{ github.ref_name }}
