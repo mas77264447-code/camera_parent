@@ -14,3 +14,5 @@ macos/
 
 # Local Gradle state
 android/.gradle/
+android/app/google-services.json
+android/app/google-services.json
