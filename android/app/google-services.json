@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "474177773257",
+    "project_id": "camera-parent",
+    "storage_bucket": "camera-parent.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:474177773257:android:fbc9f93ebcde858ccb3718",
+        "android_client_info": {
+          "package_name": "com.example.camera_parent.child"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBBeQpcunAqb4IXGlFwrWP0Qj6RgKEIOYg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:474177773257:android:789297cc23e5842ccb3718",
+        "android_client_info": {
+          "package_name": "com.example.camera_parent.parent"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBBeQpcunAqb4IXGlFwrWP0Qj6RgKEIOYg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
