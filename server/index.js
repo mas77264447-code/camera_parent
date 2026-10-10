@@ -975,6 +975,102 @@ function getIceServers() {
   ];
 }
 
+// ═══════════════════════════════════════════════════════════
+// Wake endpoints — لإيقاظ جهاز الطفل عن بُعد (بدون FCM)
+// ═══════════════════════════════════════════════════════════
+
+app.post("/wake/request", async (req, res) => {
+  const sessionId = String((req.body && req.body.sessionId) || "");
+  const adminToken = String((req.body && req.body.adminToken) || "");
+
+  if (!sessionId || !adminToken) {
+    return res.status(400).json({
+      ok: false,
+      error: "missing_params",
+    });
+  }
+
+  try {
+    const rawSession = await redis.get(`session:${sessionId}`);
+    if (!rawSession) {
+      return res.status(404).json({
+        ok: false,
+        error: "session_not_found",
+      });
+    }
+
+    const session = typeof rawSession === "string"
+      ? JSON.parse(rawSession)
+      : rawSession;
+
+    if (session.ownerToken !== adminToken) {
+      console.warn(
+        `[wake] unauthorized: session=${sessionId}`
+      );
+      return res.status(403).json({
+        ok: false,
+        error: "not_authorized",
+      });
+    }
+
+    await redis.set(`wake:${sessionId}`, String(Date.now()), "EX", 300);
+
+    console.log(
+      `[wake] requested: session=${sessionId} by=${adminToken.substring(0, 8)}...`
+    );
+
+    return res.json({
+      ok: true,
+      sessionId,
+      expiresIn: 300,
+    });
+  } catch (e) {
+    console.error("[wake] error:", e);
+    return res.status(500).json({
+      ok: false,
+      error: "server_error",
+    });
+  }
+});
+
+app.get("/wake/check", async (req, res) => {
+  const deviceToken = String(req.query.token || "");
+  if (!deviceToken) {
+    return res.json({ wake: false, reason: "no_token" });
+  }
+
+  try {
+    // اقرأ بيانات الجهاز — تحتوي على sessionId داخلها
+    const rawDevice = await redis.get(`device:${deviceToken}`);
+    if (!rawDevice) {
+      return res.json({ wake: false, reason: "unknown_device" });
+    }
+
+    const device = typeof rawDevice === "string"
+      ? JSON.parse(rawDevice)
+      : rawDevice;
+
+    const sessionId = device.sessionId;
+    if (!sessionId) {
+      return res.json({ wake: false, reason: "no_session" });
+    }
+
+    const wake = await redis.get(`wake:${sessionId}`);
+    if (wake) {
+      await redis.del(`wake:${sessionId}`);
+      console.log(
+        `[wake] delivered: device=${deviceToken.substring(0, 8)}... session=${sessionId}`
+      );
+      return res.json({ wake: true, sessionId });
+    }
+
+    return res.json({ wake: false, reason: "no_pending" });
+  } catch (e) {
+    console.error("[wake/check] error:", e);
+    return res.json({ wake: false, reason: "error" });
+  }
+});
+
 app.get("/ice-servers", (req, res) => {
   res.json({ data: getIceServers() });
 });

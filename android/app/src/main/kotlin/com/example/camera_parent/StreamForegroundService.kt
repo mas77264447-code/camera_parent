@@ -8,9 +8,15 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 class StreamForegroundService : Service() {
 
@@ -22,9 +28,78 @@ class StreamForegroundService : Service() {
 
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
+
+        // ✅ Wake polling
+        private const val SERVER_URL = "https://camera-parent-server.onrender.com"
+        private const val WAKE_CHECK_INTERVAL_MS = 30_000L
+        private const val FLUTTER_PREFS = "FlutterSharedPreferences"
+        private const val TAG = "CameraParent"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+
+
+    // ═══════════════════════════════════════════════════════════
+    // Wake Polling — يسأل السيرفر كل 30 ثانية عن طلب إيقاظ
+    // ═══════════════════════════════════════════════════════════
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val wakeCheckRunnable = object : Runnable {
+        override fun run() {
+            Thread {
+                try {
+                    checkServerForWake()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Wake check error", e)
+                }
+            }.start()
+            handler.postDelayed(this, WAKE_CHECK_INTERVAL_MS)
+        }
+    }
+
+    private fun checkServerForWake() {
+        // device_token موجود في FlutterSharedPreferences
+        val flutterPrefs = getSharedPreferences(FLUTTER_PREFS, MODE_PRIVATE)
+        val deviceToken = flutterPrefs.getString("flutter.device_token", null)
+            ?: return
+
+        val url = URL("$SERVER_URL/wake/check?token=$deviceToken")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 5000
+        conn.readTimeout = 5000
+
+        try {
+            val code = conn.responseCode
+            if (code != 200) return
+
+            val response = conn.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(response)
+
+            if (json.optBoolean("wake", false)) {
+                Log.i(TAG, "🔔 Wake requested! Restarting agent...")
+                if (!isStopped()) {
+                    handler.post {
+                        FlutterServiceBridge.startAgent()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // صامت — أخطاء شبكة عادية
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun startWakePolling() {
+        handler.removeCallbacks(wakeCheckRunnable)
+        handler.postDelayed(wakeCheckRunnable, WAKE_CHECK_INTERVAL_MS)
+        Log.i(TAG, "Wake polling started (every ${WAKE_CHECK_INTERVAL_MS / 1000}s)")
+    }
+
+    private fun stopWakePolling() {
+        handler.removeCallbacks(wakeCheckRunnable)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -81,6 +156,9 @@ class StreamForegroundService : Service() {
             }
         }, 300L)
 
+        // ✅ ابدأ Wake polling
+        startWakePolling()
+
         return START_STICKY
     }
 
@@ -128,6 +206,8 @@ class StreamForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        // ✅ أوقف Wake polling
+        stopWakePolling()
         releaseWakeLock()
         super.onDestroy()
     }

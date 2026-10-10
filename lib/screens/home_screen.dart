@@ -154,6 +154,35 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ✅ إعادة تشغيل جهاز واحد (بدون حوار تأكيد)
+  Future<void> _restartDevice(String sessionId, String deviceName) async {
+    if (_adminToken == null) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('جاري إيقاظ "$deviceName"...'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    final ok = await _sendWakeCommand(sessionId);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok
+            ? '✅ تم إرسال أمر الإيقاظ لـ "$deviceName"'
+            : '❌ فشل إرسال الأمر — الجهاز لا يستجيب'),
+        duration: const Duration(seconds: 3),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
+    );
+
+    await Future.delayed(const Duration(seconds: 2));
+    await _loadDevices();
+  }
+
+  // ✅ إعادة تشغيل جميع الأجهزة (بدون حوار)
   Future<void> _restartAllDevices() async {
     if (_adminToken == null || _devices.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -165,30 +194,6 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('إعادة تشغيل الأجهزة'),
-        content: Text(
-          'سيتم إرسال أمر إيقاظ لـ ${_devices.length} جهاز.\n'
-          'الجهاز سيعيد الاتصال بالسيرفر خلال ثوانٍ.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('إلغاء'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('إرسال', style: TextStyle(color: Colors.orange)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('جاري إرسال أوامر الإيقاظ لـ ${_devices.length} جهاز...'),
@@ -214,6 +219,7 @@ class _HomeScreenState extends State<HomeScreen> {
       SnackBar(
         content: Text('تم الإرسال: $sent ✓ / فشل: $failed ✗'),
         duration: const Duration(seconds: 3),
+        backgroundColor: failed == 0 ? Colors.green : Colors.orange,
       ),
     );
 
@@ -224,51 +230,28 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<bool> _sendWakeCommand(String sessionId) async {
     if (_adminToken == null) return false;
     try {
-      // افتح اتصال WebSocket مؤقت لإرسال أمر الإيقاظ
-      final wsUrl = CameraService.server
-          .replaceFirst('https://', 'wss://')
-          .replaceFirst('http://', 'ws://');
-      final socket = await WebSocket.connect('$wsUrl/signal')
-          .timeout(const Duration(seconds: 8));
+      // ✅ HTTP مباشر — أبسط وأسرع من WebSocket المؤقت
+      final response = await http.post(
+        Uri.parse('${CameraService.server}/wake/request'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'sessionId': sessionId,
+          'adminToken': _adminToken,
+        }),
+      ).timeout(const Duration(seconds: 10));
 
-      final completer = Completer<bool>();
-
-      socket.listen(
-        (raw) {
-          try {
-            final msg = jsonDecode(raw);
-            if (msg['type'] == 'wake-sent' && !completer.isCompleted) {
-              completer.complete(true);
-            } else if (msg['type'] == 'wake-failed' && !completer.isCompleted) {
-              completer.complete(false);
-            }
-          } catch (_) {}
-        },
-        onError: (_) {
-          if (!completer.isCompleted) completer.complete(false);
-        },
-        onDone: () {
-          if (!completer.isCompleted) completer.complete(false);
-        },
-        cancelOnError: true,
-      );
-
-      socket.add(jsonEncode({
-        'type': 'wake',
-        'session': sessionId,
-        'adminToken': _adminToken,
-      }));
-
-      final result = await completer.future
-          .timeout(const Duration(seconds: 5), onTimeout: () => false);
-
-      try {
-        await socket.close();
-      } catch (_) {}
-
-      return result;
+      if (response.statusCode == 200) {
+        try {
+          final body = jsonDecode(response.body);
+          return body['ok'] == true;
+        } catch (_) {
+          return true;
+        }
+      }
+      debugPrint('[Wake] HTTP ${response.statusCode}: ${response.body}');
+      return false;
     } catch (e) {
-      debugPrint('[Restart] error: $e');
+      debugPrint('[Wake] error: $e');
       return false;
     }
   }
@@ -446,12 +429,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _refreshDevices,
                   ),
                   IconButton(
-                    icon: const Icon(Icons.power_settings_new,
-                        color: Colors.orange),
-                    tooltip: 'إعادة تشغيل الأجهزة',
-                    onPressed: _restartAllDevices,
-                  ),
-                  IconButton(
                     icon: const Icon(Icons.add_circle,
                         color: Colors.indigo),
                     tooltip: 'إضافة جهاز',
@@ -485,6 +462,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             itemBuilder: (context, i) {
                               final d = _devices[i];
                               final online = d['online'] == true;
+                              final sessionId = d['session_id']?.toString() ?? '';
+                              final deviceName = d['name']?.toString() ?? 'جهاز';
                               return Card(
                                 child: ListTile(
                                   leading: Icon(Icons.circle,
@@ -495,8 +474,21 @@ class _HomeScreenState extends State<HomeScreen> {
                                   title: Text(d['name'] ?? ''),
                                   subtitle:
                                       Text(online ? 'متصل الآن' : 'غير متصل'),
-                                  trailing:
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(
+                                          Icons.power_settings_new,
+                                          color: Colors.orange,
+                                        ),
+                                        tooltip: 'إعادة تشغيل الجهاز',
+                                        onPressed: () => _restartDevice(
+                                            sessionId, deviceName),
+                                      ),
                                       const Icon(Icons.chevron_left),
+                                    ],
+                                  ),
                                   onTap:
                                       online ? () => _openDevice(d) : null,
                                   onLongPress: () => _confirmForget(d),
