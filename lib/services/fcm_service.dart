@@ -1,8 +1,11 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
-import 'stream_service.dart';
-
+/// خدمة FCM — تهيئة + جلب التوكن.
+///
+/// ملاحظة مهمة: في build-v2-0-0، معالجة Wake تتم على الجانب الأصلي
+/// (WakeFcmService.kt). هذه الخدمة تُهيّئ FCM فقط وتجلب التوكن
+/// ليرسله Child للسيرفر.
 class FcmService {
   static Future<void> init() async {
     try {
@@ -14,17 +17,18 @@ class FcmService {
       debugPrint('[FCM] permission: ${settings.authorizationStatus}');
 
       final token = await FirebaseMessaging.instance.getToken();
-      debugPrint('[FCM] token: ${token?.substring(0, 20)}...');
+      if (token != null && token.length > 20) {
+        debugPrint('[FCM] token: ${token.substring(0, 20)}...');
+      } else {
+        debugPrint('[FCM] token: $token');
+      }
 
       FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
         debugPrint('[FCM] token refreshed');
       });
 
-      FirebaseMessaging.onMessage.listen(_onForeground);
-      FirebaseMessaging.onMessageOpenedApp.listen(_onOpened);
-
-      final initial = await FirebaseMessaging.instance.getInitialMessage();
-      if (initial != null) _onOpened(initial);
+      // على Android، الإشعارات تُعالج في WakeFcmService.kt
+      // (Native side). لا نحتاج معالجة هنا.
 
       debugPrint('[FCM] init complete');
     } catch (e) {
@@ -32,18 +36,7 @@ class FcmService {
     }
   }
 
-  static void _onForeground(RemoteMessage msg) {
-    debugPrint('[FCM] foreground: ${msg.data}');
-    if (msg.data['action'] == 'wake_camera') {
-      StreamService.instance.ensureCameraStarted();
-      StreamService.instance.ensureHealthy();
-    }
-  }
-
-  static void _onOpened(RemoteMessage msg) {
-    debugPrint('[FCM] opened: ${msg.data}');
-  }
-
+  /// الحصول على التوكن الحالي (يُرسَل للسيرفر عند التسجيل)
   static Future<String?> getToken() async {
     try {
       return await FirebaseMessaging.instance.getToken();
