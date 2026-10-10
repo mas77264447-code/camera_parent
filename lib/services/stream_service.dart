@@ -1214,19 +1214,6 @@ class StreamService {
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     final isForeground = lifecycleState == AppLifecycleState.resumed;
 
-    if (!_broadcastScreen && !isForeground) {
-      _pendingCameraStart = true;
-      _updateStatus("جاري إظهار التطبيق لفتح الكاميرا...");
-
-      final ok = await _bringToForeground();
-      if (!ok) {
-        _updateStatus("مطلوب فتح التطبيق على الجهاز لتشغيل الكاميرا");
-        // ✅ لا تُلغِ _pendingCameraStart — اتركها true حتى تُفتح
-        // الكاميرا تلقائياً عند عودة المستخدم للتطبيق.
-      }
-      return;
-    }
-
     _updateStatus(_broadcastScreen
         ? "جاري تجهيز مشاركة الشاشة..."
         : "جاري تجهيز الكاميرا...");
