@@ -3,60 +3,6 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
-// ═══════════════════════════════════════════════════════════
-// Firebase Admin (FCM wake)
-// ═══════════════════════════════════════════════════════════
-const admin = require("firebase-admin");
-
-let fcmAdmin = null;
-
-function initFcm() {
-  const fs = require("fs");
-
-  // ═══ الطريقة 1: Secret File على Render ═══
-  const secretPath = process.env.GOOGLE_APPLICATION_CREDENTIALS
-    || "/etc/secrets/firebase-admin.json";
-
-  if (fs.existsSync(secretPath)) {
-    try {
-      const serviceAccount = JSON.parse(fs.readFileSync(secretPath, "utf8"));
-      fcmAdmin = admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      console.log("[fcm] ✅ Firebase Admin initialized (Secret File)");
-      return;
-    } catch (e) {
-      console.error("[fcm] Secret File parse failed:", e.message);
-    }
-  }
-
-  // ═══ الطريقة 2: Environment Variables ═══
-  if (
-    process.env.FIREBASE_PROJECT_ID &&
-    process.env.FIREBASE_CLIENT_EMAIL &&
-    process.env.FIREBASE_PRIVATE_KEY
-  ) {
-    try {
-      fcmAdmin = admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\\\n/g, "\\n"),
-        }),
-      });
-      console.log("[fcm] ✅ Firebase Admin initialized (Env Vars)");
-      return;
-    } catch (e) {
-      console.error("[fcm] Env Vars init failed:", e.message);
-    }
-  }
-
-  console.warn("[fcm] ⚠️ credentials missing — FCM disabled");
-}
-
-initFcm();
-// ═══════════════════════════════════════════════════════════
-
 
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -75,6 +21,7 @@ const redis = {
       const data = await res.json();
       return data.result || null;
     } catch (e) {
+      console.error(`[Redis GET Error] ${k}:`, e.message);
       return null;
     }
   },
@@ -89,6 +36,7 @@ const redis = {
       const data = await res.json();
       return data.result ? "OK" : null;
     } catch (e) {
+      console.error(`[Redis SET Error] ${k}:`, e.message);
       return null;
     }
   },
@@ -132,14 +80,10 @@ const redis = {
       const res = await fetch(`${UPSTASH_URL}/smembers/${key}`, {
         headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
       });
-      if (!res.ok) {
-        throw new Error(`Redis smembers HTTP ${res.status}`);
-      }
       const data = await res.json();
       return Array.isArray(data.result) ? data.result : [];
     } catch (e) {
-      console.error(`[Redis smembers error] ${key}:`, e.message);
-      throw e;
+      return [];
     }
   },
 };
@@ -149,25 +93,8 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/signal" });
 
 app.use(express.json({ limit: "64kb" }));
-app.use(express.static("public"));
-
-// CORS: إذا ضبطت ALLOWED_ORIGINS (قائمة مفصولة بفواصل) يُسمح لها فقط،
-// وإذا لم تُضبط يبقى السلوك القديم ("*") حتى لا ينكسر شيء.
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
-  .split(",")
-  .map((o) => o.trim())
-  .filter(Boolean);
-
 app.use((req, res, next) => {
-  if (ALLOWED_ORIGINS.length === 0) {
-    res.header("Access-Control-Allow-Origin", "*");
-  } else {
-    const origin = req.headers.origin;
-    if (origin && ALLOWED_ORIGINS.includes(origin)) {
-      res.header("Access-Control-Allow-Origin", origin);
-      res.header("Vary", "Origin");
-    }
-  }
+  res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   res.header(
     "Access-Control-Allow-Headers",
@@ -243,14 +170,6 @@ async function verifyPasswordAsync(password, salt, expectedHash) {
   }
 }
 
-function computeViewerKey(sessionId, adminToken) {
-  return crypto
-    .createHash("sha256")
-    .update(`${sessionId}|${adminToken}`)
-    .digest("hex")
-    .slice(0, 32);
-}
-
 app.post("/admin/claim", async (req, res) => {
   const claimed = await redis.get("admin:claimed");
   if (claimed) {
@@ -302,6 +221,15 @@ function generateClientId() {
   return id;
 }
 
+function inSameSession(client, targetId) {
+  const sid = client && client.sessionId;
+  if (!sid) return false;
+  const ls = live[sid];
+  if (!ls) return false;
+  if (ls.broadcaster === targetId) return true;
+  return ls.viewers.has(targetId);
+}
+
 function getLive(sessionId) {
   if (!live[sessionId]) {
     live[sessionId] = { broadcaster: null, viewers: new Map() };
@@ -316,13 +244,6 @@ function send(clientId, data) {
   }
 }
 
-function sendToViewer(liveSession, viewerKey, data) {
-  const v = liveSession.viewers.get(viewerKey);
-  if (v && v.currentClientId) {
-    send(v.currentClientId, data);
-  }
-}
-
 function generatePairingCode() {
   return String(crypto.randomInt(100000, 1000000));
 }
@@ -332,10 +253,6 @@ const PAIRING_CODE_TTL_SECONDS = 5 * 60;
 function normalizeUsername(u) {
   return String(u || "").trim().toLowerCase();
 }
-
-// ═══════════════════════════════════════════════════════════
-// PARENT ACCOUNT
-// ═══════════════════════════════════════════════════════════
 
 app.post("/parent/register", async (req, res) => {
   const ip = clientIp(req);
@@ -378,6 +295,7 @@ app.post("/parent/register", async (req, res) => {
   );
 
   await redis.set(`parenttoken:${parentToken}`, username);
+
   console.log(`[parent] new account: ${username}`);
 
   return res.json({
@@ -416,6 +334,7 @@ app.post("/parent/login", async (req, res) => {
   }
 
   await redis.set(`parenttoken:${entry.parentToken}`, username);
+
   console.log(`[parent] login: ${username}`);
   return res.json({
     data: { admin_token: entry.parentToken, username },
@@ -427,6 +346,7 @@ app.post("/parent/reset-password", async (req, res) => {
   if (!rateLimit(authAttempts, `parent-reset:${ip}`, 5)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
+
   const username = normalizeUsername(req.body && req.body.username);
   const newPassword = String((req.body && req.body.new_password) || "");
   const adminToken = String((req.body && req.body.admin_token) || "");
@@ -474,6 +394,7 @@ app.post("/parent/delete", async (req, res) => {
   if (!rateLimit(authAttempts, `parent-delete:${ip}`, 5)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
+
   const username = normalizeUsername(req.body && req.body.username);
   const adminToken = String((req.body && req.body.admin_token) || "");
 
@@ -491,6 +412,7 @@ app.post("/parent/delete", async (req, res) => {
   }
 
   const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
+
   if (entry.parentToken) {
     await redis.del(`parenttoken:${entry.parentToken}`);
   }
@@ -500,10 +422,6 @@ app.post("/parent/delete", async (req, res) => {
   console.log(`[parent] account deleted: ${username}`);
   return res.json({ data: { deleted: true, username } });
 });
-
-// ═══════════════════════════════════════════════════════════
-// PAIRING
-// ═══════════════════════════════════════════════════════════
 
 app.post("/pairing/create", requireAdminToken, async (req, res) => {
   let code = generatePairingCode();
@@ -522,7 +440,6 @@ app.post("/pairing/create", requireAdminToken, async (req, res) => {
   });
 });
 
-// ✅ إصلاح: إضافة source: "web" لجلسات child.html
 app.post("/pairing/claim", async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `claim-pairing:${ip}`, 12)) {
@@ -554,7 +471,6 @@ app.post("/pairing/claim", async (req, res) => {
       createdAt: Date.now(),
       ownerToken,
       deviceToken,
-      source: "web",  // ✅ إصلاح
     })
   );
   await redis.set(
@@ -564,7 +480,6 @@ app.post("/pairing/claim", async (req, res) => {
       ownerToken,
       deviceName,
       pairedAt: Date.now(),
-      source: "web",  // ✅ إصلاح
     })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
@@ -578,7 +493,6 @@ app.post("/pairing/claim", async (req, res) => {
   });
 });
 
-// ✅ إصلاح: إضافة source: "pairing" لكل جلسات التطبيق
 app.post("/pairing/register", async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `register:${ip}`, 12)) {
@@ -620,102 +534,67 @@ app.post("/pairing/register", async (req, res) => {
       });
     }
 
-    if (code) {
-      const pairingRaw = await redis.get(`pairing:${code}`);
-      if (!pairingRaw) {
-        return res
-          .status(400)
-          .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
-      }
-      await redis.del(`pairing:${code}`);
-
-      const pairingEntry =
-        typeof pairingRaw === "string" ? JSON.parse(pairingRaw) : pairingRaw;
-      const ownerToken = pairingEntry.ownerToken;
-
-      if (ownerToken !== parentEntry.parentToken) {
-        return res.status(403).json({
-          error:
-            "هذا الكود من حساب والد مختلف. استخدم كوداً من حسابك.",
-        });
-      }
-
-      const sessionId = crypto.randomBytes(16).toString("hex");
-      const deviceToken = crypto.randomBytes(24).toString("hex");
-
-      await redis.set(
-        `session:${sessionId}`,
-        JSON.stringify({
-          name: deviceName,
-          createdAt: Date.now(),
-          ownerToken: parentEntry.parentToken,
-          deviceToken,
-          username,
-          source: "pairing",  // ✅ إصلاح
-        })
-      );
-      await redis.set(
-        `device:${deviceToken}`,
-        JSON.stringify({
-          sessionId,
-          ownerToken: parentEntry.parentToken,
-          deviceName,
-          pairedAt: Date.now(),
-          username,
-          source: "pairing",  // ✅ إصلاح
-        })
-      );
-      await redis.sadd(
-        `owner:${parentEntry.parentToken}:sessions`,
-        sessionId
-      );
-
-      await redis.set(
-        `child:last:${username}`,
-        JSON.stringify({
-          sessionId,
-          deviceToken,
-          deviceName,
-          linkedAt: Date.now(),
-        })
-      );
-
-      console.log(
-        `[child] NEW device: user=${username} name=${deviceName} session=${sessionId.slice(0, 8)}...`
-      );
-
+    const existingChild = await redis.get(`child:byowner:${username}`);
+    if (existingChild) {
+      const childData =
+        typeof existingChild === "string"
+          ? JSON.parse(existingChild)
+          : existingChild;
+      console.log(`[child] existing linked session returned: ${username}`);
       return res.json({
         data: {
-          device_token: deviceToken,
-          session_id: sessionId,
-          device_name: deviceName,
+          device_token: childData.deviceToken,
+          session_id: childData.sessionId,
+          device_name: childData.deviceName,
         },
       });
     }
 
-    const lastRaw = await redis.get(`child:last:${username}`);
-    if (lastRaw) {
-      const lastData =
-        typeof lastRaw === "string" ? JSON.parse(lastRaw) : lastRaw;
-      const sessRaw = await redis.get(`session:${lastData.sessionId}`);
-      if (sessRaw) {
-        console.log(
-          `[child] RESTORE session: user=${username} session=${lastData.sessionId.slice(0, 8)}...`
-        );
-        return res.json({
-          data: {
-            device_token: lastData.deviceToken,
-            session_id: lastData.sessionId,
-            device_name: lastData.deviceName,
-          },
-        });
-      }
-      await redis.del(`child:last:${username}`);
-    }
+    const sessionId = crypto.randomBytes(16).toString("hex");
+    const deviceToken = crypto.randomBytes(24).toString("hex");
 
-    return res.status(400).json({
-      error:
-        "أدخل الكود من تطبيق الوالد لربط هذا الجهاز بالحساب.",
+    await redis.set(
+      `session:${sessionId}`,
+      JSON.stringify({
+        name: deviceName,
+        createdAt: Date.now(),
+        ownerToken: parentEntry.parentToken,
+        deviceToken,
+        username,
+      })
+    );
+    await redis.set(
+      `device:${deviceToken}`,
+      JSON.stringify({
+        sessionId,
+        ownerToken: parentEntry.parentToken,
+        deviceName,
+        pairedAt: Date.now(),
+        username,
+      })
+    );
+    await redis.sadd(
+      `owner:${parentEntry.parentToken}:sessions`,
+      sessionId
+    );
+    await redis.set(
+      `child:byowner:${username}`,
+      JSON.stringify({
+        sessionId,
+        deviceToken,
+        deviceName,
+        linkedAt: Date.now(),
+      })
+    );
+
+    console.log(`[child] auto-linked to parent account: ${username}`);
+
+    return res.json({
+      data: {
+        device_token: deviceToken,
+        session_id: sessionId,
+        device_name: deviceName,
+      },
     });
   }
 
@@ -775,7 +654,6 @@ app.post("/pairing/register", async (req, res) => {
       ownerToken,
       deviceToken,
       username,
-      source: "pairing",  // ✅ إصلاح
     })
   );
   await redis.set(
@@ -786,7 +664,6 @@ app.post("/pairing/register", async (req, res) => {
       deviceName,
       pairedAt: Date.now(),
       username,
-      source: "pairing",  // ✅ إصلاح
     })
   );
   await redis.sadd(`owner:${ownerToken}:sessions`, sessionId);
@@ -823,7 +700,6 @@ app.post("/pairing/unpair", async (req, res) => {
 
   if (info.username) {
     await redis.del(`child:byowner:${info.username}`);
-    await redis.del(`child:last:${info.username}`);
   }
 
   const liveSession = live[info.sessionId];
@@ -839,37 +715,30 @@ app.post("/pairing/unpair", async (req, res) => {
   res.json({ data: { unpaired: true } });
 });
 
-// ✅ إصلاح: إرجاع source مع كل جلسة
 app.get("/camera/sessions", requireAdminToken, async (req, res) => {
-  const requesterToken = req.ownerToken;
-  try {
-    const sessionIds =
-      (await redis.smembers(`owner:${requesterToken}:sessions`)) || [];
-    const list = [];
-    for (const sessionId of sessionIds) {
-      const raw = await redis.get(`session:${sessionId}`);
-      if (!raw) continue;
-      const s = typeof raw === "string" ? JSON.parse(raw) : raw;
-      const liveSession = live[sessionId];
-      list.push({
-        session_id: sessionId,
-        name: s.name,
-        online: !!(liveSession && liveSession.broadcaster),
-        viewers: liveSession ? liveSession.viewers.size : 0,
-        created_at: s.createdAt,
-        source: s.source || "pairing",  // ✅ إصلاح: fallback للجلسات القديمة
-      });
-    }
-    list.sort((a, b) => b.created_at - a.created_at);
-    res.json({ data: list });
-  } catch (e) {
-    console.error("[camera/sessions] error:", e.message);
-    res.status(503).json({ error: "temporary_unavailable", retry: true });
+  const requesterToken = req.query.token || req.header("x-admin-token");
+  const sessionIds =
+    (await redis.smembers(`owner:${requesterToken}:sessions`)) || [];
+  const list = [];
+  for (const sessionId of sessionIds) {
+    const raw = await redis.get(`session:${sessionId}`);
+    if (!raw) continue;
+    const s = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const liveSession = live[sessionId];
+    list.push({
+      session_id: sessionId,
+      name: s.name,
+      online: !!(liveSession && liveSession.broadcaster),
+      viewers: liveSession ? liveSession.viewers.size : 0,
+      created_at: s.createdAt,
+    });
   }
+  list.sort((a, b) => b.created_at - a.created_at);
+  res.json({ data: list });
 });
 
 app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
-  const requesterToken = req.ownerToken;
+  const requesterToken = req.query.token || req.header("x-admin-token");
   const sessionId = req.params.id;
   const raw = await redis.get(`session:${sessionId}`);
   if (!raw) return res.status(404).json({ error: "الجهاز غير موجود." });
@@ -890,23 +759,18 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
   delete live[sessionId];
 
   if (s.deviceToken) await redis.del(`device:${s.deviceToken}`);
-  if (s.username) {
-    await redis.del(`child:byowner:${s.username}`);
-    await redis.del(`child:last:${s.username}`);
-  }
+  if (s.username) await redis.del(`child:byowner:${s.username}`);
   await redis.del(`session:${sessionId}`);
   await redis.srem(`owner:${s.ownerToken}:sessions`, sessionId);
   res.json({ data: { deleted: true } });
 });
 
-// ═══════════════════════════════════════════════════════════
-// WEBSOCKET
-// ═══════════════════════════════════════════════════════════
-
 wss.on("connection", (ws, req) => {
   const ip = clientIp(req);
   if (!rateLimit(wsAttempts, ip, 30)) {
-    console.log("[ws] rate limited", ip); try { ws.close(1013, "rate limited"); } catch (_) {}
+    try {
+      ws.close(1013, "rate limited");
+    } catch (_) {}
     return;
   }
 
@@ -916,7 +780,6 @@ wss.on("connection", (ws, req) => {
     ws,
     sessionId: null,
     role: null,
-    viewerKey: null,
     lastMessageAt: Date.now(),
   };
 
@@ -929,7 +792,11 @@ wss.on("connection", (ws, req) => {
 
   ws.on("message", async (raw) => {
     let msg;
-    try { msg = JSON.parse(raw); } catch (e) { return; }
+    try {
+      msg = JSON.parse(raw);
+    } catch (e) {
+      return;
+    }
 
     const client = clients[clientId];
     if (!client) return;
@@ -937,77 +804,6 @@ wss.on("connection", (ws, req) => {
 
     if (msg.type === "ping") {
       send(clientId, { type: "pong", timestamp: msg.timestamp || Date.now() });
-      return;
-    }
-
-    if (msg.type === "wake") {
-      const sessionId = safeText(msg.session, 64);
-      const adminToken = safeText(msg.adminToken, 256);
-      if (!sessionId || !adminToken) {
-        send(clientId, { type: "wake-failed", reason: "bad_request" });
-        return;
-      }
-      const rawSession = await redis.get(`session:${sessionId}`);
-      if (!rawSession) {
-        send(clientId, { type: "wake-failed", reason: "not_found" });
-        return;
-      }
-      const sessionObj =
-        typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession;
-      if (!safeCompare(adminToken, sessionObj.ownerToken)) {
-        send(clientId, { type: "wake-failed", reason: "not_authorized" });
-        return;
-      }
-      const liveSession = live[sessionId];
-
-      // ─── 1) الكاميرا متصلة → wake عبر WebSocket ───
-      if (liveSession && liveSession.broadcaster) {
-        send(liveSession.broadcaster, {
-          type: "wake",
-          viewerId: computeViewerKey(sessionId, adminToken),
-          name: "الوالد",
-        });
-        send(clientId, { type: "wake-sent", via: "ws" });
-        return;
-      }
-
-      // ─── 2) الكاميرا offline → FCM fallback ───
-      if (!fcmAdmin) {
-        send(clientId, { type: "wake-failed", reason: "fcm_disabled" });
-        return;
-      }
-
-      const fcmToken = await redis.get(`session:${sessionId}:fcm`);
-      if (!fcmToken) {
-        send(clientId, { type: "wake-failed", reason: "no_fcm_token" });
-        return;
-      }
-
-      try {
-        await fcmAdmin.messaging().send({
-          token: fcmToken,
-          data: {
-            action: "wake_camera",
-            sessionId: sessionId,
-          },
-          android: { priority: "high", ttl: 60000 },
-        });
-        send(clientId, { type: "wake-sent", via: "fcm" });
-        console.log(`[wake] FCM sent for ${sessionId.slice(0, 8)}`);
-      } catch (e) {
-        console.error("[wake] FCM send failed:", e.code || e.message);
-        if (
-          e.code === "messaging/registration-token-not-registered" ||
-          e.code === "messaging/invalid-registration-token"
-        ) {
-          await redis.del(`session:${sessionId}:fcm`);
-        }
-        send(clientId, {
-          type: "wake-failed",
-          reason: "fcm_error",
-          detail: e.code || e.message,
-        });
-      }
       return;
     }
 
@@ -1021,6 +817,7 @@ wss.on("connection", (ws, req) => {
           send(clientId, { type: "auth-failed", reason: "device_not_paired" });
           return;
         }
+
         const deviceInfo =
           typeof rawDevice === "string" ? JSON.parse(rawDevice) : rawDevice;
         const rawSession = await redis.get(`session:${deviceInfo.sessionId}`);
@@ -1035,45 +832,25 @@ wss.on("connection", (ws, req) => {
         const liveSession = getLive(boundSession);
         liveSession.broadcaster = clientId;
 
-        // ─── FCM token (لإيقاظ التطبيق لاحقًا) ───
-        const fcmToken = safeText(msg.fcmToken, 4096);
-        if (fcmToken) {
-          await redis.set(`session:${boundSession}:fcm`, fcmToken);
-          await redis.set(`device:${deviceToken}:fcm`, fcmToken);
-          console.log(`[fcm] token saved for ${boundSession.slice(0, 8)}...`);
-        }
-        // ─────────────────────────────────────────
-
         console.log(
-          `[ws] broadcaster: client=${clientId} session=${boundSession.slice(0, 8)}...`
+          `[ws] broadcaster: client=${clientId} session=${boundSession} name=${deviceInfo.deviceName}`
         );
 
-        // ✅ إرسال ownerToken للطفل لاشتقاق مفتاح E2E
-        const sessionData =
-          typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession;
-        if (sessionData.ownerToken) {
-          send(clientId, {
-            type: "auth-ok",
-            ownerToken: sessionData.ownerToken,
-          });
-          console.log(
-            `[ws] sent auth-ok to broadcaster ${clientId.slice(0, 8)}...`
-          );
-        }
-
-        liveSession.viewers.forEach((info, viewerKey) => {
-          send(clientId, {
-            type: info.approved ? "viewer-joined" : "join-request",
-            viewerId: viewerKey,
-            name: info.name,
-            source: info.source,
-          });
-          // ✅ إصلاح: إذا كان المشاهد معتمداً مسبقاً، أخبره أن المُذيع وصل
-          if (info.approved && info.currentClientId) {
-            send(info.currentClientId, { type: "viewer-approved" });
-            console.log(
-              `[ws] notified viewer ${viewerKey.slice(0, 8)}... broadcaster is online`
-            );
+        liveSession.viewers.forEach((info, viewerId) => {
+          if (info.approved) {
+            send(clientId, {
+              type: "viewer-joined",
+              viewerId,
+              name: info.name,
+              source: info.source,
+            });
+          } else {
+            send(clientId, {
+              type: "join-request",
+              viewerId,
+              name: info.name,
+              source: info.source,
+            });
           }
         });
         return;
@@ -1083,51 +860,51 @@ wss.on("connection", (ws, req) => {
         const adminToken = safeText(msg.adminToken, 256);
         const rawSession = await redis.get(`session:${session}`);
         const targetSession = rawSession
-          ? (typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession)
+          ? typeof rawSession === "string"
+            ? JSON.parse(rawSession)
+            : rawSession
           : null;
 
         if (!targetSession || !safeCompare(adminToken, targetSession.ownerToken)) {
+          console.log(`[ws] viewer auth-failed: client=${clientId}`);
           send(clientId, { type: "auth-failed", reason: "not_authorized" });
           return;
         }
 
-        const viewerKey = computeViewerKey(session, adminToken);
         client.sessionId = session;
         client.role = role;
-        client.viewerKey = viewerKey;
         client.callerName = msg.name || "الوالد";
 
         const requestedSource =
-          msg.requestedSource === "screen" ? "screen"
-          : msg.requestedSource === "files" ? "files"
-          : "camera";
+          msg.requestedSource === "screen"
+            ? "screen"
+            : msg.requestedSource === "files"
+            ? "files"
+            : "camera";
 
+        // ✅ viewers من نوع files: موافقة تلقائية
+        const autoApprove = requestedSource === "files";
         const liveSession = getLive(session);
 
-        const approvedInRedis = await redis.get(`viewer:approved:${viewerKey}`);
-        const wasApproved = approvedInRedis === "1";
-        const autoApprove = requestedSource === "files";
-
-        liveSession.viewers.set(viewerKey, {
+        liveSession.viewers.set(clientId, {
           name: client.callerName,
-          approved: wasApproved || autoApprove,
+          approved: autoApprove,
           source: requestedSource,
-          currentClientId: clientId,
         });
 
         console.log(
-          `[ws] viewer: key=${viewerKey.slice(0, 8)}... session=${session.slice(0, 8)}... broadcaster=${!!liveSession.broadcaster} source=${requestedSource} wasApproved=${wasApproved}`
+          `[ws] viewer: client=${clientId} session=${session} broadcaster=${!!liveSession.broadcaster} source=${requestedSource} autoApprove=${autoApprove}`
         );
 
         if (liveSession.broadcaster) {
-          const finalApproved = wasApproved || autoApprove;
           send(liveSession.broadcaster, {
-            type: finalApproved ? "viewer-joined" : "join-request",
-            viewerId: viewerKey,
+            type: autoApprove ? "viewer-joined" : "join-request",
+            viewerId: clientId,
             name: client.callerName,
             source: requestedSource,
           });
-          if (finalApproved) {
+          // ✅ إشعار الوالد بالموافقة
+          if (autoApprove) {
             send(clientId, { type: "viewer-approved" });
           }
         } else {
@@ -1142,15 +919,12 @@ wss.on("connection", (ws, req) => {
       const sessionId = client.sessionId;
       const liveSession = sessionId ? live[sessionId] : null;
       if (liveSession) {
-        if (client.role === "viewer" && client.viewerKey) {
-          const v = liveSession.viewers.get(client.viewerKey);
-          if (v && v.currentClientId === clientId) {
-            v.currentClientId = null;
-          }
+        if (client.role === "viewer") {
+          liveSession.viewers.delete(clientId);
           if (liveSession.broadcaster) {
             send(liveSession.broadcaster, {
               type: "viewer-left",
-              viewerId: client.viewerKey,
+              viewerId: clientId,
             });
           }
         } else if (
@@ -1158,10 +932,10 @@ wss.on("connection", (ws, req) => {
           liveSession.broadcaster === clientId
         ) {
           liveSession.broadcaster = null;
-          for (const [viewerKey] of liveSession.viewers) {
-            sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
+          for (const [viewerId] of liveSession.viewers) {
+            send(viewerId, { type: "broadcaster-left" });
           }
-          console.log(`[ws] broadcaster left (graceful) — kept ${liveSession.viewers.size} viewers waiting`);
+          liveSession.viewers.clear();
         }
         if (!liveSession.broadcaster && liveSession.viewers.size === 0) {
           delete live[sessionId];
@@ -1169,8 +943,9 @@ wss.on("connection", (ws, req) => {
       }
       client.sessionId = null;
       client.role = null;
-      client.viewerKey = null;
-      try { client.ws.close(1000, "left"); } catch (_) {}
+      try {
+        client.ws.close(1000, "left");
+      } catch (_) {}
       return;
     }
 
@@ -1180,15 +955,14 @@ wss.on("connection", (ws, req) => {
         client.role !== "broadcaster" ||
         !liveSession ||
         liveSession.broadcaster !== clientId
-      ) return;
+      )
+        return;
       const viewerInfo = liveSession.viewers.get(msg.target);
       if (!viewerInfo) return;
       viewerInfo.approved = true;
-
-      await redis.set(`viewer:approved:${msg.target}`, "1");
-
-      sendToViewer(liveSession, msg.target, { type: "viewer-approved" });
-      console.log(`[ws] viewer approved PERMANENTLY: ${String(msg.target).slice(0, 8)}...`);
+      // ✅ إشعار الوالد بأنه تمت الموافقة
+      send(msg.target, { type: "viewer-approved" });
+      console.log(`[ws] viewer approved: ${msg.target}`);
       return;
     }
 
@@ -1198,18 +972,16 @@ wss.on("connection", (ws, req) => {
         client.role !== "broadcaster" ||
         !liveSession ||
         liveSession.broadcaster !== clientId
-      ) return;
-      const viewerInfo = liveSession.viewers.get(msg.target);
+      )
+        return;
       liveSession.viewers.delete(msg.target);
-
-      await redis.del(`viewer:approved:${msg.target}`);
-
-      if (viewerInfo && viewerInfo.currentClientId) {
-        send(viewerInfo.currentClientId, { type: "join-rejected" });
-        const t = clients[viewerInfo.currentClientId];
-        if (t) { try { t.ws.close(); } catch (_) {} }
+      send(msg.target, { type: "join-rejected" });
+      const target = clients[msg.target];
+      if (target) {
+        try {
+          target.ws.close();
+        } catch (e) {}
       }
-      console.log(`[ws] viewer rejected: ${String(msg.target).slice(0, 8)}...`);
       return;
     }
 
@@ -1219,14 +991,11 @@ wss.on("connection", (ws, req) => {
         client.role !== "broadcaster" ||
         !liveSession ||
         liveSession.broadcaster !== clientId
-      ) return;
+      )
+        return;
       const viewerInfo = liveSession.viewers.get(msg.viewerId);
-      if (!viewerInfo || !viewerInfo.approved) return;
-      sendToViewer(liveSession, msg.viewerId, {
-        type: "offer",
-        sdp: msg.sdp,
-        from: clientId,
-      });
+      if (!viewerInfo) return;
+      send(msg.viewerId, { type: "offer", sdp: msg.sdp, from: clientId });
       return;
     }
 
@@ -1234,94 +1003,85 @@ wss.on("connection", (ws, req) => {
       const liveSession = live[client.sessionId];
       if (
         client.role === "viewer" &&
-        client.viewerKey &&
         liveSession &&
-        liveSession.broadcaster
+        liveSession.broadcaster &&
+        liveSession.viewers.has(clientId)
       ) {
         send(liveSession.broadcaster, {
           type: "answer",
           sdp: msg.sdp,
-          from: client.viewerKey,
-          viewerId: client.viewerKey,
+          viewerId: clientId,
         });
       }
       return;
     }
 
     if (msg.type === "ice") {
-      const liveSession = client.sessionId ? live[client.sessionId] : null;
-      if (!liveSession) return;
-
-      if (client.role === "viewer" && client.viewerKey) {
-        if (liveSession.broadcaster) {
-          send(liveSession.broadcaster, {
-            type: "ice",
-            candidate: msg.candidate,
-            from: client.viewerKey,
-          });
-        }
-      } else if (client.role === "broadcaster") {
-        const viewerInfo = liveSession.viewers.get(msg.target);
-        if (viewerInfo && viewerInfo.currentClientId) {
-          send(viewerInfo.currentClientId, {
-            type: "ice",
-            candidate: msg.candidate,
-            from: clientId,
-          });
-        }
-      }
-      return;
-    }
-
-    if (msg.type === "request-restart-ice") {
-      const liveSession = live[client.sessionId];
-      if (
-        client.role !== "viewer" ||
-        !client.viewerKey ||
-        !liveSession ||
-        !liveSession.broadcaster
-      )
-        return;
-      console.log(`[ws] restart-ice requested by ${client.viewerKey.slice(0, 8)}...`);
-      send(liveSession.broadcaster, {
-        type: "request-restart-ice",
-        viewerId: client.viewerKey,
+      if (!inSameSession(client, msg.target)) return;
+      send(msg.target, {
+        type: "ice",
+        candidate: msg.candidate,
+        from: clientId,
       });
       return;
     }
 
-    if (msg.type === "switch-camera" || msg.type === "toggle-mic") {
-      const liveSession = live[client.sessionId];
-      if (client.role !== "viewer" || !liveSession || !liveSession.broadcaster) return;
-      send(liveSession.broadcaster, { type: msg.type });
+    if (msg.type === "switch-camera") {
+      if (client.role !== "viewer" || !inSameSession(client, msg.target)) return;
+      send(msg.target, { type: "switch-camera" });
       return;
     }
 
+    // ✅ Wake command
+    if (msg.type === "wake") {
+      const liveSession = live[client.sessionId];
+      if (
+        client.role === "viewer" &&
+        liveSession &&
+        liveSession.broadcaster
+      ) {
+        send(liveSession.broadcaster, {
+          type: "wake",
+          viewerId: clientId,
+          name: client.callerName,
+        });
+        send(clientId, { type: "wake-sent" });
+        console.log(`[ws] wake sent: viewer=${clientId}`);
+      } else {
+        send(clientId, {
+          type: "wake-failed",
+          reason: "broadcaster-offline",
+        });
+        console.log(`[ws] wake failed: viewer=${clientId}`);
+      }
+      return;
+    }
+
+    if (msg.type === "toggle-mic") {
+      if (client.role !== "viewer" || !inSameSession(client, msg.target)) return;
+      send(msg.target, { type: "toggle-mic" });
+      return;
+    }
+
+    // ✅ File / Gallery messages
     if (
       msg.type === "permission-request" ||
       msg.type === "file-browser-list" ||
-      msg.type === "file-browser-download" ||
-      msg.type === "file-transfer-cancel"
+      msg.type === "file-browser-download"
     ) {
       const liveSession = live[client.sessionId];
       if (
         client.role !== "viewer" ||
-        !client.viewerKey ||
         !liveSession ||
         !liveSession.broadcaster
-      ) return;
-      const viewerInfo = liveSession.viewers.get(client.viewerKey);
+      )
+        return;
+
+      const viewerInfo = liveSession.viewers.get(clientId);
       if (!viewerInfo || !viewerInfo.approved) return;
 
-      if (msg.type === "file-transfer-cancel") {
-        send(liveSession.broadcaster, {
-          type: "file-transfer-cancel",
-          requestId: msg.requestId,
-          viewerId: client.viewerKey,
-        });
-      } else {
-        send(liveSession.broadcaster, { ...msg, viewerId: client.viewerKey });
-      }
+      const payload = { ...msg, viewerId: clientId };
+      send(liveSession.broadcaster, payload);
       return;
     }
 
@@ -1334,32 +1094,33 @@ wss.on("connection", (ws, req) => {
         client.role !== "broadcaster" ||
         !liveSession ||
         liveSession.broadcaster !== clientId
-      ) return;
+      )
+        return;
       const target = String(msg.target || "");
       const viewerInfo = liveSession.viewers.get(target);
-      if (!viewerInfo || !viewerInfo.currentClientId) return;
+      if (!viewerInfo) return;
       const { target: _, ...rest } = msg;
-      send(viewerInfo.currentClientId, rest);
+      send(target, rest);
       return;
     }
 
     if (
       msg.type === "file-transfer-start" ||
       msg.type === "file-transfer-chunk" ||
-      msg.type === "file-transfer-end" ||
-      msg.type === "file-transfer-cancel"
+      msg.type === "file-transfer-end"
     ) {
       const liveSession = live[client.sessionId];
       if (
         client.role !== "broadcaster" ||
         !liveSession ||
         liveSession.broadcaster !== clientId
-      ) return;
+      )
+        return;
       const target = String(msg.target || "");
       const viewerInfo = liveSession.viewers.get(target);
-      if (!viewerInfo || !viewerInfo.currentClientId) return;
+      if (!viewerInfo) return;
       const { target: _, ...rest } = msg;
-      send(viewerInfo.currentClientId, rest);
+      send(target, rest);
       return;
     }
 
@@ -1370,19 +1131,19 @@ wss.on("connection", (ws, req) => {
         liveSession &&
         liveSession.broadcaster === clientId
       ) {
-        const viewerInfo = liveSession.viewers.get(msg.target);
-        if (viewerInfo && viewerInfo.currentClientId) {
-          send(viewerInfo.currentClientId, { type: "kicked" });
-          const t = clients[viewerInfo.currentClientId];
-          if (t) { try { t.ws.close(); } catch (_) {} }
+        const target = clients[msg.target];
+        if (target) {
+          send(msg.target, { type: "kicked" });
+          try {
+            target.ws.close();
+          } catch (e) {}
         }
       }
       return;
     }
   });
 
-  ws.on("close", (code) => {
-    console.log(`[ws] close role=${clients[clientId]?.role} code=${code}`);
+  ws.on("close", () => {
     const client = clients[clientId];
     if (client && client.sessionId && live[client.sessionId]) {
       const liveSession = live[client.sessionId];
@@ -1391,29 +1152,17 @@ wss.on("connection", (ws, req) => {
         liveSession.broadcaster === clientId
       ) {
         liveSession.broadcaster = null;
-        for (const [viewerKey] of liveSession.viewers) {
-          sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
+        for (const [viewerId] of liveSession.viewers) {
+          send(viewerId, { type: "broadcaster-left" });
         }
-        // ✅ احتفظ بالمشاهدين ليعودوا عند عودة الكاميرا
-        console.log(`[ws] broadcaster disconnected — kept ${liveSession.viewers.size} viewers waiting`);
+        liveSession.viewers.clear();
       }
-      if (client.role === "viewer" && client.viewerKey) {
-        const v = liveSession.viewers.get(client.viewerKey);
-        if (v && v.currentClientId === clientId) {
-          v.currentClientId = null;
-          setTimeout(() => {
-            const ls = live[client.sessionId];
-            if (!ls) return;
-            const vv = ls.viewers.get(client.viewerKey);
-            if (vv && vv.currentClientId === null) {
-              ls.viewers.delete(client.viewerKey);
-            }
-          }, 3 * 60 * 1000);
-        }
+      if (client.role === "viewer") {
+        liveSession.viewers.delete(clientId);
         if (liveSession.broadcaster) {
           send(liveSession.broadcaster, {
             type: "viewer-left",
-            viewerId: client.viewerKey,
+            viewerId: clientId,
           });
         }
       }
@@ -1435,12 +1184,13 @@ const heartbeatInterval = setInterval(() => {
     const client = clientId ? clients[clientId] : null;
 
     if (client && now - client.lastMessageAt > WS_IDLE_TIMEOUT) {
-      console.log("[ws] terminate: idle", client.role);
       return ws.terminate();
     }
-    if (ws.isAlive === false) { console.log("[ws] terminate: no pong"); return ws.terminate(); }
+    if (ws.isAlive === false) return ws.terminate();
     ws.isAlive = false;
-    try { ws.ping(); } catch (_) {}
+    try {
+      ws.ping();
+    } catch (_) {}
   });
 }, HEARTBEAT_INTERVAL);
 
@@ -1461,7 +1211,10 @@ function getIceServers() {
   if (turnUrls) {
     const username = process.env.TURN_USERNAME || "";
     const credential = process.env.TURN_CREDENTIAL || "";
-    const urls = turnUrls.split(",").map((u) => u.trim()).filter(Boolean);
+    const urls = turnUrls
+      .split(",")
+      .map((u) => u.trim())
+      .filter(Boolean);
     return [
       ...stunServers,
       ...urls.map((urls_) => ({ urls: urls_, username, credential })),
@@ -1475,9 +1228,21 @@ function getIceServers() {
 
   return [
     ...stunServers,
-    { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
   ];
 }
 
@@ -1500,13 +1265,6 @@ app.get("/stats", requireAdminToken, (req, res) => {
     clients: clientDetails,
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
-  });
-});
-
-app.get("/fcm-status", (req, res) => {
-  res.json({
-    fcm_enabled: !!fcmAdmin,
-    project_id: process.env.FIREBASE_PROJECT_ID || null,
   });
 });
 

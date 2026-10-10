@@ -23,11 +23,15 @@ class DeviceConnectionScreen extends StatelessWidget {
         child: Column(
           children: [
             const SizedBox(height: 20),
+
+            // ===== 1. مشاهدة الكاميرا =====
             Card(
               child: ListTile(
                 leading: const Icon(Icons.camera_alt, size: 40),
-                title: const Text("مشاهدة الجهاز",
-                    style: TextStyle(fontSize: 20)),
+                title: const Text(
+                  "مشاهدة الجهاز",
+                  style: TextStyle(fontSize: 20),
+                ),
                 subtitle: const Text("شاهد كاميرا جهاز الطفل مباشرة"),
                 trailing: const Icon(Icons.arrow_forward_ios),
                 onTap: () {
@@ -45,15 +49,27 @@ class DeviceConnectionScreen extends StatelessWidget {
                 },
               ),
             ),
+
             const SizedBox(height: 12),
+
+            // ===== 2. مشاهدة الشاشة بالوقت الفعلي =====
             Card(
               child: ListTile(
-                leading: const Icon(Icons.screen_share,
-                    size: 40, color: Colors.deepPurple),
-                title: const Text("مشاهدة الشاشة",
-                    style: TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.bold)),
-                subtitle: const Text("شاهد شاشة جهاز الطفل في الوقت الفعلي"),
+                leading: const Icon(
+                  Icons.screen_share,
+                  size: 40,
+                  color: Colors.deepPurple,
+                ),
+                title: const Text(
+                  "مشاهدة الشاشة",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                subtitle: const Text(
+                  "شاهد شاشة جهاز الطفل في الوقت الفعلي",
+                ),
                 trailing: const Icon(Icons.arrow_forward_ios),
                 onTap: () {
                   Navigator.push(
@@ -70,14 +86,20 @@ class DeviceConnectionScreen extends StatelessWidget {
                 },
               ),
             ),
+
             const SizedBox(height: 12),
+
+            // ===== 3. ملفات الجهاز =====
             Card(
               child: ListTile(
                 leading: const Icon(Icons.folder, size: 40),
-                title: const Text("ملفات الجهاز",
-                    style: TextStyle(fontSize: 20)),
+                title: const Text(
+                  "ملفات الجهاز",
+                  style: TextStyle(fontSize: 20),
+                ),
                 subtitle: const Text(
-                    "استعراض الصور والفيديو والملفات بعد موافقة صاحب الجهاز"),
+                  "استعراض الصور والفيديو والملفات بعد موافقة صاحب الجهاز",
+                ),
                 trailing: const Icon(Icons.arrow_forward_ios),
                 onTap: () {
                   Navigator.push(

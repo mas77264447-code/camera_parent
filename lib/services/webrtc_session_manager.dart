@@ -97,17 +97,21 @@ class WebRTCSessionManager {
       }
     }
   }
+}
 
-  // Persist the minimal recovery marker used by the connectivity recovery flow.
-  // Keep this as a real class method so all callers resolve it directly.
+
+extension WebRTCRecoveryExtension on WebRTCSessionManager {
+
   Future<void> saveRecoverySnapshot() async {
     await saveSession(
-      sessionId: 'recovery',
-      roomId: 'last',
+      sessionId: "recovery",
+      roomId: "last",
     );
   }
 
-  Future<void> restoreIceCandidates(dynamic peerConnection) async {
+  Future<void> restoreIceCandidates(
+      dynamic peerConnection
+  ) async {
     // ICE restore hook.
     // Connect stored candidates here.
   }

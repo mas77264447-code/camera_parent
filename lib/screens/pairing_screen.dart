@@ -79,6 +79,7 @@ class _PairingScreenState extends State<PairingScreen> {
       setState(() => _error = 'أدخل اسم المستخدم');
       return;
     }
+    // ✅ الإصلاح: حد أدنى 8 أحرف (متوافق مع السيرفر)
     if (password.length < 8) {
       setState(() => _error = 'كلمة المرور لازم تكون 8 أحرف على الأقل');
       return;
@@ -149,13 +150,10 @@ class _PairingScreenState extends State<PairingScreen> {
       );
     }
 
-    // ✅ إصلاح: استخدام PopScope بدل WillPopScope المهجور
-    return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, result) {
-        if (didPop) {
-          WakelockPlus.disable();
-        }
+    return WillPopScope(
+      onWillPop: () async {
+        WakelockPlus.disable();
+        return true;
       },
       child: Scaffold(
         backgroundColor: const Color(0xfff1f5ff),

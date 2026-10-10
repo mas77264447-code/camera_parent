@@ -30,12 +30,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final Set<String> _wakingSessions = <String>{};
 
-  // ✅ حماية ضد المسح عند الفشل المؤقت
-  int _consecutiveEmptyResponses = 0;
-
-  // ✅ منع تداخل الطلبات
-  bool _loadInFlight = false;
-
   @override
   void initState() {
     super.initState();
@@ -67,9 +61,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _startRefreshTimer() {
     _refreshTimer?.cancel();
-    // ✅ الفترة زادت من 5 إلى 30 ثانية لتقليل الضغط على السيرفر
     _refreshTimer = Timer.periodic(
-      const Duration(seconds: 30),
+      const Duration(seconds: 5),
       (_) => _loadDevices(),
     );
   }
@@ -151,86 +144,28 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _adminToken = null;
       _devices = [];
-      _consecutiveEmptyResponses = 0;
       _usernameController.clear();
       _passwordController.clear();
       _authError = null;
     });
   }
 
-  // ✅ مقارنة القوائم لتجنّب rebuild غير ضروري
-  bool _devicesEqual(
-      List<Map<String, dynamic>> a, List<Map<String, dynamic>> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i]['session_id'] != b[i]['session_id']) return false;
-      if (a[i]['online'] != b[i]['online']) return false;
-      if (a[i]['name'] != b[i]['name']) return false;
-    }
-    return true;
-  }
-
   Future<void> _loadDevices() async {
     if (_adminToken == null) return;
-
-    // ✅ منع تداخل الطلبات
-    if (_loadInFlight) {
-      debugPrint('[Home] load already in flight — skip');
-      return;
-    }
-    _loadInFlight = true;
-
     try {
       final response = await http.get(
         Uri.parse('${CameraService.server}/camera/sessions'),
         headers: {'X-Admin-Token': _adminToken!},
-      ).timeout(const Duration(seconds: 10));
-
-      debugPrint('[Home] /camera/sessions → ${response.statusCode}');
-
+      );
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
         final list = (body['data'] as List).cast<Map<String, dynamic>>();
-
-        // ✅ حماية: لا تمسح قائمة غير فارغة بسبب رد فارغ عابر
-        if (list.isEmpty && _devices.isNotEmpty) {
-          _consecutiveEmptyResponses++;
-          debugPrint('[Home] empty response #$_consecutiveEmptyResponses');
-          if (_consecutiveEmptyResponses < 3) {
-            return;
-          }
-        } else {
-          _consecutiveEmptyResponses = 0;
-        }
-
-        // ✅ لا rebuild إذا لم تتغير البيانات
-        if (mounted && !_devicesEqual(_devices, list)) {
-          setState(() => _devices = list);
-        }
-      } else if (response.statusCode == 403) {
-        debugPrint('[Home] token rejected — logging out');
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('admin_token');
-        _refreshTimer?.cancel();
-        if (mounted) {
-          setState(() {
-            _adminToken = null;
-            _devices = [];
-            _consecutiveEmptyResponses = 0;
-          });
-        }
-      } else if (response.statusCode == 503) {
-        debugPrint('[Home] server temporarily unavailable (503)');
-      } else {
-        debugPrint('[Home] unexpected status: ${response.statusCode}');
+        if (mounted) setState(() => _devices = list);
       }
-    } catch (e) {
-      debugPrint('[Home] error loading devices: $e');
-    } finally {
-      _loadInFlight = false;
-    }
+    } catch (_) {}
   }
 
+  // ✅ زر الإيقاظ — ينتظر رد السيرفر الفعلي بدل افتراض النجاح
   Future<void> _sendWakeCommand(String sessionId) async {
     if (_adminToken == null) return;
     if (_wakingSessions.contains(sessionId)) return;
@@ -247,7 +182,8 @@ class _HomeScreenState extends State<HomeScreen> {
               .replaceFirst("http://", "ws://") +
           "/signal";
 
-      ws = await WebSocket.connect(wsUrl).timeout(const Duration(seconds: 10));
+      ws = await WebSocket.connect(wsUrl)
+          .timeout(const Duration(seconds: 10));
 
       ws.listen(
         (raw) {
@@ -271,10 +207,17 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       ws.add(jsonEncode({
-        'type': 'wake',
+        'type': 'register',
+        'role': 'viewer',
         'session': sessionId,
         'adminToken': _adminToken,
+        'name': 'الوالد',
+        'requestedSource': 'files',
       }));
+
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      ws.add(jsonEncode({'type': 'wake'}));
 
       result = await completer.future.timeout(
         const Duration(seconds: 5),
@@ -291,8 +234,8 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() => _wakingSessions.remove(sessionId));
 
-        final String text;
-        final Color bg;
+        String text;
+        Color bg;
         if (result == 'sent') {
           text = '✅ تم إرسال الأمر — سيستجيب خلال ثوانٍ';
           bg = Colors.green;
@@ -311,9 +254,7 @@ class _HomeScreenState extends State<HomeScreen> {
         );
 
         if (result == 'sent') {
-          // ✅ تحديث فوري بعد الإيقاظ
-          await Future.delayed(const Duration(seconds: 3));
-          await _loadDevices();
+          Future.delayed(const Duration(seconds: 4), _loadDevices);
         }
       }
     }
@@ -490,20 +431,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           fontSize: 18, fontWeight: FontWeight.bold)),
                   Row(
                     children: [
-                      IconButton(
-                        icon: const Icon(Icons.refresh),
-                        tooltip: 'تحديث',
-                        onPressed: () async {
-                          await _loadDevices();
-                          if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('${_devices.length} جهاز'),
-                              duration: const Duration(seconds: 1),
-                            ),
-                          );
-                        },
-                      ),
                       IconButton(
                         icon: const Icon(Icons.logout),
                         tooltip: 'تسجيل الخروج',
