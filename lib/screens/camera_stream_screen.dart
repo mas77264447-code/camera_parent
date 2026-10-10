@@ -57,6 +57,10 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   // زوار طلبوا الاتصال ولسه مستنيين موافقة صاحب الكاميرا
   final Map<String, String> _pendingViewers = {};
 
+  // ✅ قائمة المشاهدين الموثوقين (admin_token)
+  final Set<String> _trustedViewers = <String>{};
+  final Map<String, String> _pendingViewerTokens = <String, String>{};
+
   bool _ready = false;
   String? _error;
   String _status = "جاري التجهيز...";
@@ -177,6 +181,11 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     // حمّل قرار "الموافقة التلقائية" المحفوظ من مرة سابقة (لو موجود).
     final prefs = await SharedPreferences.getInstance();
     _autoApproveViewers = prefs.getBool('auto_approve_viewers') ?? false;
+
+    // ✅ حمّل قائمة المشاهدين الموثوقين
+    _trustedViewers.clear();
+    _trustedViewers.addAll(prefs.getStringList('trusted_viewers') ?? []);
+    debugPrint('[Trusted] Loaded ${_trustedViewers.length} trusted viewers');
 
     // اطلب Device Admin لو مش مفعّل - بيظهر نافذة نظام مرة واحدة بس
     // ولو المستخدم وافق قبل كده بتعدي بدون ما تظهر نافذة.
@@ -573,20 +582,27 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   Future<void> _handleViewerRequest(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     final callerName = data['name'] as String? ?? 'Unknown';
-    // نوع البث اللي الوالد طلبه: "camera" أو "screen".
     final requestedSource = data['source'] as String? ?? 'camera';
+    final adminToken = data['adminToken']?.toString();
     final sourceLabel = requestedSource == 'screen' ? 'مشاركة شاشة الجهاز' : 'الكاميرا';
 
     if (viewerId == null) return;
 
     bool approved;
 
-    if (_autoApproveViewers) {
-      // اتوافق قبل كده على طلبات نفس الوالد - منعرضش نافذة موافقة تاني.
+    // ✅ موافقة تلقائية إذا adminToken محفوظ مسبقاً
+    if (adminToken != null && adminToken.isNotEmpty &&
+        _trustedViewers.contains(adminToken)) {
+      debugPrint('[Trusted] Auto-approve trusted viewer: $callerName');
+      approved = true;
+    } else if (_autoApproveViewers) {
       approved = true;
     } else {
       setState(() {
         _pendingViewers[viewerId] = callerName;
+        if (adminToken != null && adminToken.isNotEmpty) {
+          _pendingViewerTokens[viewerId] = adminToken;
+        }
       });
 
       approved = await showDialog<bool>(
@@ -608,14 +624,19 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
           ) ??
           false;
 
-      setState(() => _pendingViewers.remove(viewerId));
+      setState(() {
+        _pendingViewers.remove(viewerId);
+      });
 
-      if (approved) {
-        // احفظ الموافقة عشان الطلبات الجاية من نفس الوالد متعرضش
-        // النافذة دي تاني.
-        _autoApproveViewers = true;
+      final savedToken = _pendingViewerTokens.remove(viewerId);
+      if (approved && savedToken != null && savedToken.isNotEmpty) {
+        // ✅ احفظ adminToken كموثوق للطلبات القادمة
+        _trustedViewers.add(savedToken);
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('auto_approve_viewers', true);
+        await prefs.setStringList('trusted_viewers', _trustedViewers.toList());
+        debugPrint('[Trusted] Saved trusted viewer: $callerName '
+            '(total=${_trustedViewers.length})');
+        setState(() {});
       }
     }
 
@@ -626,12 +647,70 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
 
     _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
 
-    // جهّز المصدر اللي الوالد طلبه، وابعت الـ offer بمجرد ما يجهز
-    // (شوف نهاية _startMediaSource).
     _broadcastScreen = requestedSource == 'screen';
     _pendingOfferViewerId = viewerId;
     _pendingOfferCallerName = callerName;
     await _startMediaSource();
+  }
+
+  Future<void> _showTrustedViewersDialog() async {
+    final count = _trustedViewers.length;
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.verified_user, color: Colors.green),
+            SizedBox(width: 8),
+            Text('المشاهدون الموثوقون'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              count == 0
+                  ? 'لا يوجد مشاهدون موثوقون بعد.'
+                  : 'يوجد $count مشاهد موثوق.',
+              style: const TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'المشاهدون الموثوقون يدخلون مباشرة دون طلب موافقة.',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ),
+        actions: [
+          if (count > 0)
+            TextButton(
+              onPressed: () async {
+                setState(() {
+                  _trustedViewers.clear();
+                });
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.remove('trusted_viewers');
+                if (!ctx.mounted) return;
+                Navigator.pop(ctx);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('تم مسح قائمة الموثوقين'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+              child: const Text('مسح القائمة',
+                  style: TextStyle(color: Colors.red)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
+    );
   }
 
   // فيوير متوافق عليه بالفعل من السيرفر (approved: true) - بيوصلنا
@@ -1132,6 +1211,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
               ),
               onPressed: _showCallersSheet,
               tooltip: "الأجهزة المتصلة",
+            ),
+            IconButton(
+              icon: Badge(
+                label: Text("${_trustedViewers.length}"),
+                isLabelVisible: _trustedViewers.isNotEmpty,
+                child: const Icon(Icons.verified_user),
+              ),
+              onPressed: _showTrustedViewersDialog,
+              tooltip: "المشاهدون الموثوقون",
             ),
             IconButton(
               icon: const Icon(Icons.cameraswitch),

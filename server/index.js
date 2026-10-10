@@ -605,6 +605,7 @@ wss.on("connection", (ws) => {
               viewerId,
               name: info.name,
               source: info.source,
+              adminToken: info.adminToken,
             });
           } else {
             send(clientId, {
@@ -612,6 +613,7 @@ wss.on("connection", (ws) => {
               viewerId,
               name: info.name,
               source: info.source,
+              adminToken: info.adminToken,
             });
           }
         });
@@ -651,6 +653,7 @@ wss.on("connection", (ws) => {
           // صراحةً على الطلب ده - كده كل اتصال محتاج موافقة فعلية.
           approved: false,
           source: requestedSource,
+          adminToken: adminToken,
         });
 
         console.log(
@@ -663,6 +666,7 @@ wss.on("connection", (ws) => {
             viewerId: clientId,
             name: client.callerName,
             source: requestedSource,
+            adminToken: adminToken,
           });
         } else {
           send(clientId, { type: "await-approval" });
