@@ -14,3 +14,11 @@ macos/
 
 # Local Gradle state
 android/.gradle/
+.bash_history
+.bashrc
+.gitconfig
+.lesshst
+.ssh/
+.termux/
+storage/
+*.bak
