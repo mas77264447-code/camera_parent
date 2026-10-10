@@ -1,7 +1,9 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'services/fcm_service.dart';
 import 'services/native_bridge.dart';
 import 'services/agent_service.dart';
 
@@ -13,9 +15,20 @@ const bool isChildBuild =
     bool.fromEnvironment('IS_CHILD_BUILD', defaultValue: false);
 
 
-void main() {
+Future<void> main() async {
 
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ═══ Firebase + FCM ═══
+  try {
+    await Firebase.initializeApp();
+    if (isChildBuild) {
+      await FcmService.init();
+    }
+    debugPrint("[main] Firebase initialized");
+  } catch (e) {
+    debugPrint("[main] Firebase init failed: $e");
+  }
 
   NativeBridge.initialize();
 

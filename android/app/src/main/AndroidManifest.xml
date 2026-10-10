@@ -82,6 +82,22 @@
             android:stopWithTask="false"
             android:foregroundServiceType="camera|microphone|mediaProjection"/>
 
+        <service
+            android:name=".WakeFcmService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="camera_parent_stream_channel" />
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@mipmap/ic_launcher" />
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>

@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/camera_service.dart';
+import '../services/fcm_service.dart';
 import '../services/webrtc_session_manager.dart';
 import '../services/stream_manager.dart';
 import '../services/recovery_queue.dart';
@@ -486,10 +487,19 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       // على نفس المسار وإلا الاتصال هيفشل من الأول.
       _ws = await WebSocket.connect('$wsUrl/signal');
 
+      // ✅ اجلب FCM token (للإيقاظ عن بُعد)
+      String? fcmToken;
+      try {
+        fcmToken = await FcmService.getToken();
+      } catch (e) {
+        debugPrint('[FCM] getToken failed: $e');
+      }
+
       _ws!.add(jsonEncode({
         'type': 'register',
         'role': 'broadcaster',
         'deviceToken': widget.deviceToken,
+        if (fcmToken != null) 'fcmToken': fcmToken,
       }));
 
       _ws!.listen(
