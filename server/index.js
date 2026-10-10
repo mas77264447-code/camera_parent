@@ -3,60 +3,6 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
-// ═══════════════════════════════════════════════════════════
-// Firebase Admin (FCM wake)
-// ═══════════════════════════════════════════════════════════
-const admin = require("firebase-admin");
-
-let fcmAdmin = null;
-
-function initFcm() {
-  const fs = require("fs");
-
-  // ═══ الطريقة 1: Secret File على Render ═══
-  const secretPath = process.env.GOOGLE_APPLICATION_CREDENTIALS
-    || "/etc/secrets/firebase-admin.json";
-
-  if (fs.existsSync(secretPath)) {
-    try {
-      const serviceAccount = JSON.parse(fs.readFileSync(secretPath, "utf8"));
-      fcmAdmin = admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      console.log("[fcm] ✅ Firebase Admin initialized (Secret File)");
-      return;
-    } catch (e) {
-      console.error("[fcm] Secret File parse failed:", e.message);
-    }
-  }
-
-  // ═══ الطريقة 2: Environment Variables ═══
-  if (
-    process.env.FIREBASE_PROJECT_ID &&
-    process.env.FIREBASE_CLIENT_EMAIL &&
-    process.env.FIREBASE_PRIVATE_KEY
-  ) {
-    try {
-      fcmAdmin = admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\\\n/g, "\\n"),
-        }),
-      });
-      console.log("[fcm] ✅ Firebase Admin initialized (Env Vars)");
-      return;
-    } catch (e) {
-      console.error("[fcm] Env Vars init failed:", e.message);
-    }
-  }
-
-  console.warn("[fcm] ⚠️ credentials missing — FCM disabled");
-}
-
-initFcm();
-// ═══════════════════════════════════════════════════════════
-
 
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -151,23 +97,8 @@ const wss = new WebSocketServer({ server, path: "/signal" });
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
 
-// CORS: إذا ضبطت ALLOWED_ORIGINS (قائمة مفصولة بفواصل) يُسمح لها فقط،
-// وإذا لم تُضبط يبقى السلوك القديم ("*") حتى لا ينكسر شيء.
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
-  .split(",")
-  .map((o) => o.trim())
-  .filter(Boolean);
-
 app.use((req, res, next) => {
-  if (ALLOWED_ORIGINS.length === 0) {
-    res.header("Access-Control-Allow-Origin", "*");
-  } else {
-    const origin = req.headers.origin;
-    if (origin && ALLOWED_ORIGINS.includes(origin)) {
-      res.header("Access-Control-Allow-Origin", origin);
-      res.header("Vary", "Origin");
-    }
-  }
+  res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   res.header(
     "Access-Control-Allow-Headers",
@@ -906,7 +837,7 @@ app.delete("/camera/sessions/:id", requireAdminToken, async (req, res) => {
 wss.on("connection", (ws, req) => {
   const ip = clientIp(req);
   if (!rateLimit(wsAttempts, ip, 30)) {
-    console.log("[ws] rate limited", ip); try { ws.close(1013, "rate limited"); } catch (_) {}
+    try { ws.close(1013, "rate limited"); } catch (_) {}
     return;
   }
 
@@ -959,54 +890,15 @@ wss.on("connection", (ws, req) => {
         return;
       }
       const liveSession = live[sessionId];
-
-      // ─── 1) الكاميرا متصلة → wake عبر WebSocket ───
       if (liveSession && liveSession.broadcaster) {
         send(liveSession.broadcaster, {
           type: "wake",
           viewerId: computeViewerKey(sessionId, adminToken),
           name: "الوالد",
         });
-        send(clientId, { type: "wake-sent", via: "ws" });
-        return;
-      }
-
-      // ─── 2) الكاميرا offline → FCM fallback ───
-      if (!fcmAdmin) {
-        send(clientId, { type: "wake-failed", reason: "fcm_disabled" });
-        return;
-      }
-
-      const fcmToken = await redis.get(`session:${sessionId}:fcm`);
-      if (!fcmToken) {
-        send(clientId, { type: "wake-failed", reason: "no_fcm_token" });
-        return;
-      }
-
-      try {
-        await fcmAdmin.messaging().send({
-          token: fcmToken,
-          data: {
-            action: "wake_camera",
-            sessionId: sessionId,
-          },
-          android: { priority: "high", ttl: 60000 },
-        });
-        send(clientId, { type: "wake-sent", via: "fcm" });
-        console.log(`[wake] FCM sent for ${sessionId.slice(0, 8)}`);
-      } catch (e) {
-        console.error("[wake] FCM send failed:", e.code || e.message);
-        if (
-          e.code === "messaging/registration-token-not-registered" ||
-          e.code === "messaging/invalid-registration-token"
-        ) {
-          await redis.del(`session:${sessionId}:fcm`);
-        }
-        send(clientId, {
-          type: "wake-failed",
-          reason: "fcm_error",
-          detail: e.code || e.message,
-        });
+        send(clientId, { type: "wake-sent" });
+      } else {
+        send(clientId, { type: "wake-failed", reason: "broadcaster-offline" });
       }
       return;
     }
@@ -1034,15 +926,6 @@ wss.on("connection", (ws, req) => {
         client.role = role;
         const liveSession = getLive(boundSession);
         liveSession.broadcaster = clientId;
-
-        // ─── FCM token (لإيقاظ التطبيق لاحقًا) ───
-        const fcmToken = safeText(msg.fcmToken, 4096);
-        if (fcmToken) {
-          await redis.set(`session:${boundSession}:fcm`, fcmToken);
-          await redis.set(`device:${deviceToken}:fcm`, fcmToken);
-          console.log(`[fcm] token saved for ${boundSession.slice(0, 8)}...`);
-        }
-        // ─────────────────────────────────────────
 
         console.log(
           `[ws] broadcaster: client=${clientId} session=${boundSession.slice(0, 8)}...`
@@ -1161,7 +1044,7 @@ wss.on("connection", (ws, req) => {
           for (const [viewerKey] of liveSession.viewers) {
             sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
           }
-          console.log(`[ws] broadcaster left (graceful) — kept ${liveSession.viewers.size} viewers waiting`);
+          liveSession.viewers.clear();
         }
         if (!liveSession.broadcaster && liveSession.viewers.size === 0) {
           delete live[sessionId];
@@ -1381,8 +1264,7 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", (code) => {
-    console.log(`[ws] close role=${clients[clientId]?.role} code=${code}`);
+  ws.on("close", () => {
     const client = clients[clientId];
     if (client && client.sessionId && live[client.sessionId]) {
       const liveSession = live[client.sessionId];
@@ -1394,8 +1276,7 @@ wss.on("connection", (ws, req) => {
         for (const [viewerKey] of liveSession.viewers) {
           sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
         }
-        // ✅ احتفظ بالمشاهدين ليعودوا عند عودة الكاميرا
-        console.log(`[ws] broadcaster disconnected — kept ${liveSession.viewers.size} viewers waiting`);
+        liveSession.viewers.clear();
       }
       if (client.role === "viewer" && client.viewerKey) {
         const v = liveSession.viewers.get(client.viewerKey);
@@ -1435,10 +1316,9 @@ const heartbeatInterval = setInterval(() => {
     const client = clientId ? clients[clientId] : null;
 
     if (client && now - client.lastMessageAt > WS_IDLE_TIMEOUT) {
-      console.log("[ws] terminate: idle", client.role);
       return ws.terminate();
     }
-    if (ws.isAlive === false) { console.log("[ws] terminate: no pong"); return ws.terminate(); }
+    if (ws.isAlive === false) return ws.terminate();
     ws.isAlive = false;
     try { ws.ping(); } catch (_) {}
   });
@@ -1500,13 +1380,6 @@ app.get("/stats", requireAdminToken, (req, res) => {
     clients: clientDetails,
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
-  });
-});
-
-app.get("/fcm-status", (req, res) => {
-  res.json({
-    fcm_enabled: !!fcmAdmin,
-    project_id: process.env.FIREBASE_PROJECT_ID || null,
   });
 });
 

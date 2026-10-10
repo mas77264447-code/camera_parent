@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'camera_viewer_screen.dart';
 import 'device_files_screen.dart';
+import 'web_link_screen.dart';
 
 class DeviceConnectionScreen extends StatelessWidget {
   final String sessionId;
@@ -87,6 +88,31 @@ class DeviceConnectionScreen extends StatelessWidget {
                         sessionId: sessionId,
                         name: name,
                         adminToken: adminToken,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              color: Colors.blue.shade50,
+              child: ListTile(
+                leading: const Icon(Icons.link,
+                    size: 40, color: Colors.blue),
+                title: const Text("إضافة عبر رابط ⭐",
+                    style: TextStyle(
+                        fontSize: 20, fontWeight: FontWeight.bold)),
+                subtitle: const Text(
+                    "شارك رابطاً يفتحه الطفل في المتصفح — بدون تثبيت"),
+                trailing: const Icon(Icons.arrow_forward_ios),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => WebLinkScreen(
+                        adminToken: adminToken,
+                        deviceName: name,
                       ),
                     ),
                   );

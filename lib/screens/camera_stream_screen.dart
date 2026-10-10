@@ -61,7 +61,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
     await Permission.notification.request();
-    if (!mounted) return;
     if (!cam.isGranted || !mic.isGranted) {
       setState(() => _status = "مطلوب صلاحيات الكاميرا والميكروفون");
       return;
@@ -73,16 +72,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       _renderersReady = true;
     } catch (_) {}
 
-    if (!mounted) return;
-
-    _statusSub = _svc.onStatus.listen((s) {
-      if (mounted) setState(() => _status = s);
-    });
-    _callersSub = _svc.onCallers.listen((c) {
-      if (mounted) setState(() => _callers = c);
-    });
+    _statusSub = _svc.onStatus.listen((s) => setState(() => _status = s));
+    _callersSub = _svc.onCallers.listen((c) => setState(() => _callers = c));
     _remoteSub = _svc.onRemoteStreams.listen((r) {
-      if (!mounted) return;
       setState(() => _remoteStreams = r);
       final active = _svc.activeViewerId;
       if (active != null) {
@@ -90,7 +82,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       }
     });
     _pendingSub = _svc.onPendingRequests.listen((p) {
-      if (!mounted) return;
       setState(() => _pending = p);
       _maybeShowApprovalDialog();
     });

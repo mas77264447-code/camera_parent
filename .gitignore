@@ -14,15 +14,3 @@ macos/
 
 # Local Gradle state
 android/.gradle/
-*.bak
-
-# Termux personal files
-.bash_history
-.bashrc
-.gitconfig
-.lesshst
-.ssh/
-.termux/
-storage/
-android/0
-android/ServiceInfo.*

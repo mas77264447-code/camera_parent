@@ -47,9 +47,6 @@ class CameraParentApplication : Application() {
             MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/file_access")
         )
 
-        // ✅ تسجيل ForegroundServiceChannel (start/stop/bringToForeground/...)
-        ForegroundServiceChannel.setup(engine, applicationContext)
-
         ConnectivityChannel.setup(engine)
         NetworkConnectivityListener(applicationContext) { online ->
             ConnectivityChannel.sendNetworkState(online)

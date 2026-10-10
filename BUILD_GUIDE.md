@@ -1,59 +1,27 @@
-# دليل البناء - camera_parent
+# Camera Parent — Android Studio & GitHub Actions
 
-## أولاً: البناء في Android Studio
+## Android Studio
+1. Install Android Studio with Android SDK, SDK Platform Tools, Android SDK Build Tools, and JDK 17.
+2. Open the project **root folder** (the folder containing `pubspec.yaml`), not the `android` subfolder.
+3. Let Android Studio finish Gradle/Flutter sync.
+4. If `local.properties` is missing, run `flutter pub get` from the Flutter terminal; Flutter will create it.
+5. Select a device/emulator and run the desired flavor.
 
-### المتطلبات
-- Android Studio مع Android SDK
-- Flutter SDK وDart (تُضاف من إعدادات Flutter plugin)
-- Java 17
+### Flavors
+- Parent: `parent` → application ID `com.example.camera_parent.parent` → Camera Parent
+- Child: `child` → application ID `com.example.camera_parent.child` → Camera
 
-### الخطوات
-1. افتح Android Studio واختر **Open**.
-2. افتح **مجلد المشروع الجذر** (الذي يحتوي `pubspec.yaml`)، وليس مجلد `android/` داخله.
-3. انتظر حتى ينتهي Gradle وتحميل الحزم.
-4. إذا ظهر خطأ في `local.properties` أو `flutter.sdk`، شغّل من الطرفية داخل المشروع:
-   ```
-   flutter pub get
-   ```
-5. اختر جهازاً أو محاكياً من القائمة العلوية.
-6. اختر الـ flavor المطلوب من **Build Variants** (`parent` أو `child`)، ثم اضغط Run.
+The two APKs are independently installable because their application IDs are different.
 
-### الـ Flavors
-- `parent`: تطبيق الوالد
-- `child`: تطبيق الطفل
+## GitHub Actions
+The workflow `.github/workflows/build-apk.yml` builds both flavors on pushes to `main` and on manual runs. It uploads two separate artifacts:
+- `camera-parent-app-apk`
+- `camera-child-app-apk`
 
-كل واحد له Application ID مختلف، فيمكن تثبيتهما معاً على نفس الجهاز. لمعرفة الـ IDs الفعلية:
-```
-grep -n "applicationId" android/app/build.gradle
-```
+The workflow uses Flutter 3.44.0 and Java 17.
 
-## ثانياً: البناء على GitHub Actions
-
-الـ workflow: `.github/workflows/build-apk.yml`
-
-- يشتغل تلقائياً عند `push` إلى `main` أو `production-merge`، بشرط أن يتغير شيء في `lib/` أو `android/` أو `pubspec.yaml` أو ملف الـ workflow.
-- يمكن تشغيله يدوياً من تبويب **Actions** ← **Run workflow**.
-- يبني APK للـ parent والـ child في jobs منفصلة.
-- الـ artifacts: `camera-parent-apk` و`camera-child-apk`، وتُحذف بعد يوم.
-- ينشئ Release باسم `build-<رقم التشغيل>` يحتوي على الاثنين.
-- Flutter: `stable`، Java: 17.
-
-### المتطلب الأساسي
-الملف `android/app/google-services.json` لازم يكون مرفوعاً في الريبو، وإلا البناء يفشل فوراً. للتحقق:
-```
-git ls-files android/app/google-services.json
-```
-
-## ثالثاً: البناء المحلي من Termux
-```
-flutter pub get
-flutter analyze
-flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
-flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
-```
-
-## رابعاً: استكشاف الأخطاء
-- **فشل `Verify google-services.json`:** الملف غير مرفوع إلى GitHub.
-- **فشل `flutter build`:** افتح الـ job الأحمر في Actions واقرأ آخر 20 سطراً من الخطأ.
-- **ما ظهر Release:** أحد الـ builds فشل. الـ Release ينشأ فقط إذا نجح الاثنان.
-- **التطبيق ما يتحدّث فوق النسخة القديمة:** المفتاح الموقّع مختلف. لازم كل builds تكون بنفس المفتاح.
+## Important Android behavior
+- Camera streaming uses foreground-service types `camera|microphone`.
+- Screen streaming switches the foreground service to `mediaProjection` **after** the user grants Android screen-capture consent.
+- Screen capture permission is still controlled by Android; an ordinary APK cannot silently obtain or retain unrestricted screen capture across reboots.
+- Device Owner/Kiosk requires Android device-management provisioning; Device Admin alone is not Device Owner.

@@ -1,13 +1,10 @@
-import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/foundation.dart';
+import 'services/service_agent_channel.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'services/connectivity_method_channel.dart';
-import 'services/fcm_service.dart';
 import 'services/native_bridge.dart';
 import 'services/network_monitor.dart';
-import 'services/service_agent_channel.dart';
 import 'services/stream_service.dart';
 
 import 'screens/home_screen.dart';
@@ -17,28 +14,16 @@ import 'screens/camera_stream_screen.dart';
 const bool isChildBuild =
     bool.fromEnvironment('IS_CHILD_BUILD', defaultValue: false);
 
-Future<void> main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Service Agent must be registered before Firebase/FCM initialization.
-  if (isChildBuild) {
-    ServiceAgentChannel.register();
-  }
-
-  // ═══ Firebase + FCM ═══
-  try {
-    await Firebase.initializeApp();
-    if (isChildBuild) {
-      await FcmService.init();
-    }
-    debugPrint("[main] Firebase initialized");
-  } catch (e) {
-    debugPrint("[main] Firebase init failed: $e");
-  }
 
   NativeBridge.initialize();
 
-  // ═══ Connectivity ═══
+  // إصلاح: ConnectivityMethodChannel وNetworkMonitor كانا معرَّفين لكن غير
+  // موصولين بأي مكان. الآن أي تغيير في الشبكة قادم من الجهة الأصلية (Kotlin)
+  // يحدّث NetworkMonitor، وفي بناء الطفل (حيث تعمل StreamService كمذيع)
+  // يُستخدم أيضاً لمحاولة استعادة الاتصال فور عودة الشبكة بدل انتظار
+  // مؤقّت البينغ التالي.
   ConnectivityMethodChannel.initialize(
     onNetworkChanged: (online) async {
       final wasOffline = !NetworkMonitor.instance.isOnline;
@@ -51,6 +36,7 @@ Future<void> main() async {
     },
   );
 
+  ServiceAgentChannel.register();
   runApp(const CameraParentApp());
 }
 
@@ -92,7 +78,12 @@ class _ChildEntryState extends State<_ChildEntry> {
     final deviceToken = prefs.getString('device_token');
     final deviceName = prefs.getString('device_name') ?? 'جهاز الطفل';
 
+    // ✅ إصلاح: نعتبره مقترناً فقط لو الاثنين موجودين. سابقاً لو كان
+    // device_token موجود و session_id مفقود كان build يعمل crash عبر `!`.
     if (paired && sessionId != null && deviceToken != null) {
+      // تشغيل الخدمة يتم من شاشة الكاميرا بعد التأكد من صلاحيات الكاميرا
+      // والميكروفون، حتى تبدأ الكاميرا بشكل موثوق بعد إعادة تشغيل التطبيق.
+
       setState(() {
         _stored = {
           'device_token': deviceToken,

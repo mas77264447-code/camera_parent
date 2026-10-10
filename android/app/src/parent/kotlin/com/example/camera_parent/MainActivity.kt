@@ -20,6 +20,8 @@ class MainActivity : FlutterActivity() {
         private const val ADMIN_CHANNEL =
             "camera_parent/device_admin"
 
+        private const val FOREGROUND_SERVICE_CHANNEL =
+            "camera_parent/foreground_service"
 
         private const val SCREEN_CAPTURE_CHANNEL =
             "camera_parent/screen_capture"
@@ -47,6 +49,10 @@ class MainActivity : FlutterActivity() {
     override fun shouldDestroyEngineWithHost(): Boolean {
         return false
     }
+
+    override fun shouldAutomaticallyRegisterPlugins(): Boolean = false
+
+
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
     ) {
@@ -235,6 +241,43 @@ class MainActivity : FlutterActivity() {
                             null
                         )
                     }
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+
+
+        // ===== قناة Foreground Service =====
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            FOREGROUND_SERVICE_CHANNEL
+        ).setMethodCallHandler { call, result ->
+
+            when (call.method) {
+
+                "start" -> {
+                    val intent = Intent(
+                        this,
+                        StreamForegroundService::class.java
+                    ).setAction(StreamForegroundService.ACTION_START)
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(intent)
+                    } else {
+                        startService(intent)
+                    }
+                    result.success(true)
+                }
+
+                "stop" -> {
+                    startService(
+                        Intent(
+                            this,
+                            StreamForegroundService::class.java
+                        ).setAction(StreamForegroundService.ACTION_STOP)
+                    )
+                    result.success(true)
                 }
 
                 else -> result.notImplemented()

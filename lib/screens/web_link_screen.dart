@@ -3,14 +3,17 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:qr_flutter/qr_flutter.dart';
 import '../services/camera_service.dart';
 
 class WebLinkScreen extends StatefulWidget {
   final String adminToken;
+  final String deviceName;
 
   const WebLinkScreen({
     super.key,
     required this.adminToken,
+    required this.deviceName,
   });
 
   @override
@@ -155,62 +158,135 @@ class _WebLinkScreenState extends State<WebLinkScreen> {
                         ],
                       ),
                     )
-                  : Center(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 32),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // عرض الكود (صغير للتوضيح فقط)
-                            Text(
-                              _code!,
-                              style: TextStyle(
-                                fontSize: 42,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 10,
-                                color: Theme.of(context).primaryColor,
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // الكود
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                colors: [Color(0xff4a7aff), Color(0xff6b5cff)],
                               ),
+                              borderRadius: BorderRadius.circular(16),
                             ),
-                            const SizedBox(height: 10),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                            child: Column(
                               children: [
-                                const Icon(Icons.timer,
-                                    size: 14, color: Colors.grey),
-                                const SizedBox(width: 4),
+                                const Text('كود الاقتران',
+                                    style: TextStyle(
+                                        color: Colors.white70, fontSize: 13)),
+                                const SizedBox(height: 8),
                                 Text(
-                                  'ينتهي خلال $_secondsLeft ث',
+                                  _code!,
                                   style: const TextStyle(
-                                    color: Colors.grey,
-                                    fontSize: 13,
+                                    fontSize: 40,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                    letterSpacing: 8,
                                   ),
+                                ),
+                                const SizedBox(height: 6),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.timer,
+                                        size: 14, color: Colors.white70),
+                                    const SizedBox(width: 4),
+                                    Text('ينتهي خلال $_secondsLeft ث',
+                                        style: const TextStyle(
+                                            color: Colors.white70, fontSize: 12)),
+                                  ],
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 40),
+                          ),
+                          const SizedBox(height: 20),
 
-                            // زر نسخ الرابط فقط
-                            ElevatedButton.icon(
-                              onPressed: _copy,
-                              icon: const Icon(Icons.copy, size: 22),
-                              label: const Text(
-                                'نسخ الرابط',
-                                style: TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                          // QR Code
+                          Center(
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.grey.shade300),
                               ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.blue,
-                                foregroundColor: Colors.white,
-                                minimumSize: const Size(double.infinity, 58),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
+                              child: QrImageView(
+                                data: _link,
+                                version: QrVersions.auto,
+                                size: 200,
+                                backgroundColor: Colors.white,
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(height: 16),
+
+                          // الرابط
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: SelectableText(
+                              _link,
+                              style: const TextStyle(fontSize: 11),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+
+                          // نسخ
+                          ElevatedButton.icon(
+                            onPressed: _copy,
+                            icon: const Icon(Icons.copy),
+                            label: const Text('نسخ الرابط'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size(double.infinity, 48),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+
+                          // التعليمات
+                          Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: Colors.amber.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.amber.shade200),
+                            ),
+                            child: const Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(Icons.info_outline,
+                                        color: Colors.orange, size: 20),
+                                    SizedBox(width: 8),
+                                    Text('كيف يعمل الرابط؟',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13)),
+                                  ],
+                                ),
+                                SizedBox(height: 8),
+                                Text(
+                                  '1. افتح الرابط على جهاز الطفل (أي متصفح)\n'
+                                  '2. أدخل اسم الجهاز واضغط "بدء البث"\n'
+                                  '3. امنح صلاحيات الكاميرا\n'
+                                  '4. اترك الصفحة مفتوحة\n\n'
+                                  '⚠️ الرابط يعمل للكاميرا فقط — لا يدعم الملفات أو بث الشاشة\n'
+                                  '⚠️ يعمل فقط أثناء فتح الصفحة',
+                                  style: TextStyle(fontSize: 12, height: 1.6),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
     );
