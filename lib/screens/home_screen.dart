@@ -19,7 +19,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _error;
   List<Map<String, dynamic>> _devices = [];
   Timer? _refreshTimer;
-  final _recoveryController = TextEditingController();
+
+  // شاشة الاسترجاع: username + password
+  final _usernameCtrl = TextEditingController();
+  final _passwordCtrl = TextEditingController();
   bool _recoveryLoading = false;
   String? _recoveryError;
 
@@ -32,18 +35,20 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
-    _recoveryController.dispose();
+    _usernameCtrl.dispose();
+    _passwordCtrl.dispose();
     super.dispose();
   }
 
-  // لو الـ claim التلقائي فشل (السيرفر متبنّى بالفعل من نسخة تانية من
-  // التطبيق فقدت بياناتها)، بنسمح بإدخال admin_token يدوي - نفس القيمة
-  // اللي بتتطبع في لوج السيرفر عند بدء التشغيل. لو اتحقق منه بنجاح،
-  // نحفظه محليًا ونكمل عادي من غير ما نحتاج نمسح أي حاجة على السيرفر.
+  // ═══════════════════════════════════════════════════════════
+  // Recovery: Login with username + password
+  // ═══════════════════════════════════════════════════════════
   Future<void> _tryManualRecovery() async {
-    final token = _recoveryController.text.trim();
-    if (token.isEmpty) {
-      setState(() => _recoveryError = 'الصق التوكن هنا الأول');
+    final username = _usernameCtrl.text.trim();
+    final password = _passwordCtrl.text;
+
+    if (username.isEmpty || password.isEmpty) {
+      setState(() => _recoveryError = 'ادخل اسم المستخدم وكلمة المرور');
       return;
     }
 
@@ -52,16 +57,17 @@ class _HomeScreenState extends State<HomeScreen> {
       _recoveryError = null;
     });
 
-    final valid = await CameraService.verifyAdminToken(token);
+    final result = await CameraService.parentLogin(username, password);
 
-    if (!valid) {
+    if (result == null) {
       setState(() {
         _recoveryLoading = false;
-        _recoveryError = 'التوكن غير صحيح';
+        _recoveryError = 'اسم المستخدم أو كلمة المرور غير صحيحة';
       });
       return;
     }
 
+    final token = result['token']!;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('admin_token', token);
 
@@ -73,16 +79,23 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     await _loadDevices();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadDevices());
+    _refreshTimer?.cancel();
+    _refreshTimer =
+        Timer.periodic(const Duration(seconds: 5), (_) => _loadDevices());
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // Bootstrap
+  // ═══════════════════════════════════════════════════════════
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
     var token = prefs.getString('admin_token');
 
     if (token == null) {
       try {
-        final response = await http.post(Uri.parse('${CameraService.server}/admin/claim'));
+        final response = await http
+            .post(Uri.parse('${CameraService.server}/admin/claim'))
+            .timeout(const Duration(seconds: 10));
         final body = jsonDecode(response.body);
 
         if (response.statusCode == 200) {
@@ -110,7 +123,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     await _loadDevices();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadDevices());
+    _refreshTimer =
+        Timer.periodic(const Duration(seconds: 5), (_) => _loadDevices());
   }
 
   Future<void> _loadDevices() async {
@@ -131,7 +145,8 @@ class _HomeScreenState extends State<HomeScreen> {
   void _openAddDevice() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => AddDeviceScreen(adminToken: _adminToken!)),
+      MaterialPageRoute(
+          builder: (_) => AddDeviceScreen(adminToken: _adminToken!)),
     ).then((_) => _loadDevices());
   }
 
@@ -164,7 +179,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('نسيان الجهاز', style: TextStyle(color: Colors.red)),
+            child: const Text('نسيان الجهاز',
+                style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -184,53 +200,95 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (_error != null) {
       return Scaffold(
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(_error!, textAlign: TextAlign.center),
-                const SizedBox(height: 24),
-                const Divider(),
-                const SizedBox(height: 8),
-                const Text(
-                  'استرجاع الاقتران',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'لو ده جهازك الأصلي وفقدت بيانات التطبيق بس، الصق هنا '
-                  'الـ ADMIN_TOKEN اللي طبعته من لوج السيرفر عند تشغيله '
-                  '(Render Logs) للرجوع لنفس الحساب من غير اقتران جديد.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _recoveryController,
-                  decoration: const InputDecoration(
-                    labelText: 'admin_token',
-                    border: OutlineInputBorder(),
+        backgroundColor: const Color(0xfff1f5ff),
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Icon(
+                    Icons.lock_outline,
+                    size: 56,
+                    color: Colors.indigo.shade400,
                   ),
-                ),
-                if (_recoveryError != null) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    _error!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'استرجاع الاقتران',
+                    textAlign: TextAlign.center,
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
                   const SizedBox(height: 6),
-                  Text(_recoveryError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                  const Text(
+                    'لو ده جهازك الأصلي وفقدت بيانات التطبيق بس، '
+                    'ادخل اسم المستخدم وكلمة المرور بتوع حساب الوالد '
+                    'للرجوع لنفس الحساب من غير اقتران جديد.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _usernameCtrl,
+                    textInputAction: TextInputAction.next,
+                    textDirection: TextDirection.ltr,
+                    decoration: const InputDecoration(
+                      labelText: 'اسم المستخدم',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.person_outline),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _passwordCtrl,
+                    obscureText: true,
+                    textInputAction: TextInputAction.done,
+                    textDirection: TextDirection.ltr,
+                    onSubmitted: (_) => _tryManualRecovery(),
+                    decoration: const InputDecoration(
+                      labelText: 'كلمة المرور',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.lock_outline),
+                    ),
+                  ),
+                  if (_recoveryError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _recoveryError!,
+                      style: const TextStyle(color: Colors.red, fontSize: 12),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  ElevatedButton(
+                    onPressed: _recoveryLoading ? null : _tryManualRecovery,
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor: Colors.indigo,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: _recoveryLoading
+                        ? const SizedBox(
+                            height: 18,
+                            width: 18,
+                            child:
+                                CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('استرجاع', style: TextStyle(fontSize: 15)),
+                  ),
                 ],
-                const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: _recoveryLoading ? null : _tryManualRecovery,
-                  child: _recoveryLoading
-                      ? const SizedBox(
-                          height: 18, width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('استرجاع'),
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -248,7 +306,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('أجهزة الأطفال المقترنة',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      style:
+                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   ElevatedButton.icon(
                     onPressed: _openAddDevice,
                     icon: const Icon(Icons.add),
@@ -263,18 +322,21 @@ class _HomeScreenState extends State<HomeScreen> {
                   : Column(
                       children: [
                         const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                           child: Align(
                             alignment: Alignment.centerRight,
                             child: Text(
                               'اضغط ضغطة طويلة على أي جهاز لنسيانه',
-                              style: TextStyle(fontSize: 11, color: Colors.black45),
+                              style: TextStyle(
+                                  fontSize: 11, color: Colors.black45),
                             ),
                           ),
                         ),
                         Expanded(
                           child: ListView.builder(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 12),
                             itemCount: _devices.length,
                             itemBuilder: (context, i) {
                               final d = _devices[i];
@@ -282,11 +344,17 @@ class _HomeScreenState extends State<HomeScreen> {
                               return Card(
                                 child: ListTile(
                                   leading: Icon(Icons.circle,
-                                      size: 12, color: online ? Colors.green : Colors.grey),
+                                      size: 12,
+                                      color: online
+                                          ? Colors.green
+                                          : Colors.grey),
                                   title: Text(d['name'] ?? ''),
-                                  subtitle: Text(online ? 'متصل الآن' : 'غير متصل'),
-                                  trailing: const Icon(Icons.chevron_left),
-                                  onTap: online ? () => _openDevice(d) : null,
+                                  subtitle:
+                                      Text(online ? 'متصل الآن' : 'غير متصل'),
+                                  trailing:
+                                      const Icon(Icons.chevron_left),
+                                  onTap:
+                                      online ? () => _openDevice(d) : null,
                                   onLongPress: () => _confirmForget(d),
                                 ),
                               );
