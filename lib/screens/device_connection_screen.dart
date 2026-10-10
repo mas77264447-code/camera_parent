@@ -55,6 +55,7 @@ class DeviceConnectionScreen extends StatelessWidget {
                             sessionId: sessionId,
                             name: name,
                             adminToken: adminToken,
+                initialSource: 'camera',
                           ),
                     ),
                   );

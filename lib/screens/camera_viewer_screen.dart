@@ -10,12 +10,14 @@ class CameraViewerScreen extends StatefulWidget {
   final String sessionId;
   final String name;
   final String adminToken;
+  final String? initialSource;
 
   const CameraViewerScreen({
     super.key,
     required this.sessionId,
     required this.name,
     required this.adminToken,
+    this.initialSource,
   });
 
   @override
