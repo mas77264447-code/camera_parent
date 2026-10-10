@@ -1115,19 +1115,6 @@ class StreamService {
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
 
     if (!_broadcastFiles) {
-      if (!_broadcastScreen && localStream == null && !isForeground) {
-        debugPrint(
-            '[StreamService] viewer-joined in background, waiting viewer=$viewerId');
-        _awaitingForeground[viewerId] =
-            _AwaitingViewer(callerName, requestedSource ?? 'camera');
-        _ws?.add(jsonEncode({
-          'type': 'viewer-status',
-          'target': viewerId,
-          'status': 'waiting_child_open',
-        }));
-        return;
-      }
-
       if (localStream == null) {
         await _startMediaSource();
         if (localStream == null) {
