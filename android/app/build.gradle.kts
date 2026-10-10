@@ -80,6 +80,11 @@ kotlin {
     }
 }
 
+dependencies {
+    // Firebase Messaging (Android native — لـ WakeFcmService.kt)
+    implementation("com.google.firebase:firebase-messaging:24.0.3")
+}
+
 flutter {
     source = "../.."
 }
