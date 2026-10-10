@@ -111,6 +111,15 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   // الاختيار ده بيتبعت مع طلب التسجيل (requestedSource) عشان جهاز
   // الطفل يعرضه في نافذة الموافقة ويجهّز المصدر المطلوب بعد الموافقة.
   Future<void> _chooseRequestedSource() async {
+    // ✅ إذا كان المصدر محدداً مسبقاً (من شاشة الاتصال)، استخدمه مباشرة
+    // ولا نعرض النافذة مرة أخرى (كانت تظهر مرتين = تجربة سيئة).
+    if (widget.initialSource != null && widget.initialSource!.isNotEmpty) {
+      _requestedSource = widget.initialSource!;
+      debugPrint('[Viewer] Using initialSource: ${_requestedSource}');
+      return;
+    }
+
+    // النافذة الاحتياطية: فقط إذا فُتحت الشاشة بدون تحديد المصدر
     final result = await showDialog<String>(
       context: context,
       barrierDismissible: false,

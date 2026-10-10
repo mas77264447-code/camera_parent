@@ -142,6 +142,136 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
+  Future<void> _refreshDevices() async {
+    await _loadDevices();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('تم التحديث — ${_devices.length} جهاز'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  Future<void> _restartAllDevices() async {
+    if (_adminToken == null || _devices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('لا توجد أجهزة لإعادة تشغيلها'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('إعادة تشغيل الأجهزة'),
+        content: Text(
+          'سيتم إرسال أمر إيقاظ لـ ${_devices.length} جهاز.\n'
+          'الجهاز سيعيد الاتصال بالسيرفر خلال ثوانٍ.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('إرسال', style: TextStyle(color: Colors.orange)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('جاري إرسال أوامر الإيقاظ لـ ${_devices.length} جهاز...'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    int sent = 0;
+    int failed = 0;
+    for (final device in _devices) {
+      final sessionId = device['session_id']?.toString();
+      if (sessionId == null) continue;
+      final ok = await _sendWakeCommand(sessionId);
+      if (ok) {
+        sent++;
+      } else {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('تم الإرسال: $sent ✓ / فشل: $failed ✗'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+
+    await Future.delayed(const Duration(seconds: 3));
+    await _loadDevices();
+  }
+
+  Future<bool> _sendWakeCommand(String sessionId) async {
+    if (_adminToken == null) return false;
+    try {
+      // افتح اتصال WebSocket مؤقت لإرسال أمر الإيقاظ
+      final wsUrl = CameraService.server
+          .replaceFirst('https://', 'wss://')
+          .replaceFirst('http://', 'ws://');
+      final socket = await WebSocket.connect('$wsUrl/signal')
+          .timeout(const Duration(seconds: 8));
+
+      final completer = Completer<bool>();
+
+      socket.listen(
+        (raw) {
+          try {
+            final msg = jsonDecode(raw);
+            if (msg['type'] == 'wake-sent' && !completer.isCompleted) {
+              completer.complete(true);
+            } else if (msg['type'] == 'wake-failed' && !completer.isCompleted) {
+              completer.complete(false);
+            }
+          } catch (_) {}
+        },
+        onError: (_) {
+          if (!completer.isCompleted) completer.complete(false);
+        },
+        onDone: () {
+          if (!completer.isCompleted) completer.complete(false);
+        },
+        cancelOnError: true,
+      );
+
+      socket.add(jsonEncode({
+        'type': 'wake',
+        'session': sessionId,
+        'adminToken': _adminToken,
+      }));
+
+      final result = await completer.future
+          .timeout(const Duration(seconds: 5), onTimeout: () => false);
+
+      try {
+        await socket.close();
+      } catch (_) {}
+
+      return result;
+    } catch (e) {
+      debugPrint('[Restart] error: $e');
+      return false;
+    }
+  }
+
   void _openAddDevice() {
     Navigator.push(
       context,
@@ -303,15 +433,28 @@ class _HomeScreenState extends State<HomeScreen> {
             Padding(
               padding: const EdgeInsets.all(18),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('أجهزة الأطفال المقترنة',
-                      style:
-                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  ElevatedButton.icon(
+                  const Expanded(
+                    child: Text('أجهزة الأطفال المقترنة',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'تحديث القائمة',
+                    onPressed: _refreshDevices,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.power_settings_new,
+                        color: Colors.orange),
+                    tooltip: 'إعادة تشغيل الأجهزة',
+                    onPressed: _restartAllDevices,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle,
+                        color: Colors.indigo),
+                    tooltip: 'إضافة جهاز',
                     onPressed: _openAddDevice,
-                    icon: const Icon(Icons.add),
-                    label: const Text('إضافة جهاز'),
                   ),
                 ],
               ),
