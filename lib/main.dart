@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'services/connectivity_method_channel.dart';
 import 'services/native_bridge.dart';
 import 'services/network_monitor.dart';
+import 'services/service_agent_channel.dart';
 import 'services/stream_service.dart';
 
 import 'screens/home_screen.dart';
@@ -15,6 +16,11 @@ const bool isChildBuild =
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // بدء البث تلقائياً بعد الإقلاع دون فتح الواجهة (بناء الطفل فقط)
+  if (isChildBuild) {
+    ServiceAgentChannel.register();
+  }
 
   NativeBridge.initialize();
 
