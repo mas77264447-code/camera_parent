@@ -29,6 +29,10 @@ class StreamForegroundService : Service() {
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
 
+        // Aliases for compatibility with WakeFcmService.kt
+        const val EXTRA_MODE = "mode"
+        const val MODE_CAMERA = "camera"
+
         // ✅ Wake polling
         private const val SERVER_URL = "https://camera-parent-server.onrender.com"
         private const val WAKE_CHECK_INTERVAL_MS = 30_000L
