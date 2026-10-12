@@ -174,12 +174,15 @@ class StreamForegroundService : Service() {
 
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
+            PowerManager.PARTIAL_WAKE_LOCK or
+            PowerManager.ACQUIRE_CAUSES_WAKEUP or
+            PowerManager.ON_AFTER_RELEASE,
             "CameraParent::StreamWakeLock"
         ).apply {
             setReferenceCounted(false)
             acquire()
         }
+        Log.i(TAG, "WakeLock acquired (strong)")
     }
 
     private fun releaseWakeLock() {

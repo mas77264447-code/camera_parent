@@ -80,7 +80,7 @@
             android:name=".StreamForegroundService"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="camera|microphone|mediaProjection"/>
+            android:foregroundServiceType="camera|microphone|mediaProjection|connectedDevice"/>
 
         <service
             android:name=".WakeFcmService"
