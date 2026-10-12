@@ -115,6 +115,7 @@ class StreamForegroundService : Service() {
             getSharedPreferences(PREFS, MODE_PRIVATE)
                 .edit()
                 .putBoolean(KEY_ENABLED, false)
+                .putBoolean("fgs_running", false)
                 .apply()
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
@@ -124,8 +125,10 @@ class StreamForegroundService : Service() {
         }
 
         // Starting explicitly means the user/app requested the service.
+        // ✅ ضع علامة أن FGS يعمل
         getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
+            .putBoolean("fgs_running", true)
             .putBoolean(KEY_ENABLED, true)
             .apply()
 
@@ -213,6 +216,11 @@ class StreamForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        // ✅ امسح علامة FGS (حتى يستطيع FCM إعادة التشغيل لاحقاً)
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .edit()
+            .putBoolean("fgs_running", false)
+            .apply()
         // ✅ أوقف Wake polling
         stopWakePolling()
         releaseWakeLock()

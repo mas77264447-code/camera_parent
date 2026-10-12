@@ -30,6 +30,14 @@ class WakeFcmService : FirebaseMessagingService() {
         val sessionId = message.data["sessionId"]
         Log.i(TAG, "WAKE requested for session=$sessionId")
 
+        // ✅ إذا كان FGS يعمل بالفعل، لا نعيد تشغيله (لتفادي الزوبعة)
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val fgsRunning = prefs.getBoolean("fgs_running", false)
+        if (fgsRunning) {
+            Log.i(TAG, "FGS already running — skipping wake")
+            return
+        }
+
         // ═══ 1) ابدأ FGS ═══
         try {
             val intent = Intent(this, StreamForegroundService::class.java)
@@ -49,7 +57,6 @@ class WakeFcmService : FirebaseMessagingService() {
         }
 
         // ═══ 2) افتح التطبيق (Full-Screen Intent) ═══
-        // هذا يعمل حتى من قفل الشاشة بدون صلاحية overlay
         try {
             showWakeNotification()
             Log.i(TAG, "Wake notification posted")
