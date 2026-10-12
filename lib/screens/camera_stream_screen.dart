@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/camera_service.dart';
+import '../services/ws_holder.dart';
 import '../services/fcm_service.dart';
 import '../services/webrtc_session_manager.dart';
 import '../services/stream_manager.dart';
@@ -48,7 +49,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   MediaStream? _localStream;
-  WebSocket? _ws;
+  // ✅ WebSocket الآن في WsHolder Singleton (يبقى حياً بعد إغلاق الشاشة)
+  WebSocket? get _ws => WsHolder.instance.raw;
+  StreamSubscription? _wsSub;
   final Map<String, RTCPeerConnection> _peerConnections = {};
 
   final Map<String, String> _callerNames = {};
@@ -485,7 +488,11 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       // السيرفر عامل الـ WebSocket على مسار "/signal" تحديدًا
       // (new WebSocketServer({ server, path: "/signal" }))، فلازم نتصل
       // على نفس المسار وإلا الاتصال هيفشل من الأول.
-      _ws = await WebSocket.connect('$wsUrl/signal');
+      // ✅ استخدم WsHolder Singleton (يبقى حياً بعد إغلاق الشاشة)
+      final ok = await WsHolder.instance.connect('$wsUrl/signal');
+      if (!ok) {
+        throw Exception('WsHolder.connect failed');
+      }
 
       // ✅ اجلب FCM token (للإيقاظ عن بُعد)
       String? fcmToken;
@@ -495,14 +502,16 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
         debugPrint('[FCM] getToken failed: $e');
       }
 
-      _ws!.add(jsonEncode({
+      // سجّل broadcaster
+      WsHolder.instance.send({
         'type': 'register',
         'role': 'broadcaster',
         'deviceToken': widget.deviceToken,
         if (fcmToken != null) 'fcmToken': fcmToken,
-      }));
+      });
 
-      _ws!.listen(
+      // اشترك في الرسائل (مرة واحدة)
+      _wsSub ??= WsHolder.instance.messages.listen(
         _handleWebSocketMessage,
         onError: (error) {
           if (!_disposed) {
@@ -1052,7 +1061,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       );
     }
     _peerConnections.clear();
-    _ws?.close();
+    // ✅ إلغاء الاقتران = إغلاق WebSocket فعلاً (مقصود)
+    WsHolder.instance.disconnect();
 
     // امسح بيانات الاقتران المحفوظة محليًا (نفس المفاتيح المستخدمة في
     // pairing_screen.dart وقت الـ claim)
@@ -1155,6 +1165,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   @override
   void dispose() {
     _disposed = true;
+    _wsSub?.cancel();
+    _wsSub = null;
+    // ⚠️ لا نُغلق WsHolder — يبقى حياً في الخلفية
 
     WidgetsBinding.instance.removeObserver(this);
 
