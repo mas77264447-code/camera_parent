@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 jobs:
-  build-parent:
+  build-and-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,72 +35,42 @@ jobs:
           test -f android/app/google-services.json || (echo "❌ google-services.json missing!" && exit 1)
           echo "✅ google-services.json present"
 
-      - run: flutter pub get
-      - run: flutter clean
-      - run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: camera-parent-apk
-          path: build/app/outputs/flutter-apk/*.apk
-          retention-days: 1
-
-  build-child:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: 'gradle'
-
-      - name: Verify google-services.json
+      - name: Get dependencies
         run: |
-          test -f android/app/google-services.json || (echo "❌ google-services.json missing!" && exit 1)
-          echo "✅ google-services.json present"
+          flutter pub get
+          flutter clean
 
-      - run: flutter pub get
-      - run: flutter clean
-      - run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+      - name: Build parent APK
+        run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: camera-child-apk
-          path: build/app/outputs/flutter-apk/*.apk
-          retention-days: 1
+      - name: Save parent APK
+        run: cp build/app/outputs/flutter-apk/app-parent-release.apk build/camera-parent.apk
 
-  create-release:
-    needs: [build-parent, build-child]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all APK artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-apks
-          merge-multiple: true
+      - name: Build child APK
+        run: |
+          flutter clean
+          flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+
+      - name: Save child APK
+        run: cp build/app/outputs/flutter-apk/app-child-release.apk build/camera-child.apk
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: all-apks/**/*.apk
+          files: |
+            build/camera-parent.apk
+            build/camera-child.apk
           tag_name: build-${{ github.run_number }}
           name: Release Build ${{ github.run_number }} - WebRTC Fixes Applied
           draft: false
           prerelease: false
           body: |
             # Build ${{ github.run_number }}
-            
+
             ✅ **Fixes Applied:**
             - StreamForegroundService: 1500ms → 2500ms
             - WebRTC initialization improved
-            
+
             **Download & Install:**
-            - app-parent-release.apk
-            - app-child-release.apk
+            - camera-parent.apk
+            - camera-child.apk
