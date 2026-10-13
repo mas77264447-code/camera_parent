@@ -18,13 +18,16 @@ import 'crypto_service.dart';
 import 'fcm_service.dart';
 
 class _StreamLifecycleObserver with WidgetsBindingObserver {
-  _StreamLifecycleObserver(this._onResumed);
+  _StreamLifecycleObserver(this._onResumed, this._onBackgrounded);
   final Future<void> Function() _onResumed;
+  final void Function() _onBackgrounded;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _onResumed();
+    } else if (state == AppLifecycleState.paused) {
+      _onBackgrounded();
     }
   }
 }
@@ -155,8 +158,17 @@ class StreamService {
 
     if (_lifecycleObserver == null) {
       try {
-        _lifecycleObserver = _StreamLifecycleObserver(_onAppResumed);
+        _lifecycleObserver = _StreamLifecycleObserver(_onAppResumed, _onAppBackgrounded);
         WidgetsBinding.instance.addObserver(_lifecycleObserver!);
+        // البدء البارد: قد يكون التطبيق في المقدمة قبل إضافة المراقب، فلا يحدث انتقال
+        // إلى resumed. نستأنف الكاميرا المعلّقة يدوياً بعد أول إطار.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_running &&
+              _pendingCameraStart &&
+              WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+            unawaited(_onAppResumed());
+          }
+        });
       } catch (e) {
         debugPrint('[StreamService] lifecycle observer failed: $e');
       }
@@ -201,6 +213,14 @@ class StreamService {
       await channel.invokeMethod('requestOverlayPermission');
     } catch (e) {
       debugPrint('[StreamService] overlay permission request failed: $e');
+    }
+  }
+
+  /// عند الانتقال للخلفية: Android يسحب الكاميرا، فيبقى الـ track حياً بلا إطارات.
+  /// نعلّم أن الكاميرا تحتاج إعادة اكتساب عند العودة.
+  void _onAppBackgrounded() {
+    if (localStream != null && !_broadcastScreen && !_broadcastFiles) {
+      _cameraAcquiredInBackground = true;
     }
   }
 
@@ -1024,11 +1044,17 @@ class StreamService {
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
 
-    // السيرفر قد يرسل viewer-joined لمشاهد سبق اعتماده (مثلاً بعد إعادة
-    // التشغيل). لا نفتح الكاميرا إلا إذا وافق الطفل فعلياً في هذه الجلسة.
+    // الكاميرا والشاشة: الموافقة محفوظة في السيرفر (viewer:approved:<key>)، والسيرفر
+    // لا يرسل viewer-joined إلا للمعتمدين. نقبلها دون حارس الذاكرة (يُفرَّغ عند الانقطاع).
+    // الملفات: السيرفر يوافق عليها تلقائياً، فتبقى تحتاج موافقة محلية من الطفل.
     if (!_consentedViewers.contains(viewerId)) {
-      debugPrint('[StreamService] viewer-joined بدون موافقة محلية — تجاهل: $viewerId');
-      return;
+      if (requestedSource == 'files') {
+        debugPrint('[StreamService] طلب ملفات يحتاج موافقة محلية: $viewerId');
+        _pendingViewers[viewerId] = callerName;
+        _pendingCtrl.add(Map.from(_pendingViewers));
+        return;
+      }
+      _consentedViewers.add(viewerId);
     }
 
     if (_approvalInFlight.contains(viewerId)) return;
