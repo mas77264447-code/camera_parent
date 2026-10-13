@@ -41,6 +41,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   Timer? _healthCheckTimer;
   Timer? _pingTimer;
   Timer? _noMediaWatchdog;
+  Timer? _offerWaitTimer;
   Timer? _diagTimer;
   Timer? _rendererBindTimer;
   Timer? _videoFrameWatchdog;
@@ -312,6 +313,28 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
   }
 
+  /// بعد الموافقة: إذا لم يصل offer خلال 20 ثانية نطلب من المُذيع إعادة
+  /// الإرسال مرة واحدة، ثم نعيد الاتصال كاملاً إذا استمر الصمت.
+  void _startOfferWaitTimer() {
+    _offerWaitTimer?.cancel();
+    _offerWaitTimer = Timer(const Duration(seconds: 20), () {
+      if (_disposed || _remoteStream != null || _pc != null) return;
+      debugPrint('[Viewer] no offer 20s after approval — requesting restart');
+      if (mounted) {
+        setState(() => _status =
+            "لم يبدأ البث بعد. قد يحتاج الجهاز الآخر لفتح التطبيق...");
+      }
+      try {
+        _ws?.add(jsonEncode({"type": "request-restart-ice"}));
+      } catch (_) {}
+      _offerWaitTimer = Timer(const Duration(seconds: 25), () {
+        if (_disposed || _remoteStream != null || _pc != null) return;
+        debugPrint('[Viewer] still no offer — full reconnect');
+        _reconnectFull();
+      });
+    });
+  }
+
   void _startNoMediaWatchdog() {
     _noMediaWatchdog?.cancel();
     _noMediaWatchdog = Timer(NO_MEDIA_TIMEOUT, () {
@@ -351,8 +374,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           debugPrint('[ICE] no offer after restart request — full reconnect');
           _reconnectFull();
         }
+        _iceRestartInProgress = false;
       });
-    } finally {
+    } catch (_) {
       _iceRestartInProgress = false;
     }
   }
@@ -483,6 +507,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
     _noMediaWatchdog?.cancel();
+    _offerWaitTimer?.cancel();
+    _offerWaitTimer = null;
     _reconnectTimer = null;
     _noMediaWatchdog = null;
 
@@ -528,6 +554,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           if (mounted) {
             setState(() => _status = "تمت الموافقة - جاري الاتصال...");
           }
+          _startOfferWaitTimer();
           break;
         case "join-rejected":
           _rejected = true;
@@ -568,6 +595,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       return;
     }
 
+    _offerWaitTimer?.cancel();
+    _offerWaitTimer = null;
+    _iceRestartInProgress = false;
     _broadcasterId = msg["from"].toString();
 
     final oldPc = _pc;
@@ -772,6 +802,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _pingTimer?.cancel();
     _diagTimer?.cancel();
     _noMediaWatchdog?.cancel();
+    _offerWaitTimer?.cancel();
     _cancelRendererTimers();
 
     try {
