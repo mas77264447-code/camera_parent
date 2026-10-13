@@ -49,6 +49,9 @@ class StreamService {
   final Set<String> _approvalInFlight = <String>{};
   final Set<String> _approvedFileViewers = <String>{};
 
+  // مشاهدون وافق عليهم الطفل فعلياً في هذه الجلسة (في الذاكرة فقط).
+  final Set<String> _consentedViewers = <String>{};
+
   final Set<String> _canceledDownloads = <String>{};
 
   String? _activeViewerId;
@@ -191,6 +194,7 @@ class StreamService {
     _pendingRemoteIceByViewer.clear();
     _approvalInFlight.clear();
     _approvedFileViewers.clear();
+    _consentedViewers.clear();
     _activeViewerId = null;
     _hasRemoteVideo = false;
     _callersCtrl.add({});
@@ -493,6 +497,9 @@ class StreamService {
   Future<void> _handleRestartIceRequest(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     if (viewerId == null) return;
+
+    // لا نشغّل الكاميرا لمشاهد لم يوافق عليه الطفل في هذه الجلسة.
+    if (!_consentedViewers.contains(viewerId)) return;
 
     final callerName = _callerNames[viewerId] ?? 'Unknown';
     debugPrint('[StreamService] ICE restart requested by $viewerId');
@@ -847,6 +854,7 @@ class StreamService {
       return;
     }
     _approvalInFlight.add(viewerId);
+    _consentedViewers.add(viewerId);
 
     if (requestedSource == 'files') {
       _approvedFileViewers.add(viewerId);
@@ -876,6 +884,12 @@ class StreamService {
     final callerName = data['name'] as String? ?? 'Unknown';
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
+
+    // لا نفتح الكاميرا إلا إذا وافق الطفل فعلياً في هذه الجلسة.
+    if (!_consentedViewers.contains(viewerId)) {
+      debugPrint('[StreamService] viewer-joined بدون موافقة محلية — تجاهل: $viewerId');
+      return;
+    }
 
     debugPrint('[StreamService] viewer-joined: $viewerId source=$requestedSource');
 
@@ -1160,6 +1174,7 @@ class StreamService {
     if (viewerId == null) return;
 
     _approvedFileViewers.remove(viewerId);
+    _consentedViewers.remove(viewerId);
 
     final pc = _peerConnections.remove(viewerId);
     _pendingRemoteIceByViewer.remove(viewerId);

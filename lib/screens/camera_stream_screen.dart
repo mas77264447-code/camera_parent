@@ -64,7 +64,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       debugPrint('[Camera] resumed — re-ensuring stream');
-      _svc.ensureCameraStarted();
       _svc.ensureHealthy();
     }
   }
@@ -114,9 +113,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
       cameraName: widget.cameraName,
     );
 
-    // بعد إعادة تشغيل التطبيق تكون الخدمة جديدة ولا يوجد بث قديم؛
-    // ابدأ الكاميرا فوراً ولا تنتظر طلب مشاهدة من الوالد.
-    await _svc.ensureCameraStarted();
+    // لا تشغّل الكاميرا عند الإقلاع. تبدأ فقط بعد موافقة الطفل على طلب
+    // مشاهدة (approvePendingViewer → _approveViewer).
     if (mounted) {
       final current = _svc.localStream;
       setState(() => _local = current);
