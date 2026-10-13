@@ -68,6 +68,10 @@ class StreamService {
   _StreamLifecycleObserver? _lifecycleObserver;
   final Set<String> _approvedFileViewers = <String>{};
 
+  // مشاهدون وافق عليهم الطفل فعلياً في هذه الجلسة (في الذاكرة فقط،
+  // تُفرغ عند إعادة تشغيل التطبيق). أي طلب بعدها يحتاج موافقة جديدة.
+  final Set<String> _consentedViewers = <String>{};
+
   final Set<String> _canceledDownloads = <String>{};
 
   String? _activeViewerId;
@@ -290,6 +294,7 @@ class StreamService {
     _offerInFlight.clear();
     _recoveringViewers.clear();
     _approvedFileViewers.clear();
+    _consentedViewers.clear();
     _activeViewerId = null;
     _hasRemoteVideo = false;
     _callersCtrl.add({});
@@ -604,6 +609,12 @@ class StreamService {
   Future<void> _handleRestartIceRequest(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     if (viewerId == null) return;
+
+    // لا نشغّل الكاميرا لمشاهد لم يوافق عليه الطفل في هذه الجلسة.
+    if (!_consentedViewers.contains(viewerId)) {
+      debugPrint('[StreamService] restart-ice من مشاهد غير معتمد — تجاهل: $viewerId');
+      return;
+    }
 
     final callerName = _callerNames[viewerId] ?? 'Unknown';
 
@@ -948,6 +959,7 @@ class StreamService {
       return;
     }
     _approvalInFlight.add(viewerId);
+    _consentedViewers.add(viewerId);
 
     if (requestedSource == 'files') {
       _approvedFileViewers.add(viewerId);
@@ -1011,6 +1023,13 @@ class StreamService {
     final callerName = data['name'] as String? ?? 'Unknown';
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
+
+    // السيرفر قد يرسل viewer-joined لمشاهد سبق اعتماده (مثلاً بعد إعادة
+    // التشغيل). لا نفتح الكاميرا إلا إذا وافق الطفل فعلياً في هذه الجلسة.
+    if (!_consentedViewers.contains(viewerId)) {
+      debugPrint('[StreamService] viewer-joined بدون موافقة محلية — تجاهل: $viewerId');
+      return;
+    }
 
     if (_approvalInFlight.contains(viewerId)) return;
 
@@ -1501,6 +1520,7 @@ class StreamService {
     if (viewerId == null) return;
 
     _approvedFileViewers.remove(viewerId);
+    _consentedViewers.remove(viewerId);
     if (_deferredViewerId == viewerId) {
       _deferredViewerId = null;
       _deferredCallerName = null;
