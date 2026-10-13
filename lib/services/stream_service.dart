@@ -619,7 +619,14 @@ class StreamService {
       }
       await _startMediaSource();
     }
-    if (localStream == null) return;
+    if (localStream == null) {
+      // الكاميرا لم تُفتح (التطبيق في الخلفية): نحفظ المشاهد ليُرسل له
+      // offer تلقائياً عند عودة التطبيق للمقدمة (_onAppResumed).
+      _deferredViewerId = viewerId;
+      _deferredCallerName = callerName;
+      _pendingCameraStart = true;
+      return;
+    }
 
     await _sendOfferTo(viewerId, callerName);
   }
@@ -1042,11 +1049,18 @@ class StreamService {
 
       if (localStream == null) {
         final lifecycleBefore = WidgetsBinding.instance.lifecycleState;
-        if (lifecycleBefore != AppLifecycleState.resumed) {
+        if (lifecycleBefore != AppLifecycleState.resumed && !_broadcastScreen) {
           debugPrint(
-              '[StreamService] _handleApprovedViewer: background, deferring viewer=$viewerId');
+              '[StreamService] _handleApprovedViewer: background, bringing app to foreground viewer=$viewerId');
           _pendingCameraStart = true;
-          return;
+          final ok = await _bringToForeground();
+          if (!ok) {
+            debugPrint(
+                '[StreamService] _handleApprovedViewer: foreground failed, deferring viewer=$viewerId');
+            return;
+          }
+          await Future.delayed(const Duration(milliseconds: 800));
+          if (!_running) return;
         }
         await _startMediaSource();
       }
