@@ -202,22 +202,21 @@ class MainActivity : FlutterActivity() {
                             Log.w("MainActivity", "direct startActivity failed: ${e.message}")
                         }
 
-                        // المحاولة 2: Full-Screen Intent (يعمل حتى بدون Overlay،
-                        // وضروري على Android 14+)
-                        try {
-                            showFullScreenWakeNotification()
-                            Log.i("MainActivity", "bringToForeground: full-screen wake posted")
-                            anySuccess = true
-                        } catch (e: Exception) {
-                            Log.w("MainActivity", "full-screen notification failed: ${e.message}")
-                        }
-
                         if (anySuccess) result.success(true)
                         else result.error("BRING_FAILED", "كل محاولات الإحضار فشلت", null)
 
                     } catch (e: Exception) {
                         Log.e("MainActivity", "bringToForeground failed", e)
                         result.error("BRING_FAILED", e.message, null)
+                    }
+                }
+
+                "showWakeNotification" -> {
+                    try {
+                        showFullScreenWakeNotification()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("NOTIFY_FAILED", e.message, null)
                     }
                 }
 
