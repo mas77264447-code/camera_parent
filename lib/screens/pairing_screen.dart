@@ -38,6 +38,17 @@ class _PairingScreenState extends State<PairingScreen> {
     final sessionId = prefs.getString('session_id');
     final deviceName = prefs.getString('device_name');
 
+    // ✅ تعبئة تلقائية لبيانات الدخول المحفوظة
+    final savedUsername = prefs.getString('saved_username') ?? '';
+    final savedPassword = prefs.getString('saved_password') ?? '';
+    if (savedUsername.isNotEmpty) {
+      _usernameController.text = savedUsername;
+      _nameController.text = deviceName ?? 'جهاز الطفل';
+    }
+    if (savedPassword.isNotEmpty) {
+      _passwordController.text = savedPassword;
+    }
+
     if (isPaired &&
         deviceToken != null &&
         deviceToken.isNotEmpty &&
@@ -119,6 +130,9 @@ class _PairingScreenState extends State<PairingScreen> {
       await prefs.setString('session_id', data['session_id']);
       await prefs.setString('device_name', data['device_name']);
       await prefs.setBool('is_paired', true);
+      // ✅ حفظ بيانات الدخول لتعبئتها تلقائياً في المرة القادمة
+      await prefs.setString('saved_username', username);
+      await prefs.setString('saved_password', password);
 
       WakelockPlus.disable();
 
