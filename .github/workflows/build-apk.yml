@@ -44,7 +44,7 @@ jobs:
         run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
 
       - name: Save parent APK
-        run: cp build/app/outputs/flutter-apk/app-parent-release.apk build/camera-parent.apk
+        run: cp build/app/outputs/flutter-apk/app-parent-release.apk camera-parent.apk
 
       - name: Build child APK
         run: |
@@ -52,14 +52,14 @@ jobs:
           flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
 
       - name: Save child APK
-        run: cp build/app/outputs/flutter-apk/app-child-release.apk build/camera-child.apk
+        run: cp build/app/outputs/flutter-apk/app-child-release.apk camera-child.apk
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/camera-parent.apk
-            build/camera-child.apk
+            camera-parent.apk
+            camera-child.apk
           tag_name: build-${{ github.run_number }}
           name: Release Build ${{ github.run_number }} - WebRTC Fixes Applied
           draft: false
