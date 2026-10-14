@@ -1180,73 +1180,26 @@ class StreamService {
       return;
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // محاولة أولى: افتح الكاميرا مباشرة — حتى في الخلفية
-    // على Android 13 وأقل: يعمل بفضل FOREGROUND_SERVICE_TYPE_CAMERA
-    // على Android 14+: يعمل مع SYSTEM_ALERT_WINDOW أو Device Owner
-    // ═══════════════════════════════════════════════════════════
-    if (!_broadcastScreen) {
-      try {
-        debugPrint('[StreamService] trying direct camera (background OK)');
-        _updateStatus("جاري فتح الكاميرا...");
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    final isForeground = lifecycleState == AppLifecycleState.resumed;
 
-        final stream = await CameraService.getUserMedia(
-          audio: true,
-          video: true,
-          videoConstraints: <String, dynamic>{
-            'mandatory': <String, dynamic>{
-              'minWidth': 320,
-              'minHeight': 240,
-              'maxWidth': 480,
-              'maxHeight': 360,
-              'minFrameRate': 10,
-              'maxFrameRate': 15,
-            },
-            'optional': <dynamic>[],
-          },
-        );
+    // إذا نحن في الخلفية: اطلب رفع الواجهة ثم حاول الفتح.
+    if (!_broadcastScreen && !isForeground) {
+      _pendingCameraStart = true;
+      _updateStatus("جاري إظهار التطبيق لفتح الكاميرا...");
 
-        final videoTracks = stream.getVideoTracks();
-        if (videoTracks.isNotEmpty) {
-          await Future.delayed(const Duration(milliseconds: 500));
-          if (videoTracks.first.enabled) {
-            localStream = stream;
-            _localStreamCtrl.add(stream);
-            _pendingCameraStart = false;
-            _cameraAcquiredInBackground = false;
-            _updateStatus("جاهز للبث!");
-            _error = null;
-            _canRetry = false;
-            debugPrint('[StreamService] camera opened in background');
-            return;
-          }
-        }
-
-        debugPrint('[StreamService] camera opened but no frames');
-        try { await stream.dispose(); } catch (_) {}
-      } catch (e) {
-        debugPrint('[StreamService] direct camera failed: $e');
-      }
-
-      // فشل الفتح المباشر → اطلب رفع الواجهة
-      final lifecycleState = WidgetsBinding.instance.lifecycleState;
-      final isForeground = lifecycleState == AppLifecycleState.resumed;
-
-      if (!isForeground) {
-        _pendingCameraStart = true;
-        _updateStatus("جاري إظهار التطبيق لفتح الكاميرا...");
-        final ok = await _bringToForeground();
-        if (!ok) {
-          _updateStatus("مطلوب فتح التطبيق على الجهاز لتشغيل الكاميرا");
-        }
+      final ok = await _bringToForeground();
+      if (!ok) {
+        _updateStatus("مطلوب فتح التطبيق لتشغيل الكاميرا");
         return;
       }
+      await Future.delayed(const Duration(milliseconds: 800));
+      if (!_running) return;
     }
 
     _updateStatus(_broadcastScreen
         ? "جاري تجهيز مشاركة الشاشة..."
         : "جاري تجهيز الكاميرا...");
-    _clog('_startMediaSource: calling getUserMedia (broadcastScreen=$_broadcastScreen)');
 
     try {
       final stream = _broadcastScreen
@@ -1271,10 +1224,6 @@ class StreamService {
       _localStreamCtrl.add(stream);
       _pendingCameraStart = false;
       _cameraAcquiredInBackground = false;
-      _clog('_startMediaSource: getUserMedia OK, '
-          'videoTracks=${stream.getVideoTracks().length} '
-          'audioTracks=${stream.getAudioTracks().length} '
-          'videoEnabled=${stream.getVideoTracks().isNotEmpty ? stream.getVideoTracks().first.enabled : "n/a"}');
 
       if (_broadcastScreen) {
         _screenStreamStartedAt = DateTime.now();
@@ -1291,7 +1240,6 @@ class StreamService {
       _error = "فشل تهيئة البث: $e";
       _updateStatus("خطأ");
       _canRetry = true;
-      _clog('_startMediaSource: getUserMedia THREW: $e');
     }
   }
 

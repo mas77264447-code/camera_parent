@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 
 class BootReceiver : BroadcastReceiver() {
@@ -18,7 +19,6 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
 
-        // نقبل فقط أحداث الإقلاع الرسمية
         if (action != Intent.ACTION_BOOT_COMPLETED &&
             action != "android.intent.action.QUICKBOOT_POWERON" &&
             action != "com.htc.intent.action.QUICKBOOT_POWERON") {
@@ -37,18 +37,37 @@ class BootReceiver : BroadcastReceiver() {
 
         Log.i(TAG, "Boot: starting FGS mode=$mode")
 
-        // ═══════════════════════════════════════════════════════════
-        // لا نفتح MainActivity من BroadcastReceiver:
-        //   - startActivity محظور على Android 10+ (يفشل بصمت).
-        //   - فتح الواجهة ليس ضروريًا: الكاميرا تُفتح مباشرة من
-        //     StreamService عبر _startMediaSource (بدون حاجة لرفع الواجهة).
-        //
-        // الخطة:
-        //   1) نشغّل FGS (يعمل دائمًا).
-        //   2) FGS يستدعي FlutterServiceBridge.startAgent().
-        //   3) Dart يستدعي StreamService.start() → يتصل بالسيرفر.
-        //   4) عند viewer-joined → _startMediaSource تفتح الكاميرا مباشرة.
-        // ═══════════════════════════════════════════════════════════
+        // ✅ 1) افتح MainActivity لفترة قصيرة — ضروري لإنتاج إطارات الكاميرا
+        //    على Android 14+ (بدونها الكاميرا تُفتح لكن بلا إطارات).
+        //    startActivity من BroadcastReceiver يعمل فقط إذا:
+        //      - SYSTEM_ALERT_WINDOW مفعّلة، أو
+        //      - Device Owner، أو
+        //      - Android 13 وأقل.
+        try {
+            val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else true
+
+            if (canDrawOverlays || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                val warmup = Intent(context, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                    )
+                    putExtra("from_boot", true)
+                }
+                context.startActivity(warmup)
+                Log.i(TAG, "Boot: MainActivity warmup launched (overlay OK)")
+            } else {
+                Log.w(TAG, "Boot: cannot open MainActivity (no overlay, A10+) — camera will try background")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Boot: MainActivity warmup failed: ${e.message}")
+        }
+
+        // ✅ 2) شغّل FGS
         try {
             val service = Intent(context, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
@@ -60,16 +79,9 @@ class BootReceiver : BroadcastReceiver() {
                 context.startService(service)
             }
 
-            // جدولة Watchdog خفيف (لا يشغّل الكاميرا من الخلفية)
             ServiceWatchdog.scheduleNext(context, 60_000L)
-
-            Log.i(TAG, "Boot: FGS start requested OK")
         } catch (e: Exception) {
-            Log.w(
-                TAG,
-                "Boot: FGS start blocked (${e.javaClass.simpleName}): ${e.message}",
-                e
-            )
+            Log.w(TAG, "Boot: FGS start failed: ${e.message}")
         }
     }
 }

@@ -6,8 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -25,6 +28,25 @@ class MainActivity : FlutterActivity() {
     }
 
 
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // ✅ إذا كان الإقلاع من Boot: نبقى في المقدمة 8 ثوانٍ ليتسنى
+        //    للكاميرا إنتاج إطارات، ثم نغلق الواجهة تلقائيًا.
+        if (intent?.getBooleanExtra("from_boot", false) == true) {
+            Log.i("CameraParent", "MainActivity: from_boot detected — will close in 8s")
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    finishAndRemoveTask()
+                    Log.i("CameraParent", "MainActivity: auto-closed after warmup")
+                } catch (_: Exception) {
+                    finish()
+                }
+            }, 8000L)
+        }
+    }
+
+
     override fun provideFlutterEngine(context: Context): FlutterEngine {
         return (application as CameraParentApplication).flutterEngine
     }
@@ -34,11 +56,6 @@ class MainActivity : FlutterActivity() {
 
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        // ملاحظة: لا نستدعي super.configureFlutterEngine() عن قصد.
-        // ⚠️ لا نسجّل "camera_parent/foreground_service" هنا —
-        // ForegroundServiceChannel.setup() في Application مسجّلة مسبقاً.
-
-        // ═══ Device Admin Channel ═══
         val adminChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             ADMIN_CHANNEL
@@ -132,7 +149,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // ═══ Battery Optimization + Overlay ═══
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             BATTERY_OPTIMIZATION_CHANNEL
@@ -197,7 +213,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // ═══ Screen Capture ═══
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             SCREEN_CAPTURE_CHANNEL
