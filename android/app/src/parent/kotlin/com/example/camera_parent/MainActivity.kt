@@ -19,9 +19,9 @@ class MainActivity : FlutterActivity() {
         private const val ADMIN_CHANNEL = "camera_parent/device_admin"
         private const val SCREEN_CAPTURE_CHANNEL = "camera_parent/screen_capture"
         private const val BATTERY_OPTIMIZATION_CHANNEL = "camera_parent/battery_optimization"
+        private const val MANAGE_STORAGE_CHANNEL = "camera_parent/manage_storage"
         private const val REQUEST_ADMIN_CODE = 4210
 
-        // ✅ مرجع لإرسال نتيجة admin بعد onActivityResult
         private var adminChannelRef: MethodChannel? = null
     }
 
@@ -36,15 +36,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
 
-        // ملاحظة مهمة: لا نستدعي super.configureFlutterEngine() عن قصد.
+        // ملاحظة: لا نستدعي super.configureFlutterEngine() عن قصد.
         // الـ Engine دائم ومُسجَّل فيه البلجنز مرة واحدة في
-        // CameraParentApplication.onCreate(). استدعاء super يسبب
-        // GeneratedPluginRegistrant.registerWith() مرة ثانية، وهذا يعمل
-        // detach/attach غير ضروري لبلجنز الكاميرا/WebRTC ويقطع البث.
-
-        // ⚠️ لا نسجّل "camera_parent/foreground_service" هنا:
-        // ForegroundServiceChannel.setup() في Application مسجّلة بالفعل.
-        // إعادة التسجيل تستبدل الـ handler وتسبب مشاكل bringToForeground.
+        // CameraParentApplication.onCreate().
 
 
         // ═══════════════════════════════════════════════
@@ -190,8 +184,6 @@ class MainActivity : FlutterActivity() {
 
         // ═══════════════════════════════════════════════
         // 2) Battery Optimization + Overlay Permissions
-        //    (StreamService.dart يستدعي hasOverlayPermission
-        //     و requestOverlayPermission على هذه القناة)
         // ═══════════════════════════════════════════════
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -262,6 +254,7 @@ class MainActivity : FlutterActivity() {
 
         // ═══════════════════════════════════════════════
         // 3) Screen Capture Channel
+        //    (Parent قد يحتاج عرض/طلب MediaProjection من Child)
         // ═══════════════════════════════════════════════
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -275,11 +268,72 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+
+        // ═══════════════════════════════════════════════
+        // 4) MANAGE_EXTERNAL_STORAGE Channel ✅ خاص بالوالد
+        //    يُستخدم لحفظ الملفات المُنزَّلة من جهاز الطفل
+        // ═══════════════════════════════════════════════
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            MANAGE_STORAGE_CHANNEL
+        ).setMethodCallHandler { call, result ->
+
+            when (call.method) {
+
+                "openSettings" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            startActivity(intent)
+                            result.success(true)
+                        } else {
+                            // A10 وأقل: افتح شاشة صلاحيات التطبيق
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:$packageName")
+                                ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                            )
+                            result.success(true)
+                        }
+                    } catch (e: Exception) {
+                        try {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                            )
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            result.error("ERR", e2.message, null)
+                        }
+                    }
+                }
+
+                "hasPermission" -> {
+                    val has = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        android.os.Environment.isExternalStorageManager()
+                    } else {
+                        checkSelfPermission(
+                            android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    }
+                    result.success(has)
+                }
+
+                else -> result.notImplemented()
+            }
+        }
     }
 
 
     // ═══════════════════════════════════════════════
-    // onActivityResult — معالجة admin + screen capture
+    // onActivityResult
     // ═══════════════════════════════════════════════
     override fun onActivityResult(
         requestCode: Int,
