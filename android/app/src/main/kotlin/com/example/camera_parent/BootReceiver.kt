@@ -7,45 +7,69 @@ import android.os.Build
 import android.util.Log
 
 class BootReceiver : BroadcastReceiver() {
+
+    companion object {
+        private const val TAG = "CameraParent"
+        private const val PREFS = "camera_parent_service"
+        private const val KEY_ENABLED = "enabled"
+        private const val KEY_MODE = "mode"
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
-            intent.action != "android.intent.action.QUICKBOOT_POWERON" &&
-            intent.action != "com.htc.intent.action.QUICKBOOT_POWERON") return
+        val action = intent.action ?: return
 
-        val prefs = context.getSharedPreferences("camera_parent_service", Context.MODE_PRIVATE)
-        val enabled = prefs.getBoolean("enabled", false)
-        if (!enabled) return
+        // نقبل فقط أحداث الإقلاع الرسمية
+        if (action != Intent.ACTION_BOOT_COMPLETED &&
+            action != "android.intent.action.QUICKBOOT_POWERON" &&
+            action != "com.htc.intent.action.QUICKBOOT_POWERON") {
+            return
+        }
 
-        val mode = prefs.getString("mode", StreamForegroundService.MODE_CAMERA)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val enabled = prefs.getBoolean(KEY_ENABLED, false)
+        if (!enabled) {
+            Log.i(TAG, "Boot: service disabled, skip")
+            return
+        }
+
+        val mode = prefs.getString(KEY_MODE, StreamForegroundService.MODE_CAMERA)
             ?: StreamForegroundService.MODE_CAMERA
 
-        try {
-            // ✅ 1) افتح MainActivity مؤقتاً — ضروري لفتح الكاميرا من الخلفية
-            val warmup = Intent(context, MainActivity::class.java).apply {
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_NO_ANIMATION or
-                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                )
-                putExtra("from_boot", true)
-            }
-            context.startActivity(warmup)
-            Log.i("CameraParent", "Boot: MainActivity launched for camera warmup")
+        Log.i(TAG, "Boot: starting FGS mode=$mode")
 
-            // ✅ 2) شغّل Foreground Service
+        // ═══════════════════════════════════════════════════════════
+        // لا نفتح MainActivity من BroadcastReceiver:
+        //   - startActivity محظور على Android 10+ (يفشل بصمت).
+        //   - فتح الواجهة ليس ضروريًا: الكاميرا تُفتح مباشرة من
+        //     StreamService عبر _startMediaSource (بدون حاجة لرفع الواجهة).
+        //
+        // الخطة:
+        //   1) نشغّل FGS (يعمل دائمًا).
+        //   2) FGS يستدعي FlutterServiceBridge.startAgent().
+        //   3) Dart يستدعي StreamService.start() → يتصل بالسيرفر.
+        //   4) عند viewer-joined → _startMediaSource تفتح الكاميرا مباشرة.
+        // ═══════════════════════════════════════════════════════════
+        try {
             val service = Intent(context, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
                 .putExtra(StreamForegroundService.EXTRA_MODE, mode)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(service)
             } else {
                 context.startService(service)
             }
 
+            // جدولة Watchdog خفيف (لا يشغّل الكاميرا من الخلفية)
             ServiceWatchdog.scheduleNext(context, 60_000L)
+
+            Log.i(TAG, "Boot: FGS start requested OK")
         } catch (e: Exception) {
-            Log.w("CameraParent", "Boot recovery start failed", e)
+            Log.w(
+                TAG,
+                "Boot: FGS start blocked (${e.javaClass.simpleName}): ${e.message}",
+                e
+            )
         }
     }
 }
