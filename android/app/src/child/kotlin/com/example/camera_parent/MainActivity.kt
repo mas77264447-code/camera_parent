@@ -179,47 +179,9 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
-                // ✅ إحضار التطبيق للمقدمة (يعمل حتى بدون صلاحية Overlay)
-                "bringToForeground" -> {
-                    try {
-                        var anySuccess = false
-
-                        // المحاولة 1: startActivity مباشر (يحتاج Overlay أو أن التطبيق
-                        // لا يزال في المقدمة جزئياً)
-                        try {
-                            val direct = Intent(applicationContext, MainActivity::class.java).apply {
-                                addFlags(
-                                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                                    Intent.FLAG_ACTIVITY_NO_ANIMATION
-                                )
-                            }
-                            applicationContext.startActivity(direct)
-                            Log.i("MainActivity", "bringToForeground: direct startActivity OK")
-                            anySuccess = true
-                        } catch (e: Exception) {
-                            Log.w("MainActivity", "direct startActivity failed: ${e.message}")
-                        }
-
-                        // المحاولة 2: Full-Screen Intent (يعمل حتى بدون Overlay،
-                        // وضروري على Android 14+)
-                        try {
-                            showFullScreenWakeNotification()
-                            Log.i("MainActivity", "bringToForeground: full-screen wake posted")
-                            anySuccess = true
-                        } catch (e: Exception) {
-                            Log.w("MainActivity", "full-screen notification failed: ${e.message}")
-                        }
-
-                        if (anySuccess) result.success(true)
-                        else result.error("BRING_FAILED", "كل محاولات الإحضار فشلت", null)
-
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "bringToForeground failed", e)
-                        result.error("BRING_FAILED", e.message, null)
-                    }
-                }
+                // ✅ إحضار التطبيق للمقدمة متوقف عمداً: لا فتح للواجهة ولا إشعار.
+                // البث يعمل من StreamForegroundService في الخلفية.
+                "bringToForeground" -> result.success(false)
 
                 // ✅ فحص صلاحية Overlay
                 "hasOverlayPermission" -> {
@@ -373,62 +335,6 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-    }
-
-
-    // ═══════════════════════════════════════════════
-    // Full-Screen Intent Notification
-    // ═══════════════════════════════════════════════
-    private fun showFullScreenWakeNotification() {
-        val fullScreenIntent = Intent(applicationContext, MainActivity::class.java).apply {
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_NO_ANIMATION
-            )
-        }
-
-        val pending = PendingIntent.getActivity(
-            this,
-            0,
-            fullScreenIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(
-                WAKE_CHANNEL_ID,
-                "Camera Wake",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "فتح التطبيق عند وصول طلب مشاهدة"
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                setShowBadge(false)
-                enableVibration(false)
-            }
-            nm.createNotificationChannel(ch)
-        }
-
-        val notif = NotificationCompat.Builder(this, WAKE_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("طلب مشاهدة جديد")
-            .setContentText("جارٍ فتح الكاميرا...")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setFullScreenIntent(pending, true)
-            .setContentIntent(pending)
-            .setAutoCancel(true)
-            .setOngoing(false)
-            .build()
-
-        nm.notify(WAKE_NOTIFICATION_ID, notif)
-
-        Handler(Looper.getMainLooper()).postDelayed({
-            try { nm.cancel(WAKE_NOTIFICATION_ID) } catch (_: Exception) {}
-        }, 5000L)
     }
 
 

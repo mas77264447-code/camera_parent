@@ -1093,20 +1093,6 @@ class StreamService {
       _deferredCallerName = callerName;
 
       if (localStream == null) {
-        final lifecycleBefore = WidgetsBinding.instance.lifecycleState;
-        if (lifecycleBefore != AppLifecycleState.resumed && !_broadcastScreen) {
-          debugPrint(
-              '[StreamService] _handleApprovedViewer: background, bringing app to foreground viewer=$viewerId');
-          _pendingCameraStart = true;
-          final ok = await _bringToForeground();
-          if (!ok) {
-            debugPrint(
-                '[StreamService] _handleApprovedViewer: foreground failed, deferring viewer=$viewerId');
-            return;
-          }
-          await Future.delayed(const Duration(milliseconds: 800));
-          if (!_running) return;
-        }
         await _startMediaSource();
       }
     }
@@ -1193,18 +1179,7 @@ class StreamService {
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     final isForeground = lifecycleState == AppLifecycleState.resumed;
 
-    if (!_broadcastScreen && !isForeground) {
-      _pendingCameraStart = true;
-      _updateStatus("جاري إظهار التطبيق لفتح الكاميرا...");
-
-      final ok = await _bringToForeground();
-      if (!ok) {
-        _updateStatus("مطلوب فتح التطبيق على الجهاز لتشغيل الكاميرا");
-        // ✅ لا تُلغِ _pendingCameraStart — اتركها true حتى تُفتح
-        // الكاميرا تلقائياً عند عودة المستخدم للتطبيق.
-      }
-      return;
-    }
+    // لا نُحضر التطبيق في الخلفية: نكمل التشغيل من الخدمة مباشرة.
 
     _updateStatus(_broadcastScreen
         ? "جاري تجهيز مشاركة الشاشة..."
@@ -1252,38 +1227,9 @@ class StreamService {
     }
   }
 
-  /// يطلب من الجانب الأصلي إحضار التطبيق للمقدمة.
-  /// لا يفحص صلاحية Overlay أولاً — الجانب الأصلي يتولّى كل الطرق
-  /// (startActivity مباشر + Full-Screen Intent).
+  /// معطّل عمداً: لا يُحضر التطبيق ولا يعرض إشعاراً. البث يعمل من الخدمة في الخلفية.
   Future<bool> _bringToForeground({int maxAttempts = 3}) async {
-    if (_foregroundRequestInFlight) return false;
-    _foregroundRequestInFlight = true;
-    try {
-      const channel = MethodChannel('camera_parent/foreground_service');
-
-      for (int i = 0; i < maxAttempts; i++) {
-        try {
-          final ok = await channel.invokeMethod<bool>('bringToForeground');
-          debugPrint('[StreamService] bring attempt ${i + 1} → $ok');
-
-          // انتظر لنتأكد أن التطبيق فعلاً في المقدمة
-          await Future.delayed(const Duration(milliseconds: 900));
-          final state = WidgetsBinding.instance.lifecycleState;
-          if (state == AppLifecycleState.resumed) {
-            debugPrint('[StreamService] bringToForeground SUCCESS');
-            return true;
-          }
-          debugPrint('[StreamService] still in background (state=$state)');
-        } catch (e) {
-          debugPrint('[StreamService] bring attempt ${i + 1} error: $e');
-        }
-        await Future.delayed(const Duration(milliseconds: 700));
-      }
-      debugPrint('[StreamService] bringToForeground FAILED after $maxAttempts');
-      return false;
-    } finally {
-      _foregroundRequestInFlight = false;
-    }
+    return true;
   }
 
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
