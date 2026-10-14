@@ -876,6 +876,49 @@ wss.on("connection", async (ws, req) => {
 // START SERVER
 // ═══════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════
+// ICE / TURN
+// ═══════════════════════════════════════════════════════════
+
+let _warnedNoPrivateTurn = false;
+
+function getIceServers() {
+  const stunServers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
+  ];
+
+  const turnUrls = (process.env.TURN_URLS || "").trim();
+  if (turnUrls) {
+    const username = process.env.TURN_USERNAME || "";
+    const credential = process.env.TURN_CREDENTIAL || "";
+    const urls = turnUrls.split(",").map((u) => u.trim()).filter(Boolean);
+    return [
+      ...stunServers,
+      ...urls.map((u) => ({ urls: u, username, credential })),
+    ];
+  }
+
+  if (!_warnedNoPrivateTurn) {
+    _warnedNoPrivateTurn = true;
+    console.warn("[camera-parent] TURN_URLS not set - using public openrelay fallback");
+  }
+
+  return [
+    ...stunServers,
+    { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+  ];
+}
+
+app.get("/ice-servers", (req, res) => {
+  res.json({ data: getIceServers() });
+});
+
 const PORT = process.env.PORT || 3000;
 
 (async () => {
