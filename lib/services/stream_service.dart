@@ -350,6 +350,15 @@ class StreamService {
     _localStreamCtrl.add(null);
   }
 
+  void _clog(String message) {
+    debugPrint('[StreamService] $message');
+    try {
+      if (_ws != null && _ws!.readyState == WebSocket.open) {
+        _ws!.add(jsonEncode({'type': 'client-log', 'message': message}));
+      }
+    } catch (_) {}
+  }
+
   /// ✅ معدّلة: لا تفتح الكاميرا في الخلفية (مثلاً عند الإقلاع).
   /// سيُفتح تلقائياً عند وصول طلب مشاهدة، أو عند فتح المستخدم للتطبيق.
   Future<void> ensureCameraStarted({bool force = false}) async {
@@ -1085,6 +1094,8 @@ class StreamService {
       // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
       _deferredViewerId = viewerId;
       _deferredCallerName = callerName;
+      _clog('_handleApprovedViewer: viewer=$viewerId localStream='
+          '${localStream == null ? "null" : "exists"}');
 
       if (localStream == null) {
         await _startMediaSource();
@@ -1235,6 +1246,7 @@ class StreamService {
     _updateStatus(_broadcastScreen
         ? "جاري تجهيز مشاركة الشاشة..."
         : "جاري تجهيز الكاميرا...");
+    _clog('_startMediaSource: calling getUserMedia (broadcastScreen=$_broadcastScreen)');
 
     try {
       final stream = _broadcastScreen
@@ -1259,6 +1271,10 @@ class StreamService {
       _localStreamCtrl.add(stream);
       _pendingCameraStart = false;
       _cameraAcquiredInBackground = false;
+      _clog('_startMediaSource: getUserMedia OK, '
+          'videoTracks=${stream.getVideoTracks().length} '
+          'audioTracks=${stream.getAudioTracks().length} '
+          'videoEnabled=${stream.getVideoTracks().isNotEmpty ? stream.getVideoTracks().first.enabled : "n/a"}');
 
       if (_broadcastScreen) {
         _screenStreamStartedAt = DateTime.now();
@@ -1275,6 +1291,7 @@ class StreamService {
       _error = "فشل تهيئة البث: $e";
       _updateStatus("خطأ");
       _canRetry = true;
+      _clog('_startMediaSource: getUserMedia THREW: $e');
     }
   }
 
