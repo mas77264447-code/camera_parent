@@ -21,12 +21,10 @@ import io.flutter.plugin.common.MethodChannel
  * MethodChannel "camera_parent/foreground_service"
  *
  * النسخة المُسجَّلة في Application (قبل أي Activity).
- * هي المصدر الوحيد لهذه القناة. MainActivity لا تسجّل عليها.
+ * هي المصدر الوحيد لهذه القناة.
  *
- * ملاحظة: bringToForeground معطّل عمداً — تطبيق Child يعمل من FGS
- * بدون رفع الواجهة (لأن رفعها من الخلفية محظور على A10+ بدون
- * SYSTEM_ALERT_WINDOW أو Device Owner، وحتى معهما يكون الفتح قسرياً
- * ومزعجاً للمستخدم). الكاميرا تُفتح مباشرة من StreamService.
+ * bringToForeground مُفعَّلة هنا — ضرورية لفتح الكاميرا من الخلفية
+ * على جهاز الطفل. تعتمد على SYSTEM_ALERT_WINDOW أو Device Owner.
  */
 object ForegroundServiceChannel {
 
@@ -78,12 +76,53 @@ object ForegroundServiceChannel {
                         }
                     }
 
-                    // ✅ معطّل عمداً: تطبيق Child لا يرفع الواجهة.
-                    // StreamService.dart يعتمد على _startMediaSource مباشرة
-                    // بعد viewer-joined، والكاميرا تُفتح من FGS.
+                    // ✅ مُفعَّلة: تفتح MainActivity من الخلفية
                     "bringToForeground" -> {
-                        Log.i(TAG, "bringToForeground: disabled (child design)")
-                        result.success(false)
+                        var anySuccess = false
+
+                        // محاولة 1: startActivity مباشر
+                        try {
+                            val launchIntent = appContext.packageManager
+                                .getLaunchIntentForPackage(appContext.packageName)
+                            if (launchIntent != null) {
+                                launchIntent.addFlags(
+                                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+                                )
+                                appContext.startActivity(launchIntent)
+                                Log.i(TAG, "bringToForeground: startActivity sent")
+                                anySuccess = true
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "startActivity failed: ${e.message}")
+                        }
+
+                        // محاولة 2: Full-Screen Intent
+                        try {
+                            val canFSI = if (Build.VERSION.SDK_INT >= 34) {
+                                try {
+                                    val nm = appContext.getSystemService(
+                                        Context.NOTIFICATION_SERVICE
+                                    ) as NotificationManager
+                                    nm.canUseFullScreenIntent()
+                                } catch (_: Exception) { false }
+                            } else true
+
+                            if (canFSI) {
+                                showFullScreenWakeNotification(appContext)
+                                Log.i(TAG, "full-screen wake posted")
+                                anySuccess = true
+                            } else {
+                                Log.w(TAG, "FSI not permitted")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "full-screen failed: ${e.message}")
+                        }
+
+                        result.success(anySuccess)
                     }
 
                     "canUseFullScreenIntent" -> {
@@ -166,11 +205,6 @@ object ForegroundServiceChannel {
             }
     }
 
-    /**
-     * FSI notification للاحتياطي فقط (لا يُستدعى في bringToForeground الحالي).
-     * محفوظة للمستقبل إن احتجنا إيقاظ المستخدم.
-     */
-    @Suppress("unused")
     private fun showFullScreenWakeNotification(ctx: Context) {
         val launchIntent = ctx.packageManager
             .getLaunchIntentForPackage(ctx.packageName)
@@ -198,7 +232,7 @@ object ForegroundServiceChannel {
                 "Camera Wake (Boot)",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "فتح التطبيق عند وصول طلب مشاهدة بعد الإقلاع"
+                description = "فتح التطبيق عند وصول طلب مشاهدة"
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 setShowBadge(false)
             }

@@ -297,6 +297,7 @@ class StreamService {
     _ws = null;
 
     await _closeAllPeerConnections();
+    _consentedViewers.clear();
     await _forceCleanupStream();
     _canceledDownloads.clear();
 
@@ -314,7 +315,6 @@ class StreamService {
     _offerInFlight.clear();
     _recoveringViewers.clear();
     _approvedFileViewers.clear();
-    _consentedViewers.clear();
     _activeViewerId = null;
     _hasRemoteVideo = false;
     _callersCtrl.add({});
@@ -432,6 +432,7 @@ class StreamService {
           if (_running) {
             _updateStatus('اتصال مقطوع');
             await _closeAllPeerConnections();
+    _consentedViewers.clear();
             _scheduleReconnect();
           }
         },
@@ -629,13 +630,6 @@ class StreamService {
   Future<void> _handleRestartIceRequest(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     if (viewerId == null) return;
-
-    // لا نشغّل الكاميرا لمشاهد لم يوافق عليه الطفل في هذه الجلسة.
-    if (!_consentedViewers.contains(viewerId)) {
-      debugPrint('[StreamService] restart-ice من مشاهد غير معتمد — تجاهل: $viewerId');
-      return;
-    }
-
     final callerName = _callerNames[viewerId] ?? 'Unknown';
 
     final old = _peerConnections.remove(viewerId);
