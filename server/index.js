@@ -896,6 +896,11 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
+    if (msg.type === "client-log") {
+      console.log(`[child-log] session=${client.sessionId || "?"} :: ${String(msg.message || "").slice(0, 300)}`);
+      return;
+    }
+
     if (msg.type === "wake") {
       const sessionId = safeText(msg.session, 64);
       const adminToken = safeText(msg.adminToken, 256);
