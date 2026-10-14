@@ -419,6 +419,16 @@ class StreamService {
     _wsConnecting = true;
 
     try {
+      // ✅ إغلاق WS القديم أولاً لمنع الاتصالات اليتيمة
+      final oldWs = _ws;
+      _ws = null;
+      if (oldWs != null) {
+        try {
+          await oldWs.close();
+          debugPrint('[StreamService] old WS closed');
+        } catch (_) {}
+      }
+
       final serverUrl = CameraService.server;
       final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
 
@@ -440,8 +450,8 @@ class StreamService {
           debugPrint('[StreamService] ws closed');
           if (_running) {
             _updateStatus('اتصال مقطوع');
-            await _closeAllPeerConnections();
-    _consentedViewers.clear();
+            // ✅ لا نُغلق PeerConnections عند انقطاع WS.
+            // إغلاقها يُفقد الفيديو بالكامل. نُعيد الاتصال فقط.
             _scheduleReconnect();
           }
         },
