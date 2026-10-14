@@ -20,11 +20,9 @@ import io.flutter.plugin.common.MethodChannel
 /**
  * MethodChannel "camera_parent/foreground_service"
  *
- * نسخة الطوارئ المسجلة في Application (قبل أي Activity).
- * ضرورية عند الإقلاع من BootReceiver حيث MainActivity لم تبدأ بعد.
- *
- * عندما تنشأ MainActivity، ستستبدل هذه القناة بنسخة أقوى.
- * لا تعارض — كلاهما يعمل في سياقه.
+ * النسخة المُسجَّلة في Application (قبل أي Activity).
+ * هي **المصدر الوحيد** لهذه القناة — MainActivity يجب أن لا
+ * تسجّل handler عليها (تجنب الاستبدال وفشل bringToForeground).
  */
 object ForegroundServiceChannel {
 
@@ -34,6 +32,7 @@ object ForegroundServiceChannel {
     private const val WAKE_CHANNEL_ID = "camera_wake_channel_boot"
     private const val WAKE_NOTIFICATION_ID = 9998
 
+
     fun setup(engine: FlutterEngine, appContext: Context) {
         MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -42,7 +41,10 @@ object ForegroundServiceChannel {
                     "start" -> {
                         try {
                             val mode = call.argument<String>("mode") ?: "camera"
-                            val intent = Intent(appContext, StreamForegroundService::class.java)
+                            val intent = Intent(
+                                appContext,
+                                StreamForegroundService::class.java
+                            )
                                 .setAction(StreamForegroundService.ACTION_START)
                                 .putExtra(StreamForegroundService.EXTRA_MODE, mode)
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -60,7 +62,10 @@ object ForegroundServiceChannel {
 
                     "stop" -> {
                         try {
-                            val intent = Intent(appContext, StreamForegroundService::class.java)
+                            val intent = Intent(
+                                appContext,
+                                StreamForegroundService::class.java
+                            )
                                 .setAction(StreamForegroundService.ACTION_STOP)
                             appContext.startService(intent)
                             result.success(true)
@@ -74,6 +79,9 @@ object ForegroundServiceChannel {
                         var anySuccess = false
 
                         // محاولة 1: startActivity مباشر
+                        // يعمل فقط إذا كان Overlay مفعّلاً أو Device Owner.
+                        // startActivity من الخلفية لا يرمي استثناء عند الحظر،
+                        // لذا لا نعتمد عليه كنجاح مؤكد.
                         try {
                             val launchIntent = appContext.packageManager
                                 .getLaunchIntentForPackage(appContext.packageName)
@@ -86,33 +94,72 @@ object ForegroundServiceChannel {
                                     Intent.FLAG_ACTIVITY_NO_ANIMATION
                                 )
                                 appContext.startActivity(launchIntent)
-                                Log.i(TAG, "bringToForeground: direct startActivity OK")
+                                Log.i(TAG, "bringToForeground: direct startActivity sent")
                                 anySuccess = true
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "direct startActivity failed: ${e.message}")
                         }
 
-                        // محاولة 2: Full-Screen Intent notification
+                        // محاولة 2: Full-Screen Intent — نحقن فقط إذا كان
+                        // النظام يسمح (Android 14+ يمنع FSI بدون صلاحية)
                         try {
-                            showFullScreenWakeNotification(appContext)
-                            Log.i(TAG, "bringToForeground: full-screen wake posted")
-                            anySuccess = true
+                            val canFSI = if (Build.VERSION.SDK_INT >= 34) {
+                                try {
+                                    val nm = appContext.getSystemService(
+                                        Context.NOTIFICATION_SERVICE
+                                    ) as NotificationManager
+                                    nm.canUseFullScreenIntent()
+                                } catch (_: Exception) { false }
+                            } else true
+
+                            if (canFSI) {
+                                showFullScreenWakeNotification(appContext)
+                                Log.i(TAG, "bringToForeground: full-screen wake posted")
+                                anySuccess = true
+                            } else {
+                                Log.w(TAG, "bringToForeground: FSI not permitted")
+                            }
                         } catch (e: Exception) {
                             Log.w(TAG, "full-screen notification failed: ${e.message}")
                         }
 
                         if (anySuccess) result.success(true)
-                        else result.error("BRING_FAILED", "كل محاولات الإحضار فشلت", null)
+                        else result.error(
+                            "BRING_FAILED",
+                            "كل محاولات الإحضار فشلت",
+                            null
+                        )
+                    }
+
+                    "canUseFullScreenIntent" -> {
+                        val can = if (Build.VERSION.SDK_INT >= 34) {
+                            try {
+                                val nm = appContext.getSystemService(
+                                    Context.NOTIFICATION_SERVICE
+                                ) as NotificationManager
+                                nm.canUseFullScreenIntent()
+                            } catch (_: Exception) { false }
+                        } else true
+                        result.success(can)
                     }
 
                     "requestBatteryOptimizationExemption" -> {
                         try {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                val pm = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-                                if (!pm.isIgnoringBatteryOptimizations(appContext.packageName)) {
-                                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                                        .setData(Uri.parse("package:${appContext.packageName}"))
+                                val pm = appContext.getSystemService(
+                                    Context.POWER_SERVICE
+                                ) as PowerManager
+                                if (!pm.isIgnoringBatteryOptimizations(
+                                        appContext.packageName
+                                    )
+                                ) {
+                                    val intent = Intent(
+                                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                                    )
+                                        .setData(
+                                            Uri.parse("package:${appContext.packageName}")
+                                        )
                                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     appContext.startActivity(intent)
                                 }
@@ -183,7 +230,8 @@ object ForegroundServiceChannel {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
+            as NotificationManager
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(
@@ -194,7 +242,7 @@ object ForegroundServiceChannel {
                 description = "فتح التطبيق عند وصول طلب مشاهدة بعد الإقلاع"
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 setShowBadge(false)
-                enableVibration(false)
+                // أزلنا enableVibration(false) — يظهر في بعض الأجهزة كخيار غير فعال
             }
             nm.createNotificationChannel(ch)
         }
