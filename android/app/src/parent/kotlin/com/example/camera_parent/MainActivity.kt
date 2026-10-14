@@ -16,81 +16,66 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     companion object {
-
-        private const val ADMIN_CHANNEL =
-            "camera_parent/device_admin"
-
-
-        private const val SCREEN_CAPTURE_CHANNEL =
-            "camera_parent/screen_capture"
-
-        private const val BATTERY_OPTIMIZATION_CHANNEL =
-            "camera_parent/battery_optimization"
-
-        // ✅ هذه القناة ضرورية لتطبيق الوالد أيضاً:
-        // device_files_screen.dart يستدعي "openSettings" لفتح إعدادات
-        // "الوصول لجميع الملفات" على جهاز الوالد لحفظ الملفات المُنزَّلة.
-        private const val MANAGE_STORAGE_CHANNEL =
-            "camera_parent/manage_storage"
-
+        private const val ADMIN_CHANNEL = "camera_parent/device_admin"
+        private const val SCREEN_CAPTURE_CHANNEL = "camera_parent/screen_capture"
+        private const val BATTERY_OPTIMIZATION_CHANNEL = "camera_parent/battery_optimization"
         private const val REQUEST_ADMIN_CODE = 4210
+
+        // ✅ مرجع لإرسال نتيجة admin بعد onActivityResult
+        private var adminChannelRef: MethodChannel? = null
     }
 
 
-    override fun provideFlutterEngine(
-        context: Context
-    ): FlutterEngine {
-        return (application as CameraParentApplication).ensureEngine()
+    override fun provideFlutterEngine(context: Context): FlutterEngine {
+        return (application as CameraParentApplication).flutterEngine
     }
 
 
-    override fun shouldDestroyEngineWithHost(): Boolean {
-        return false
-    }
-    override fun configureFlutterEngine(
-        flutterEngine: FlutterEngine
-    ) {
+    override fun shouldDestroyEngineWithHost(): Boolean = false
 
-                super.configureFlutterEngine(flutterEngine)
 
-        MethodChannel(
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+
+        // ملاحظة مهمة: لا نستدعي super.configureFlutterEngine() عن قصد.
+        // الـ Engine دائم ومُسجَّل فيه البلجنز مرة واحدة في
+        // CameraParentApplication.onCreate(). استدعاء super يسبب
+        // GeneratedPluginRegistrant.registerWith() مرة ثانية، وهذا يعمل
+        // detach/attach غير ضروري لبلجنز الكاميرا/WebRTC ويقطع البث.
+
+        // ⚠️ لا نسجّل "camera_parent/foreground_service" هنا:
+        // ForegroundServiceChannel.setup() في Application مسجّلة بالفعل.
+        // إعادة التسجيل تستبدل الـ handler وتسبب مشاكل bringToForeground.
+
+
+        // ═══════════════════════════════════════════════
+        // 1) Device Admin Channel
+        // ═══════════════════════════════════════════════
+        val adminChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             ADMIN_CHANNEL
-        ).setMethodCallHandler { call, result ->
+        )
+        adminChannelRef = adminChannel
+        adminChannel.setMethodCallHandler { call, result ->
 
-            val dpm =
-                getSystemService(
-                    Context.DEVICE_POLICY_SERVICE
-                ) as DevicePolicyManager
-
-            val adminComp =
-                DeviceAdminReceiver.getComponentName(this)
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminComp = DeviceAdminReceiver.getComponentName(this)
 
             when (call.method) {
 
-                "isAdminActive" -> {
-                    result.success(
-                        DeviceAdminReceiver.isAdminActive(this)
-                    )
-                }
+                "isAdminActive" -> result.success(
+                    DeviceAdminReceiver.isAdminActive(this)
+                )
 
-                "isDeviceOwner" -> {
-                    result.success(
-                        DeviceAdminReceiver.isDeviceOwner(this)
-                    )
-                }
+                "isDeviceOwner" -> result.success(
+                    DeviceAdminReceiver.isDeviceOwner(this)
+                )
 
                 "requestAdmin" -> {
                     if (DeviceAdminReceiver.isAdminActive(this)) {
                         result.success(true)
                     } else {
-                        val intent = Intent(
-                            DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN
-                        )
-                        intent.putExtra(
-                            DevicePolicyManager.EXTRA_DEVICE_ADMIN,
-                            adminComp
-                        )
+                        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                        intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComp)
                         intent.putExtra(
                             DevicePolicyManager.EXTRA_ADD_EXPLANATION,
                             "صلاحية مسؤول الجهاز مطلوبة لتشغيل الخدمة"
@@ -102,29 +87,19 @@ class MainActivity : FlutterActivity() {
 
                 "lockScreen" -> {
                     if (DeviceAdminReceiver.isAdminActive(this)) {
-                        dpm.lockNow()
-                        result.success(true)
+                        dpm.lockNow(); result.success(true)
                     } else {
-                        result.error(
-                            "NOT_ADMIN",
-                            "Device Admin غير مفعل",
-                            null
-                        )
+                        result.error("NOT_ADMIN", "Device Admin غير مفعل", null)
                     }
                 }
 
                 "setCameraDisabled" -> {
-                    val disabled =
-                        call.argument<Boolean>("disabled") ?: true
+                    val disabled = call.argument<Boolean>("disabled") ?: true
                     if (DeviceAdminReceiver.isAdminActive(this)) {
                         dpm.setCameraDisabled(adminComp, disabled)
                         result.success(true)
                     } else {
-                        result.error(
-                            "NOT_ADMIN",
-                            "Device Admin غير مفعل",
-                            null
-                        )
+                        result.error("NOT_ADMIN", "Device Admin غير مفعل", null)
                     }
                 }
 
@@ -137,31 +112,18 @@ class MainActivity : FlutterActivity() {
 
                 "enableKioskMode" -> {
                     if (DeviceAdminReceiver.isDeviceOwner(this)) {
-                        dpm.setLockTaskPackages(
-                            adminComp,
-                            arrayOf(packageName)
-                        )
-                        startLockTask()
-                        result.success(true)
+                        dpm.setLockTaskPackages(adminComp, arrayOf(packageName))
+                        startLockTask(); result.success(true)
                     } else {
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
                     }
                 }
 
                 "disableKioskMode" -> {
                     if (DeviceAdminReceiver.isDeviceOwner(this)) {
-                        stopLockTask()
-                        result.success(true)
+                        stopLockTask(); result.success(true)
                     } else {
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
                     }
                 }
 
@@ -173,11 +135,7 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(true)
                     } else {
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
                     }
                 }
 
@@ -189,11 +147,7 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(true)
                     } else {
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
                     }
                 }
 
@@ -205,11 +159,7 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(true)
                     } else {
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
                     }
                 }
 
@@ -229,11 +179,7 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(true)
                     } else {
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
-                        )
+                        result.error("NOT_OWNER", "يحتاج Device Owner", null)
                     }
                 }
 
@@ -242,7 +188,11 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ===== قناة Battery Optimization =====
+        // ═══════════════════════════════════════════════
+        // 2) Battery Optimization + Overlay Permissions
+        //    (StreamService.dart يستدعي hasOverlayPermission
+        //     و requestOverlayPermission على هذه القناة)
+        // ═══════════════════════════════════════════════
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             BATTERY_OPTIMIZATION_CHANNEL
@@ -252,25 +202,17 @@ class MainActivity : FlutterActivity() {
 
                 "requestBatteryOptimizationExemption" -> {
                     try {
-                        val powerManager =
-                            getSystemService(
-                                Context.POWER_SERVICE
-                            ) as PowerManager
-
-                        if (
-                            Build.VERSION.SDK_INT >=
-                            Build.VERSION_CODES.M &&
-                            !powerManager.isIgnoringBatteryOptimizations(
-                                packageName
-                            )
+                        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                            !pm.isIgnoringBatteryOptimizations(packageName)
                         ) {
-                            val intent = Intent(
-                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                Uri.parse("package:$packageName")
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:$packageName")
+                                )
                             )
-                            startActivity(intent)
                         }
-
                         result.success(true)
                     } catch (e: Exception) {
                         result.success(false)
@@ -279,11 +221,34 @@ class MainActivity : FlutterActivity() {
 
                 "openAutoStartSettings" -> {
                     try {
-                        val intent = Intent(
-                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            Uri.parse("package:$packageName")
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:$packageName")
+                            )
                         )
-                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+
+                "hasOverlayPermission" -> {
+                    val has = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                        Settings.canDrawOverlays(this)
+                    result.success(has)
+                }
+
+                "requestOverlayPermission" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:$packageName")
+                                )
+                            )
+                        }
                         result.success(true)
                     } catch (e: Exception) {
                         result.success(false)
@@ -295,7 +260,9 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ===== قناة Screen Capture =====
+        // ═══════════════════════════════════════════════
+        // 3) Screen Capture Channel
+        // ═══════════════════════════════════════════════
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             SCREEN_CAPTURE_CHANNEL
@@ -308,96 +275,26 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-
-
-        // ===== قناة MANAGE_EXTERNAL_STORAGE (الوصول لجميع الملفات) =====
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            MANAGE_STORAGE_CHANNEL
-        ).setMethodCallHandler { call, result ->
-
-            when (call.method) {
-
-                "openSettings" -> {
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                Uri.parse("package:$packageName")
-                            )
-                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            startActivity(intent)
-                            result.success(true)
-                        } else {
-                            result.success(false)
-                        }
-                    } catch (e: Exception) {
-                        try {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
-                            )
-                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            startActivity(intent)
-                            result.success(true)
-                        } catch (e2: Exception) {
-                            result.error("ERR", e2.message, null)
-                        }
-                    }
-                }
-
-                "hasPermission" -> {
-                    val has =
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            android.os.Environment
-                                .isExternalStorageManager()
-                        } else {
-                            true
-                        }
-                    result.success(has)
-                }
-
-                else -> result.notImplemented()
-            }
-        }
     }
 
 
+    // ═══════════════════════════════════════════════
+    // onActivityResult — معالجة admin + screen capture
+    // ═══════════════════════════════════════════════
     override fun onActivityResult(
         requestCode: Int,
         resultCode: Int,
         data: Intent?
     ) {
-
-        super.onActivityResult(
-            requestCode,
-            resultCode,
-            data
-        )
+        super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
             ScreenCaptureManager.onResult(resultCode, data)
+        } else if (requestCode == REQUEST_ADMIN_CODE) {
+            val granted = resultCode == Activity.RESULT_OK
+            try {
+                adminChannelRef?.invokeMethod("adminRequestResult", granted)
+            } catch (_: Exception) {}
         }
-    }
-
-
-    override fun onBackPressed() {
-        try {
-            super.onBackPressed()
-        } catch (e: Exception) {
-            finishAffinity()
-        }
-    }
-
-
-    override fun onResume() {
-        super.onResume()
-    }
-
-    override fun onPause() {
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
     }
 }
