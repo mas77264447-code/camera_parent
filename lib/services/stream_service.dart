@@ -1280,7 +1280,6 @@ class StreamService {
         await Future.delayed(const Duration(milliseconds: 700));
       }
       debugPrint('[StreamService] bringToForeground FAILED after $maxAttempts');
-      try { await channel.invokeMethod('showWakeNotification'); } catch (_) {}
       return false;
     } finally {
       _foregroundRequestInFlight = false;
