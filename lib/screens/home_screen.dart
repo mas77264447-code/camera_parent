@@ -239,6 +239,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     WebSocket? ws;
     String result = 'failed';
+    String failReason = '';
     final completer = Completer<String>();
 
     try {
@@ -257,14 +258,18 @@ class _HomeScreenState extends State<HomeScreen> {
             if (type == 'wake-sent' && !completer.isCompleted) {
               completer.complete('sent');
             } else if (type == 'wake-failed' && !completer.isCompleted) {
+              failReason = '${msg['reason'] ?? 'unknown'}'
+                  '${msg['detail'] != null ? ' / ${msg['detail']}' : ''}';
               completer.complete('failed');
             }
           } catch (_) {}
         },
         onError: (_) {
+          if (failReason.isEmpty) failReason = 'ws_error';
           if (!completer.isCompleted) completer.complete('failed');
         },
         onDone: () {
+          if (failReason.isEmpty) failReason = 'ws_closed';
           if (!completer.isCompleted) completer.complete('failed');
         },
         cancelOnError: true,
@@ -278,10 +283,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
       result = await completer.future.timeout(
         const Duration(seconds: 5),
-        onTimeout: () => 'failed',
+        onTimeout: () {
+          if (failReason.isEmpty) failReason = 'timeout';
+          return 'failed';
+        },
       );
     } catch (e) {
       debugPrint('[Wake] error: $e');
+      failReason = 'connect_error: $e';
       result = 'failed';
     } finally {
       try {
@@ -297,8 +306,21 @@ class _HomeScreenState extends State<HomeScreen> {
           text = '✅ تم إرسال الأمر — سيستجيب خلال ثوانٍ';
           bg = Colors.green;
         } else {
-          text =
-              '❌ الجهاز غير متصل بالسيرفر — يلزم فتح التطبيق على جهاز الطفل';
+          final String why;
+          if (failReason.startsWith('no_fcm_token')) {
+            why = 'لا يوجد رمز إشعارات محفوظ للطفل — افتح تطبيق الطفل مرة واحدة';
+          } else if (failReason.startsWith('fcm_error')) {
+            why = 'رفض Firebase الرسالة ($failReason)';
+          } else if (failReason.startsWith('not_found')) {
+            why = 'الجلسة غير موجودة على السيرفر';
+          } else if (failReason.startsWith('not_authorized')) {
+            why = 'غير مصرح — سجّل الدخول من جديد';
+          } else if (failReason.startsWith('fcm_disabled')) {
+            why = 'خدمة الإشعارات غير مفعلة على السيرفر';
+          } else {
+            why = 'لا رد من السيرفر ($failReason)';
+          }
+          text = '❌ فشل الإيقاظ: $why';
           bg = Colors.red;
         }
 
