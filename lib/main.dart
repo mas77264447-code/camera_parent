@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -20,25 +22,15 @@ const bool isChildBuild =
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Service Agent must be registered before Firebase/FCM initialization.
+  // Service Agent must be registered before anything else.
   if (isChildBuild) {
     ServiceAgentChannel.register();
   }
 
-  // ═══ Firebase + FCM ═══
-  try {
-    await Firebase.initializeApp();
-    if (isChildBuild) {
-      await FcmService.init();
-    }
-    debugPrint("[main] Firebase initialized");
-  } catch (e) {
-    debugPrint("[main] Firebase init failed: $e");
-  }
-
+  // The native agent calls into Dart as soon as it starts, so the native
+  // bridge and connectivity handlers must be registered BEFORE any await.
   NativeBridge.initialize();
 
-  // ═══ Connectivity ═══
   ConnectivityMethodChannel.initialize(
     onNetworkChanged: (online) async {
       final wasOffline = !NetworkMonitor.instance.isOnline;
@@ -51,7 +43,23 @@ Future<void> main() async {
     },
   );
 
+  // Firebase/FCM must not delay the agent (network/Play services can be slow
+  // when the app is woken in the background).
+  unawaited(_initFirebase());
+
   runApp(const CameraParentApp());
+}
+
+Future<void> _initFirebase() async {
+  try {
+    await Firebase.initializeApp();
+    if (isChildBuild) {
+      await FcmService.init();
+    }
+    debugPrint("[main] Firebase initialized");
+  } catch (e) {
+    debugPrint("[main] Firebase init failed: $e");
+  }
 }
 
 class CameraParentApp extends StatelessWidget {
