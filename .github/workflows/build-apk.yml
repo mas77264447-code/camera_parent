@@ -16,6 +16,7 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -35,31 +36,37 @@ jobs:
           test -f android/app/google-services.json || (echo "❌ google-services.json missing!" && exit 1)
           echo "✅ google-services.json present"
 
-      - name: Get dependencies
+      # ✅ الترتيب الصحيح: clean ثم pub get
+      - name: Clean and get dependencies
         run: |
-          flutter pub get
           flutter clean
+          flutter pub get
+
+      # ✅ حفظ الـ APK خارج build/ حتى لا يُحذف
+      - name: Create release output dir
+        run: mkdir -p release-artifacts
 
       - name: Build parent APK
         run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
 
       - name: Save parent APK
-        run: cp build/app/outputs/flutter-apk/app-parent-release.apk build/camera-parent.apk
+        run: cp build/app/outputs/flutter-apk/app-parent-release.apk release-artifacts/camera-parent.apk
 
       - name: Build child APK
-        run: |
-          flutter clean
-          flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+        run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
 
       - name: Save child APK
-        run: cp build/app/outputs/flutter-apk/app-child-release.apk build/camera-child.apk
+        run: cp build/app/outputs/flutter-apk/app-child-release.apk release-artifacts/camera-child.apk
+
+      - name: Verify artifacts
+        run: ls -lah release-artifacts/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/camera-parent.apk
-            build/camera-child.apk
+            release-artifacts/camera-parent.apk
+            release-artifacts/camera-child.apk
           tag_name: build-${{ github.run_number }}
           name: Release Build ${{ github.run_number }} - WebRTC Fixes Applied
           draft: false
