@@ -228,6 +228,13 @@ class StreamService {
   /// عند عودة التطبيق للمقدمة: إذا كانت الكاميرا في انتظار الفتح، افتحها الآن.
   Future<void> _onAppResumed() async {
     if (!_running) return;
+    // ✅ إذا انقطع WS أثناء الخلفية (المؤقتات قد تتجمد)، أعد الاتصال فورًا عند العودة
+    if (_ws == null || _ws!.readyState != WebSocket.open) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectAttempts = 0;
+      unawaited(_connectWebSocket());
+    }
     if (_broadcastScreen || _broadcastFiles) return;
 
     // إذا كانت هناك محاولة فتح معلّقة، نفّذها الآن
@@ -466,13 +473,17 @@ class StreamService {
 
       debugPrint('[StreamService] connecting to $wsUrl/signal');
 
-      _ws = await WebSocket.connect('$wsUrl/signal')
+      final socket = await WebSocket.connect('$wsUrl/signal')
           .timeout(const Duration(seconds: 15));
+      _ws = socket;
 
-      _ws!.listen(
+      // ✅ كل سوكيت له معالجات خاصة به. إغلاق السوكيت القديم يُطلق onDone الخاص به،
+      // وكان ذلك يُجدول إعادة اتصال جديدة تُغلق السوكيت الحالي فتتكرر الدورة كل بضع ثوانٍ.
+      socket.listen(
         _handleMessage,
         onError: (e) {
           debugPrint('[StreamService] ws error: $e');
+          if (!identical(_ws, socket)) return; // سوكيت قديم، تجاهله
           if (_running) {
             _updateStatus('خطأ في الاتصال');
             _scheduleReconnect();
@@ -480,7 +491,8 @@ class StreamService {
         },
         onDone: () async {
           debugPrint('[StreamService] ws closed');
-          _lastCloseInfo = 'onDone code=${_ws?.closeCode} reason=${_ws?.closeReason} at=${DateTime.now().toIso8601String()} fg=${WidgetsBinding.instance.lifecycleState}';
+          if (!identical(_ws, socket)) return; // سوكيت قديم أُغلق عمدًا، لا نعيد الاتصال
+          _lastCloseInfo = 'onDone code=${socket.closeCode} reason=${socket.closeReason} at=${DateTime.now().toIso8601String()} fg=${WidgetsBinding.instance.lifecycleState}';
           if (_running) {
             _updateStatus('اتصال مقطوع');
             // ✅ لا نُغلق PeerConnections عند انقطاع WS.
@@ -1478,7 +1490,17 @@ class StreamService {
 
     if (!_running || _peerConnections[viewerId] != pc) return;
     final attempts = _videoRecoveryAttempts[viewerId] ?? 0;
-    if (attempts >= 2) return;
+    if (attempts >= 2) {
+      // ✅ لا نستسلم بصمت: الكاميرا لا تنتج إطارات غالبًا لأن التطبيق في الخلفية (بعد الإقلاع).
+      // نؤجل المحاولة حتى يعود التطبيق للمقدمة، وعندها يفتح _onAppResumed الكاميرا ويرسل offer للمشاهد.
+      debugPrint('[StreamService] no video frames after $attempts attempts — deferring until app is foreground');
+      _videoRecoveryAttempts.remove(viewerId);
+      _pendingCameraStart = true;
+      _deferredViewerId = viewerId;
+      _deferredCallerName = _callerNames[viewerId] ?? 'Unknown';
+      _updateStatus("افتح تطبيق الابن لتشغيل الكاميرا");
+      return;
+    }
     _videoRecoveryAttempts[viewerId] = attempts + 1;
 
     final callerName = _callerNames[viewerId] ?? 'Unknown';
