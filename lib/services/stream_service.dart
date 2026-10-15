@@ -1291,9 +1291,37 @@ class StreamService {
     }
   }
 
-  /// معطّل عمداً: لا يُحضر التطبيق ولا يعرض إشعاراً. البث يعمل من الخدمة في الخلفية.
+  /// يُظهر واجهة التطبيق عندما لا توجد واجهة أصلاً (الحالة detached بعد إغلاق X).
+  /// السبب: على Android 11+ الكاميرا تُفتح بلا إطارات إذا لم تكن للتطبيق واجهة
+  /// ظاهرة (إذن "أثناء الاستخدام"). السجلات أثبتت: encoded=0 عند detached،
+  /// وencoded>0 عند paused. التنفيذ الأصلي: startActivity عبر SYSTEM_ALERT_WINDOW
+  /// أو Full-Screen Intent (ForegroundServiceChannel.bringToForeground).
   Future<bool> _bringToForeground({int maxAttempts = 3}) async {
-    return true;
+    final state = WidgetsBinding.instance.lifecycleState;
+    // إذا كانت الواجهة موجودة (paused/inactive/resumed) فلا حاجة لإظهارها.
+    if (state != null && state != AppLifecycleState.detached) return true;
+
+    const fsChannel = MethodChannel('camera_parent/foreground_service');
+    for (var i = 0; i < maxAttempts; i++) {
+      if (!_running) return false;
+      try {
+        final sent = await fsChannel.invokeMethod<bool>('bringToForeground');
+        _clog('bringToForeground attempt=${i + 1} sent=$sent');
+      } catch (e) {
+        _clog('bringToForeground attempt=${i + 1} error=$e');
+      }
+      // انتظر حتى 3 ثوانٍ لتظهر الواجهة (resumed).
+      for (var w = 0; w < 15; w++) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        final st = WidgetsBinding.instance.lifecycleState;
+        if (st != null && st != AppLifecycleState.detached) {
+          _clog('bringToForeground ok state=$st');
+          return true;
+        }
+      }
+    }
+    _clog('bringToForeground FAILED: no activity (check overlay permission)');
+    return false;
   }
 
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
