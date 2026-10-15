@@ -607,6 +607,7 @@ class StreamService {
           if (ownerToken != null && ownerToken.isNotEmpty) {
             CryptoService.instance.initialize(ownerToken);
           }
+          _clog('build-marker bringfix-v1 (0737b84+marker)');
           if (_lastCloseInfo != null) {
             _clog('previous ws ' + _lastCloseInfo!);
             _lastCloseInfo = null;
@@ -1217,6 +1218,8 @@ class StreamService {
   /// معدّلة: تمنع فتح الكاميرا في الخلفية، وتحفظ _pendingCameraStart
   /// حتى تُفتح الكاميرا لاحقاً عند عودة التطبيق للمقدمة.
   Future<void> _startMediaSource() async {
+    _clog('startMediaSource enter state=${WidgetsBinding.instance.lifecycleState} '
+        'hasStream=${localStream != null} screen=$_broadcastScreen');
     if (localStream != null) {
       _updateStatus("جاهز للبث!");
       return;
