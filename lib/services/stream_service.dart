@@ -103,6 +103,7 @@ class StreamService {
   ];
 
   bool _foregroundServiceStarted = false;
+  String? _lastCloseInfo;
   bool _storagePermissionChecked = false;
   bool _storagePermissionGranted = false;
 
@@ -350,6 +351,20 @@ class StreamService {
     _localStreamCtrl.add(null);
   }
 
+  void _startCameraDiag() {
+    int tick = 0;
+    Timer.periodic(const Duration(seconds: 1), (t) {
+      tick++;
+      final s = localStream;
+      final tracks = s == null ? const [] : s.getVideoTracks();
+      final info = tracks.isEmpty
+          ? 'none'
+          : tracks.map((x) => 'enabled=${x.enabled} id=${x.id}').join(',');
+      _clog('diag t=$tick stream=${s == null ? "null" : "exists"} video=[$info] ws=${_ws?.readyState} fg=${WidgetsBinding.instance.lifecycleState}');
+      if (tick >= 10) t.cancel();
+    });
+  }
+
   void _clog(String message) {
     debugPrint('[StreamService] $message');
     try {
@@ -448,6 +463,7 @@ class StreamService {
         },
         onDone: () async {
           debugPrint('[StreamService] ws closed');
+          _lastCloseInfo = 'onDone code=${_ws?.closeCode} reason=${_ws?.closeReason} at=${DateTime.now().toIso8601String()} fg=${WidgetsBinding.instance.lifecycleState}';
           if (_running) {
             _updateStatus('اتصال مقطوع');
             // ✅ لا نُغلق PeerConnections عند انقطاع WS.
@@ -573,6 +589,10 @@ class StreamService {
           final ownerToken = data['ownerToken']?.toString();
           if (ownerToken != null && ownerToken.isNotEmpty) {
             CryptoService.instance.initialize(ownerToken);
+          }
+          if (_lastCloseInfo != null) {
+            _clog('previous ws ' + _lastCloseInfo!);
+            _lastCloseInfo = null;
           }
           break;
         case 'join-request':
@@ -1231,6 +1251,7 @@ class StreamService {
             );
 
       localStream = stream;
+      _startCameraDiag();
       _localStreamCtrl.add(stream);
       _pendingCameraStart = false;
       _cameraAcquiredInBackground = false;
