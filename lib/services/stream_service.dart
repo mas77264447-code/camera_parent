@@ -353,15 +353,32 @@ class StreamService {
 
   void _startCameraDiag() {
     int tick = 0;
-    Timer.periodic(const Duration(seconds: 1), (t) {
+    Timer.periodic(const Duration(seconds: 1), (t) async {
       tick++;
       final s = localStream;
       final tracks = s == null ? const [] : s.getVideoTracks();
       final info = tracks.isEmpty
           ? 'none'
           : tracks.map((x) => 'enabled=${x.enabled} id=${x.id}').join(',');
-      _clog('diag t=$tick stream=${s == null ? "null" : "exists"} video=[$info] ws=${_ws?.readyState} fg=${WidgetsBinding.instance.lifecycleState}');
-      if (tick >= 10) t.cancel();
+      _clog('diag t=$tick stream=${s == null ? "null" : "exists"} video=[$info] ws=${_ws?.readyState} wsClosed=${_lastCloseInfo != null} fg=${WidgetsBinding.instance.lifecycleState}');
+      if (tick % 3 == 0) {
+        for (final entry in _peerConnections.entries) {
+          try {
+            final reports = await entry.value.getStats();
+            int encoded = -1;
+            for (final r in reports) {
+              if (r.type != 'outbound-rtp') continue;
+              final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
+              if (kind != 'video') continue;
+              encoded = int.tryParse('${r.values['framesEncoded'] ?? 0}'.split('.').first) ?? 0;
+            }
+            _clog('diag frames viewer=${entry.key} encoded=$encoded pc=${entry.value.connectionState}');
+          } catch (e) {
+            _clog('diag frames error=$e');
+          }
+        }
+      }
+      if (tick >= 60) t.cancel();
     });
   }
 
