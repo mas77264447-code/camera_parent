@@ -209,6 +209,10 @@ const RATE_WINDOW_MS = 60 * 1000;
 const authAttempts = new Map();
 const wsAttempts = new Map();
 
+// عدد الـ proxies الموثوقة أمام السيرفر (Render = 1). لا نثق بأول قيمة في
+// x-forwarded-for لأن العميل يقدر يزوّرها؛ نأخذ القيمة التي أضافها الـ proxy.
+const TRUSTED_PROXY_HOPS = parseInt(process.env.TRUSTED_PROXY_HOPS || "1", 10);
+
 function clientIp(req) {
   // طلبات Express: req.ip يحترم trust proxy أعلاه.
   if (req.ip) return String(req.ip);
@@ -928,6 +932,10 @@ wss.on("connection", (ws, req) => {
     lastMessageAt: Date.now(),
   };
 
+  ws.on("error", (e) => {
+    console.error("[ws] socket error:", e && e.message ? e.message : e);
+  });
+
   ws.isAlive = true;
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -1305,7 +1313,9 @@ wss.on("connection", (ws, req) => {
 
     if (msg.type === "switch-camera" || msg.type === "toggle-mic") {
       const liveSession = live[client.sessionId];
-      if (client.role !== "viewer" || !liveSession || !liveSession.broadcaster) return;
+      if (client.role !== "viewer" || !client.viewerKey || !liveSession || !liveSession.broadcaster) return;
+      const vInfo = liveSession.viewers.get(client.viewerKey);
+      if (!vInfo || !vInfo.approved) return; // مشاهد لم يوافق عليه الطفل لا يتحكم بالجهاز
       send(liveSession.broadcaster, { type: msg.type });
       return;
     }
@@ -1468,6 +1478,35 @@ wss.on("close", () => clearInterval(heartbeatInterval));
 
 let _warnedNoPrivateTurn = false;
 
+// ✅ TURN عبر Metered API (حساب مجاني: 20GB/شهر). عيّن في Render:
+//   METERED_APP=اسم_تطبيقك   (الجزء قبل .metered.live)
+//   METERED_API_KEY=مفتاحك
+// يجلب بيانات اعتماد حقيقية ويخزّنها 30 دقيقة.
+let _meteredCache = { at: 0, servers: null };
+
+async function fetchMeteredServers() {
+  const app_ = (process.env.METERED_APP || "").trim();
+  const key = (process.env.METERED_API_KEY || "").trim();
+  if (!app_ || !key || typeof fetch !== "function") return null;
+  if (_meteredCache.servers && Date.now() - _meteredCache.at < 30 * 60 * 1000) {
+    return _meteredCache.servers;
+  }
+  try {
+    const r = await fetch(
+      `https://${app_}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(key)}`
+    );
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const list = await r.json();
+    if (Array.isArray(list) && list.length) {
+      _meteredCache = { at: Date.now(), servers: list };
+      return list;
+    }
+  } catch (e) {
+    console.error("[ice] metered fetch failed:", e && e.message ? e.message : e);
+  }
+  return _meteredCache.servers; // آخر نسخة ناجحة إن وجدت
+}
+
 function getIceServers() {
   const stunServers = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -1490,7 +1529,7 @@ function getIceServers() {
 
   if (!_warnedNoPrivateTurn) {
     _warnedNoPrivateTurn = true;
-    console.warn("[camera-parent] مفيش TURN_URLS - fallback openrelay");
+    console.warn("[camera-parent] مفيش TURN_URLS ولا METERED_* - fallback openrelay العام (غير مضمون)");
   }
 
   return [

@@ -4,11 +4,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/camera_service.dart';
 import 'add_device_screen.dart';
 import 'device_connection_screen.dart';
+import 'web_link_screen.dart';
+import 'web_devices_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -52,7 +55,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('admin_token');
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'admin_token');
     if (token == null || token.isEmpty) {
       setState(() => _loading = false);
       return;
@@ -471,6 +475,76 @@ class _HomeScreenState extends State<HomeScreen> {
     ).then((_) => _loadDevices());
   }
 
+  List<Map<String, dynamic>> get _appDevices =>
+      _devices.where((d) => d['source'] != 'web').toList();
+
+  void _openServices() {
+    if (_adminToken == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              title: Text(
+                'خدمات',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.link, size: 32, color: Colors.blue),
+              title: const Text(
+                'إضافة عبر رابط ⭐',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: const Text(
+                'شارك رابطاً يفتحه الطفل في المتصفح — بدون تثبيت',
+              ),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => WebLinkScreen(adminToken: _adminToken!),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.devices, size: 32, color: Colors.green),
+              title: const Text(
+                'الأجهزة المتصلة عبر رابط',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: const Text('أجهزة تبث من المتصفح'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => WebDevicesScreen(
+                      getDevices: () => _devices,
+                      refresh: _loadDevices,
+                      onOpen: _openDevice,
+                      onForget: (d) async {
+                        await CameraService.forgetDevice(
+                            d['session_id'], _adminToken!);
+                        await _loadDevices();
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _openDevice(Map<String, dynamic> device) {
     if (_adminToken == null) return;
     Navigator.push(
@@ -626,11 +700,19 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.all(18),
               child: Row(
                 children: [
-                  const Text('أجهزة الأطفال المقترنة',
-                      style: TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Expanded(
+                    child: Text('أجهزة الأطفال المقترنة',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                  ),
                   Row(
                     children: [
+                      IconButton(
+                        icon: const Icon(Icons.apps),
+                        tooltip: 'خدمات',
+                        onPressed: _openServices,
+                      ),
                       IconButton(
                         icon: const Icon(Icons.refresh),
                         tooltip: 'تحديث',
@@ -639,7 +721,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text('${_devices.length} جهاز'),
+                              content: Text('${_appDevices.length} جهاز'),
                               duration: const Duration(seconds: 1),
                             ),
                           );
@@ -661,7 +743,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             Expanded(
-              child: _devices.isEmpty
+              child: _appDevices.isEmpty
                   ? const Center(child: Text('لا توجد أجهزة مقترنة بعد'))
                   : Column(
                       children: [
@@ -681,9 +763,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: ListView.builder(
                             padding:
                                 const EdgeInsets.symmetric(horizontal: 12),
-                            itemCount: _devices.length,
+                            itemCount: _appDevices.length,
                             itemBuilder: (context, i) {
-                              final d = _devices[i];
+                              final d = _appDevices[i];
                               final online = d['online'] == true;
                               final sessionId =
                                   d['session_id']?.toString() ?? '';

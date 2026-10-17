@@ -209,6 +209,8 @@ class StreamForegroundService : Service() {
         foregroundStarted = true
 
         acquireWakeLock()
+        renewHandler.removeCallbacks(renewRunnable)
+        renewHandler.postDelayed(renewRunnable, WAKELOCK_RENEW_MS)
         ServiceWatchdog.scheduleNext(this)
 
         handler.removeCallbacks(startAgentRunnable)
@@ -252,8 +254,28 @@ class StreamForegroundService : Service() {
     private fun isStopped(): Boolean =
         !getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
 
-    private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
+    private fun startForegroundCompat(notification: Notification, mode: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val type = when (mode) {
+                MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                MODE_FILES -> 0
+                else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            if (type == 0) startForeground(NOTIFICATION_ID, notification)
+            else startForeground(NOTIFICATION_ID, notification, type)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun acquireWakeLock(force: Boolean = false) {
+        val existing = wakeLock
+        if (existing != null) {
+            // نفس الكائن: acquire مع مهلة جديدة يمدّد القفل بدل إنشاء قفل ثانٍ يتسرّب
+            if (force || !existing.isHeld) existing.acquire(WAKELOCK_TIMEOUT_MS)
+            return
+        }
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,

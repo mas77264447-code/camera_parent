@@ -229,7 +229,13 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
   }
 
-  Future<void> _loadIceServers() async {
+  Future<void>? _iceLoading;
+
+  Future<void> _loadIceServers() {
+    return _iceLoading = _loadIceServersImpl();
+  }
+
+  Future<void> _loadIceServersImpl() async {
     try {
       final servers = await CameraService.fetchIceServers();
       if (!_disposed) {
@@ -297,12 +303,19 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   void _performHealthCheck() {
+    if (_rejected) return;
     final wsState = _ws?.readyState;
     final wsConnected = wsState == WebSocket.open;
     final pcState = _pc?.connectionState;
+    // ⚠️ إصلاح: قبل كذا كانت تعتبر أي حالة غير failed/closed = سليمة،
+    // بما فيها "disconnected" — يعني لو الاتصال علّق بحالة disconnected
+    // (مثلاً بعد إغلاق تطبيق الطفل) الفحص الصحي كان يقول "تمام" للأبد
+    // وما يسوي أي إعادة اتصال كاملة. الحين لازم تكون الحالة فعلاً
+    // connected/connecting/new عشان تُحسب سليمة.
     final pcConnected = _pc == null ||
-        (pcState != RTCPeerConnectionState.RTCPeerConnectionStateFailed &&
-            pcState != RTCPeerConnectionState.RTCPeerConnectionStateClosed);
+        pcState == RTCPeerConnectionState.RTCPeerConnectionStateConnected ||
+        pcState == RTCPeerConnectionState.RTCPeerConnectionStateConnecting ||
+        pcState == RTCPeerConnectionState.RTCPeerConnectionStateNew;
     if (!wsConnected || !pcConnected) {
       _consecutiveFailures++;
       debugPrint("[Health] failures=$_consecutiveFailures");
@@ -355,6 +368,14 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     if (_iceRestartInProgress || _disposed) return;
     _iceRestartInProgress = true;
 
+    // ⚠️ إصلاح: قبل كذا كان يقارن _remoteStream بـ null بس — لكن
+    // _remoteStream ما ينصفر لما ICE تنقطع، يضل يحمل الستريم القديم
+    // الميت. فبعد 30 ثانية يشوفه "موجود" ويفترض نجاح وهمي، وما يسوي
+    // إعادة اتصال كاملة حتى لو فعليًا ما وصل أي بث جديد.
+    // الحل: نحفظ مرجع الـ pc الحالي وقت الطلب، ونتأكد بعد المهلة إن
+    // نفس الـ pc لسا موجود وبحالة متصلة فعلاً.
+    final pcAtRestart = _pc;
+
     try {
       if (mounted) setState(() => _status = "إعادة محاولة الاتصال...");
       debugPrint('[ICE] sending request-restart-ice');
@@ -371,8 +392,13 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       _noMediaWatchdog?.cancel();
       _noMediaWatchdog = Timer(const Duration(seconds: 30), () {
         if (_disposed) return;
-        if (_remoteStream == null) {
-          debugPrint('[ICE] no offer after restart request — full reconnect');
+        final recovered = _pc != null &&
+            _pc == pcAtRestart &&
+            _pc!.connectionState ==
+                RTCPeerConnectionState.RTCPeerConnectionStateConnected;
+        if (!recovered) {
+          debugPrint(
+              '[ICE] restart did not recover connection — full reconnect');
           _reconnectFull();
         }
         _iceRestartInProgress = false;
@@ -563,11 +589,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           _reconnectTimer = null;
           _noMediaWatchdog?.cancel();
           _noMediaWatchdog = null;
-          final oldPc2 = _pc;
-          _pc = null;
-          if (oldPc2 != null) {
-            try { await oldPc2.close(); } catch (_) {}
-          }
+          _healthCheckTimer?.cancel();
+          _healthCheckTimer = null;
+          _pingTimer?.cancel();
+          _pingTimer = null;
+          try { await _pc?.close(); } catch (_) {}
           if (mounted) {
             setState(() => _status = "صاحب الكاميرا رفض طلب الاتصال");
           }
@@ -614,6 +640,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     try { _remoteRenderer.srcObject = null; } catch (_) {}
 
     try {
+      // ✅ انتظر انتهاء جلب TURN (كان الاتصال يبدأ أحياناً قبل وصوله فيبقى ICE في Checking)
+      try { await _iceLoading; } catch (_) {}
+      if (CameraService.lastIceFetchFailed) {
+        await _loadIceServers();
+      }
       final pc = await createPeerConnection({"iceServers": _iceServers});
       _pc = pc;
 
@@ -666,20 +697,35 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
       pc.onConnectionState = (state) {
         debugPrint("[PC] state=$state (current=${_pc == pc})");
+        // تجاهل نداءات متأخرة من pc قديم تم استبداله — هذا الجزء كان صح
+        // بتعديل سابق ومفيد فعلاً، نبقيه.
         if (_pc != pc) return;
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-          debugPrint("[PC] failed — ICE restart only (NOT WS reconnect)");
+          debugPrint("[PC] failed — trying ICE restart first");
           _tryIceRestart();
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+          // ⚠️ إصلاح: ما نقدر نفترض دايمًا إننا إحنا اللي أغلقناها.
+          // لو صارت Closed وهي لسا الـ pc الحالي (مو مستبدلة بوحدة جديدة)،
+          // فهذا انقطاع حقيقي (مثلاً جهاز الطفل سكر) ولازم نعيد الاتصال كامل
+          // بدل ما نسيب الشاشة معلّقة للأبد.
+          debugPrint("[PC] closed while still current — full reconnect");
+          try { _remoteRenderer.srcObject = null; } catch (_) {}
+          if (mounted) {
+            setState(() => _status = "انقطع الاتصال بجهاز الكاميرا");
+          }
+          _scheduleReconnect();
         }
       };
 
       pc.onIceConnectionState = (state) {
         debugPrint("[ICE] state=$state (current=${_pc == pc})");
         if (_pc != pc) return;
-        if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
-            state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-          debugPrint('[ICE] $state — ICE restart only');
+        if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+          debugPrint('[ICE] disconnected — attempting ICE restart');
           _tryIceRestart();
+        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          debugPrint('[ICE] failed — full reconnect');
+          _scheduleReconnect();
         }
       };
 
@@ -710,11 +756,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   Future<void> _handleBroadcasterLeft() async {
     _cancelRendererTimers();
     try { _remoteRenderer.srcObject = null; } catch (_) {}
-    final oldPc = _pc;
+    try { await _pc?.close(); } catch (_) {}
     _pc = null;
-    if (oldPc != null) {
-      try { await oldPc.close(); } catch (_) {}
-    }
     _remoteStream = null;
     _broadcasterId = null;
     _textureRefreshedForThisTrack = false;
@@ -813,7 +856,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       }
     } catch (_) {}
 
+    try { _remoteRenderer.srcObject = null; } catch (_) {}
     try { _pc?.close(); } catch (_) {}
+    try { _pc?.dispose(); } catch (_) {}
     try { _ws?.close(); } catch (_) {}
     _remoteRenderer.dispose();
     super.dispose();

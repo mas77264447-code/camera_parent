@@ -27,11 +27,17 @@ android {
 
     signingConfigs {
         create("release") {
-            if (keystorePropertiesFile.exists()) {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+            // الأولوية: key.properties (محلي) ثم متغيرات البيئة (GitHub Actions)
+            val storePath = (keystoreProperties["storeFile"] as String?)
+                ?: System.getenv("KEYSTORE_PATH")
+            if (storePath != null) {
+                storeFile = file(storePath)
+                storePassword = (keystoreProperties["storePassword"] as String?)
+                    ?: System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = (keystoreProperties["keyAlias"] as String?)
+                    ?: System.getenv("KEY_ALIAS")
+                keyPassword = (keystoreProperties["keyPassword"] as String?)
+                    ?: System.getenv("KEY_PASSWORD")
             }
         }
     }
@@ -62,9 +68,12 @@ android {
 
     buildTypes {
         release {
-            signingConfig = if (keystorePropertiesFile.exists()) {
+            val hasReleaseKey = keystorePropertiesFile.exists() ||
+                System.getenv("KEYSTORE_PATH") != null
+            signingConfig = if (hasReleaseKey) {
                 signingConfigs.getByName("release")
             } else {
+                // بدون مفتاح: توقيع debug (للتجربة فقط، لا توزّعه)
                 signingConfigs.getByName("debug")
             }
 

@@ -110,14 +110,23 @@ class _PairingScreenState extends State<PairingScreen> {
           'device_name': _nameController.text.trim(),
           'code': _codeController.text.trim(),
         }),
-      ).timeout(const Duration(seconds: 10), onTimeout: () {
+      // 45 ثانية: السيرفر على استضافة مجانية قد يحتاج وقتاً للاستيقاظ بعد الخمول
+      ).timeout(const Duration(seconds: 45), onTimeout: () {
         throw TimeoutException('انتهت مهلة الاتصال');
       });
 
       if (response.statusCode != 200) {
-        final body = jsonDecode(response.body);
+        String msg = 'حدث خطأ، حاول مرة أخرى';
+        try {
+          final b = jsonDecode(response.body);
+          if (b is Map && b['error'] != null) msg = b['error'].toString();
+        } catch (_) {
+          // الرد ليس JSON (مثلاً صفحة خطأ من الاستضافة)
+          msg = 'السيرفر غير متاح حالياً (${response.statusCode}). حاول بعد قليل.';
+        }
+        if (!mounted) return;
         setState(() {
-          _error = body['error'] ?? 'حدث خطأ، حاول مرة أخرى';
+          _error = msg;
           _loading = false;
         });
         return;
@@ -147,6 +156,7 @@ class _PairingScreenState extends State<PairingScreen> {
         ),
       );
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'خطأ: $e';
         _loading = false;

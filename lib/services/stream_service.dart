@@ -54,6 +54,8 @@ class StreamService {
   bool _wsConnecting = false;
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
+  bool _authFailed = false;
+  DateTime? _authFailedAt;
   Timer? _pingTimer;
   int _consecutivePingFailures = 0;
 
@@ -67,6 +69,14 @@ class StreamService {
   // ✅ إيقاف تلقائي بعد 12 ساعة (حماية)
   final Duration _screenAutoStopAfter = const Duration(hours: 12);
   Timer? _screenAutoStopTimer;
+
+  // ── مراقبة الكاميرا (إعادة تشغيلها لو توقفت) ──
+  Timer? _cameraWatchdog;
+  bool _restartingCamera = false;
+  int _cameraRestartAttempts = 0;
+  DateTime? _lastCameraRestartAt;
+  num? _lastVideoBytesSent;
+  int _stalledProbes = 0;
 
   final Map<String, RTCPeerConnection> _peerConnections = {};
   final Map<String, String> _callerNames = {};
@@ -202,6 +212,7 @@ class StreamService {
 
     if (_running) await stop();
 
+    _authFailed = false;
     _sessionId = sessionId;
     _deviceToken = deviceToken;
     _cameraName = cameraName;
@@ -245,6 +256,13 @@ class StreamService {
       } catch (e) {
         debugPrint('[StreamService] fgs start failed: $e');
       }
+      // طلب استثناء البطارية منفصل: فشله لا يجب أن يؤثر على تشغيل الخدمة
+      try {
+        const batChannel = MethodChannel('camera_parent/battery_optimization');
+        await batChannel.invokeMethod('requestBatteryOptimizationExemption');
+      } catch (e) {
+        debugPrint('[StreamService] battery exemption failed: $e');
+      }
     }
 
     unawaited(_requestStoragePermissionsOnce());
@@ -253,6 +271,7 @@ class StreamService {
       _iceServers = await CameraService.fetchIceServers();
     } catch (_) {}
 
+    _startCameraWatchdog();
     await _connectWebSocket();
   }
 
@@ -350,6 +369,9 @@ class StreamService {
     _consecutivePingFailures = 0;
     _screenAutoStopTimer?.cancel();
     _screenAutoStopTimer = null;
+    _cameraWatchdog?.cancel();
+    _cameraWatchdog = null;
+    _cameraRestartAttempts = 0;
 
     // ✅ تصفير حالات الانتظار
     _pendingCameraStart = false;
@@ -668,6 +690,13 @@ class StreamService {
 
   void _scheduleReconnect() {
     if (!_running) return;
+    if (_authFailed) {
+      // بعد رفض السيرفر لا نعيد المحاولة فوراً، لكن نجرّب مرة كل 5 دقائق
+      // حتى لا يبقى الجهاز ميتاً للأبد لو كان الرفض مؤقتاً.
+      final at = _authFailedAt;
+      if (at != null && DateTime.now().difference(at) < const Duration(minutes: 5)) return;
+      _authFailed = false;
+    }
     if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
 
     ConnectionStateManager.instance.update(ConnectionStatus.reconnecting);
@@ -739,6 +768,8 @@ class StreamService {
           _updateStatus('تم إنهاء الاتصال من طرف السيرفر');
           break;
         case 'auth-failed':
+          _authFailed = true; // لا نعيد الاتصال في حلقة بعد رفض السيرفر
+          _authFailedAt = DateTime.now();
           _reconnectTimer?.cancel();
           _updateStatus('فشل التحقق من الجهاز');
           _error = 'الجهاز غير مقترن على السيرفر. أعد الاقتران من جديد.';
@@ -1244,6 +1275,160 @@ class StreamService {
     await _sendOfferTo(viewerId, callerName);
   }
 
+  bool get _cameraMode => !_broadcastScreen && !_broadcastFiles;
+
+  void _attachTrackListeners(MediaStream stream) {
+    if (_broadcastScreen) return;
+    for (final t in stream.getVideoTracks()) {
+      try {
+        t.onEnded = () {
+          debugPrint('[StreamService] video track ENDED');
+          unawaited(_restartCamera('track-ended'));
+        };
+        t.onMute = () => debugPrint('[StreamService] video track muted');
+      } catch (_) {}
+    }
+  }
+
+  void _startCameraWatchdog() {
+    _cameraWatchdog?.cancel();
+    _cameraWatchdog = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => unawaited(_cameraHealthCheck()),
+    );
+  }
+
+  /// يُستدعى عند عودة التطبيق للواجهة: أندرويد غالباً يسحب الكاميرا في الخلفية.
+  Future<void> onAppResumed() async {
+    if (!_running) return;
+    await ensureHealthy();
+    if (_cameraMode && localStream != null && !_hasLiveVideoTrack()) {
+      await _restartCamera('resumed');
+    }
+  }
+
+  Future<void> _cameraHealthCheck() async {
+    if (!_running || !_cameraMode || _restartingCamera) return;
+
+    if (localStream == null) {
+      // لا نفتح الكاميرا من تلقاء أنفسنا إلا لو هناك مشاهد ينتظر
+      if (_peerConnections.isNotEmpty) await _restartCamera('no-stream');
+      return;
+    }
+    if (!_hasLiveVideoTrack()) {
+      await _restartCamera('track-not-live');
+      return;
+    }
+    if (_peerConnections.isEmpty) {
+      _stalledProbes = 0;
+      _lastVideoBytesSent = null;
+      return;
+    }
+    await _probeVideoFlow();
+  }
+
+  /// يتأكد أن بايتات الفيديو المرسلة تزيد فعلاً؛ لو تجمّدت ~30 ثانية نعيد تشغيل الكاميرا.
+  Future<void> _probeVideoFlow() async {
+    RTCPeerConnection? pc;
+    for (final p in _peerConnections.values) {
+      final st = p.iceConnectionState;
+      if (st == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+          st == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+        pc = p;
+        break;
+      }
+    }
+    if (pc == null) {
+      _stalledProbes = 0;
+      _lastVideoBytesSent = null;
+      return;
+    }
+    try {
+      final stats = await pc.getStats();
+      num? sent;
+      for (final r in stats) {
+        if (r.type != 'outbound-rtp') continue;
+        final kind = r.values['kind'] ?? r.values['mediaType'];
+        if (kind != 'video') continue;
+        final b = num.tryParse('${r.values['bytesSent']}');
+        if (b != null) sent = (sent ?? 0) + b;
+      }
+      if (sent == null) return;
+      final last = _lastVideoBytesSent;
+      if (last != null && sent <= last) {
+        _stalledProbes++;
+      } else {
+        _stalledProbes = 0;
+      }
+      _lastVideoBytesSent = sent;
+      if (_stalledProbes >= 3) {
+        _stalledProbes = 0;
+        _lastVideoBytesSent = null;
+        await _restartCamera('video-stalled');
+      }
+    } catch (e) {
+      debugPrint('[StreamService] probe failed: $e');
+    }
+  }
+
+  Future<void> _restartCamera(String reason) async {
+    if (_restartingCamera || !_running || !_cameraMode) return;
+
+    // backoff: 5, 10, 20, 40, 60 ثانية بين المحاولات الفاشلة
+    final last = _lastCameraRestartAt;
+    if (_cameraRestartAttempts > 0 && last != null) {
+      final wait = Duration(
+          seconds: (5 * (1 << (_cameraRestartAttempts - 1))).clamp(5, 60).toInt());
+      if (DateTime.now().difference(last) < wait) return;
+    }
+
+    _restartingCamera = true;
+    _lastCameraRestartAt = DateTime.now();
+    try {
+      debugPrint(
+          '[StreamService] restarting camera: $reason (attempt ${_cameraRestartAttempts + 1})');
+      await _forceCleanupStream();
+      await _startMediaSource();
+      final s = localStream;
+      if (s == null) {
+        _cameraRestartAttempts++;
+        return;
+      }
+      _cameraRestartAttempts = 0;
+      _stalledProbes = 0;
+      _lastVideoBytesSent = null;
+      await _replaceTracksOnAllPeers(s);
+    } catch (e) {
+      _cameraRestartAttempts++;
+      debugPrint('[StreamService] camera restart failed: $e');
+    } finally {
+      _restartingCamera = false;
+    }
+  }
+
+  /// يستبدل الـtracks القديمة بالجديدة في كل الاتصالات الحالية بدون إعادة تفاوض.
+  Future<void> _replaceTracksOnAllPeers(MediaStream s) async {
+    final vs = s.getVideoTracks();
+    final as_ = s.getAudioTracks();
+    final v = vs.isNotEmpty ? vs.first : null;
+    final a = as_.isNotEmpty ? as_.first : null;
+    for (final pc in List<RTCPeerConnection>.from(_peerConnections.values)) {
+      try {
+        final senders = await pc.getSenders();
+        for (final sender in senders) {
+          final kind = sender.track?.kind;
+          if (kind == 'video' && v != null) {
+            await sender.replaceTrack(v);
+          } else if (kind == 'audio' && a != null) {
+            await sender.replaceTrack(a);
+          }
+        }
+      } catch (e) {
+        debugPrint('[StreamService] replaceTrack failed: $e');
+      }
+    }
+  }
+
   bool _hasLiveVideoTrack() {
     final s = localStream;
     if (s == null) return false;
@@ -1448,6 +1633,12 @@ class StreamService {
       } catch (_) {}
     }
 
+    // ✅ لو فشل جلب TURN عند الإقلاع (شبكة/سيرفر نائم) أعد الجلب قبل كل اتصال
+    if (CameraService.lastIceFetchFailed || !_hasTurn(_iceServers)) {
+      try {
+        _iceServers = await CameraService.fetchIceServers();
+      } catch (_) {}
+    }
     final pc = await createPeerConnection({'iceServers': _iceServers});
     _peerConnections[viewerId] = pc;
 
@@ -1477,15 +1668,19 @@ class StreamService {
     };
 
     pc.onIceCandidate = (candidate) {
-      _ws?.add(jsonEncode({
-        'type': 'ice',
-        'target': viewerId,
-        'candidate': {
-          'candidate': candidate.candidate,
-          'sdpMid': candidate.sdpMid,
-          'sdpMLineIndex': candidate.sdpMLineIndex,
-        },
-      }));
+      try {
+        _ws?.add(jsonEncode({
+          'type': 'ice',
+          'target': viewerId,
+          'candidate': {
+            'candidate': candidate.candidate,
+            'sdpMid': candidate.sdpMid,
+            'sdpMLineIndex': candidate.sdpMLineIndex,
+          },
+        }));
+      } catch (e) {
+        debugPrint('[StreamService] ice send failed (ws closed?): $e');
+      }
     };
 
     try {
@@ -1611,7 +1806,22 @@ class StreamService {
       if (!(_broadcastScreen && _keepScreenStreamAlive)) {
         await _forceCleanupStream();
       }
-      await _startMediaSource();
+
+      if (localStream == null || !_hasLiveVideoTrack()) {
+        if (!(_broadcastScreen && _keepScreenStreamAlive)) {
+          await _forceCleanupStream();
+        }
+        await _startMediaSource();
+      }
+
+      if (localStream == null) return;
+
+      final old = _peerConnections.remove(viewerId);
+      _pendingRemoteIceByViewer.remove(viewerId);
+      try { await old?.close(); } catch (_) {}
+      await _sendOfferTo(viewerId, callerName);
+    } finally {
+      _recoveringViewers.remove(viewerId);
     }
 
     if (localStream == null) return;
