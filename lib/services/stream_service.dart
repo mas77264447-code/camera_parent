@@ -1266,13 +1266,33 @@ class StreamService {
       _pendingCameraStart = true;
       _updateStatus("جاري إظهار التطبيق لفتح الكاميرا...");
 
-      final ok = await _bringToForeground();
+      var ok = await _bringToForeground();
       if (!ok) {
         _updateStatus("مطلوب فتح التطبيق لتشغيل الكاميرا");
         return;
       }
       await Future.delayed(const Duration(milliseconds: 800));
       if (!_running) return;
+
+      // تحقق أخير: قد تكون الحالة ارتدّت إلى detached بعد نجاح
+      // _bringToForeground (مثلاً النشاط أُغلق فوراً). لا نفتح الكاميرا
+      // وهي ستُنتج 0 إطارات بصمت — نعيد محاولة رفع الواجهة مرة واحدة.
+      if (WidgetsBinding.instance.lifecycleState ==
+          AppLifecycleState.detached) {
+        _clog('startMediaSource: state reverted to detached after '
+            'bringToForeground — retrying once');
+        ok = await _bringToForeground();
+        if (!ok ||
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.detached) {
+          _clog('startMediaSource: still detached — aborting to avoid '
+              'silent 0-frame capture');
+          _updateStatus("مطلوب فتح التطبيق لتشغيل الكاميرا");
+          return;
+        }
+        await Future.delayed(const Duration(milliseconds: 800));
+        if (!_running) return;
+      }
     }
 
     _updateStatus(_broadcastScreen
@@ -1345,8 +1365,15 @@ class StreamService {
         await Future.delayed(const Duration(milliseconds: 200));
         final st = WidgetsBinding.instance.lifecycleState;
         if (st != null && st != AppLifecycleState.detached) {
-          _clog('bringToForeground ok state=$st');
-          return true;
+          // قراءة واحدة قد تكون وامضة (محاولة فتح فشلت فعلياً لكن الحالة
+          // تبدّلت للحظة). نؤكد الاستقرار بقراءة ثانية بعد 400ms قبل القبول.
+          await Future.delayed(const Duration(milliseconds: 400));
+          final confirm = WidgetsBinding.instance.lifecycleState;
+          if (confirm != null && confirm != AppLifecycleState.detached) {
+            _clog('bringToForeground ok state=$confirm (confirmed)');
+            return true;
+          }
+          _clog('bringToForeground flicker: state=$st then reverted to $confirm — retrying');
         }
       }
     }
