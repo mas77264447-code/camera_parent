@@ -315,7 +315,7 @@ class StreamService {
     _consentedViewers.clear();
     await _forceCleanupStream();
 
-    _updateStatus("متوقف");
+    _updateStatus('متوقف');
     ConnectionStateManager.instance.update(ConnectionStatus.idle);
   }
 
