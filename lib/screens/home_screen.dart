@@ -116,6 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    final token = result['token']!;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('admin_token', token);
     await prefs.setString('parent_username', username);
@@ -347,6 +348,119 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _refreshDevices() async {
+    await _loadDevices();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('تم التحديث — ${_devices.length} جهاز'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  // ✅ إعادة تشغيل جهاز واحد (بدون حوار تأكيد)
+  Future<void> _restartDevice(String sessionId, String deviceName) async {
+    if (_adminToken == null) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('جاري إيقاظ "$deviceName"...'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    final ok = await _sendWakeCommand(sessionId);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok
+            ? '✅ تم إرسال أمر الإيقاظ لـ "$deviceName"'
+            : '❌ فشل إرسال الأمر — الجهاز لا يستجيب'),
+        duration: const Duration(seconds: 3),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
+    );
+
+    await Future.delayed(const Duration(seconds: 2));
+    await _loadDevices();
+  }
+
+  // ✅ إعادة تشغيل جميع الأجهزة (بدون حوار)
+  Future<void> _restartAllDevices() async {
+    if (_adminToken == null || _devices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('لا توجد أجهزة لإعادة تشغيلها'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('جاري إرسال أوامر الإيقاظ لـ ${_devices.length} جهاز...'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    int sent = 0;
+    int failed = 0;
+    for (final device in _devices) {
+      final sessionId = device['session_id']?.toString();
+      if (sessionId == null) continue;
+      final ok = await _sendWakeCommand(sessionId);
+      if (ok) {
+        sent++;
+      } else {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('تم الإرسال: $sent ✓ / فشل: $failed ✗'),
+        duration: const Duration(seconds: 3),
+        backgroundColor: failed == 0 ? Colors.green : Colors.orange,
+      ),
+    );
+
+    await Future.delayed(const Duration(seconds: 3));
+    await _loadDevices();
+  }
+
+  Future<bool> _sendWakeCommand(String sessionId) async {
+    if (_adminToken == null) return false;
+    try {
+      // ✅ HTTP مباشر — أبسط وأسرع من WebSocket المؤقت
+      final response = await http.post(
+        Uri.parse('${CameraService.server}/wake/request'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'sessionId': sessionId,
+          'adminToken': _adminToken,
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        try {
+          final body = jsonDecode(response.body);
+          return body['ok'] == true;
+        } catch (_) {
+          return true;
+        }
+      }
+      debugPrint('[Wake] HTTP ${response.statusCode}: ${response.body}');
+      return false;
+    } catch (e) {
+      debugPrint('[Wake] error: $e');
+      return false;
+    }
+  }
+
   void _openAddDevice() {
     if (_adminToken == null) return;
     Navigator.push(
@@ -511,7 +625,6 @@ class _HomeScreenState extends State<HomeScreen> {
             Padding(
               padding: const EdgeInsets.all(18),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('أجهزة الأطفال المقترنة',
                       style: TextStyle(

@@ -1122,6 +1122,7 @@ wss.on("connection", (ws, req) => {
             viewerId: viewerKey,
             name: client.callerName,
             source: requestedSource,
+            adminToken: adminToken,
           });
           if (finalApproved) {
             send(clientId, { type: "viewer-approved" });

@@ -27,6 +27,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: 'gradle'
+
+      - name: Verify google-services.json
+        run: |
+          test -f android/app/google-services.json || (echo "google-services.json missing!" && exit 1)
+          echo "google-services.json present"
 
       - name: Verify google-services.json
         run: |

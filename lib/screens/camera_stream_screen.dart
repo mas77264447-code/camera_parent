@@ -240,6 +240,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
               onPressed: _showCallersSheet,
             ),
             IconButton(
+              icon: Badge(
+                label: Text("${_trustedViewers.length}"),
+                isLabelVisible: _trustedViewers.isNotEmpty,
+                child: const Icon(Icons.verified_user),
+              ),
+              onPressed: _showTrustedViewersDialog,
+              tooltip: "المشاهدون الموثوقون",
+            ),
+            IconButton(
               icon: const Icon(Icons.cameraswitch),
               onPressed: () => setState(() => _svc.switchCamera()),
             ),
