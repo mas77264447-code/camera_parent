@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
 import '../services/camera_service.dart';
 import 'camera_stream_screen.dart';
 
@@ -15,10 +17,10 @@ class PairingScreen extends StatefulWidget {
 }
 
 class _PairingScreenState extends State<PairingScreen> {
-  final _usernameController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _parentUsernameController = TextEditingController();
+  final _parentPasswordController = TextEditingController();
   final _nameController = TextEditingController(text: 'جهاز الطفل');
-  final _codeController = TextEditingController();
+
   bool _obscurePassword = true;
   bool _loading = false;
   bool _checkingSavedLogin = true;
@@ -33,6 +35,7 @@ class _PairingScreenState extends State<PairingScreen> {
 
   Future<void> _checkSavedLogin() async {
     final prefs = await SharedPreferences.getInstance();
+
     final isPaired = prefs.getBool('is_paired') ?? false;
     final deviceToken = prefs.getString('device_token');
     final sessionId = prefs.getString('session_id');
@@ -55,7 +58,9 @@ class _PairingScreenState extends State<PairingScreen> {
         sessionId != null &&
         sessionId.isNotEmpty) {
       WakelockPlus.disable();
+
       if (!mounted) return;
+
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => CameraStreamScreen(
@@ -65,33 +70,43 @@ class _PairingScreenState extends State<PairingScreen> {
           ),
         ),
       );
+
       return;
     }
 
     if (!mounted) return;
-    setState(() => _checkingSavedLogin = false);
+
+    setState(() {
+      _checkingSavedLogin = false;
+    });
   }
 
   @override
   void dispose() {
     WakelockPlus.disable();
-    _usernameController.dispose();
-    _passwordController.dispose();
+    _parentUsernameController.dispose();
+    _parentPasswordController.dispose();
     _nameController.dispose();
-    _codeController.dispose();
     super.dispose();
   }
 
-  Future<void> _register() async {
-    final username = _usernameController.text.trim();
-    final password = _passwordController.text;
+  Future<void> _loginWithParent() async {
+    final parentUsername = _parentUsernameController.text.trim();
+    final parentPassword = _parentPasswordController.text;
+    final deviceName = _nameController.text.trim();
 
-    if (username.isEmpty) {
-      setState(() => _error = 'أدخل اسم المستخدم');
+    if (deviceName.isEmpty) {
+      setState(() => _error = 'أدخل اسم الجهاز');
       return;
     }
-    if (password.length < 8) {
-      setState(() => _error = 'كلمة المرور لازم تكون 8 أحرف على الأقل');
+
+    if (parentUsername.isEmpty) {
+      setState(() => _error = 'أدخل اسم مستخدم الوالد');
+      return;
+    }
+
+    if (parentPassword.isEmpty) {
+      setState(() => _error = 'أدخل كلمة مرور الوالد');
       return;
     }
 
@@ -129,36 +144,65 @@ class _PairingScreenState extends State<PairingScreen> {
           _error = msg;
           _loading = false;
         });
+
         return;
       }
 
-      final body = jsonDecode(response.body);
       final data = body['data'];
+
+      if (data is! Map ||
+          data['device_token'] == null ||
+          data['session_id'] == null) {
+        if (!mounted) return;
+
+        setState(() {
+          _error = 'السيرفر أعاد بيانات تسجيل غير صحيحة.';
+          _loading = false;
+        });
+
+        return;
+      }
+
+      final deviceToken = data['device_token'].toString();
+      final sessionId = data['session_id'].toString();
+      final returnedDeviceName =
+          data['device_name']?.toString().isNotEmpty == true
+              ? data['device_name'].toString()
+              : deviceName;
+
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('device_token', data['device_token']);
-      await prefs.setString('session_id', data['session_id']);
-      await prefs.setString('device_name', data['device_name']);
+
+      await prefs.setString('device_token', deviceToken);
+      await prefs.setString('session_id', sessionId);
+      await prefs.setString('device_name', returnedDeviceName);
       await prefs.setBool('is_paired', true);
       // ✅ حفظ بيانات الدخول لتعبئتها تلقائياً في المرة القادمة
       await prefs.setString('saved_username', username);
       await prefs.setString('saved_password', password);
 
+      // لا نحفظ parent_username أو parent_password.
+      await prefs.remove('parent_username');
+      await prefs.remove('parent_password');
+      await prefs.remove('username');
+      await prefs.remove('password');
+
       WakelockPlus.disable();
 
       if (!mounted) return;
+
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => CameraStreamScreen(
-            sessionId: data['session_id'],
-            cameraName: data['device_name'],
-            deviceToken: data['device_token'],
+            sessionId: sessionId,
+            cameraName: returnedDeviceName,
+            deviceToken: deviceToken,
           ),
         ),
       );
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'خطأ: $e';
+        _error = 'تعذر الاتصال بالسيرفر: $e';
         _loading = false;
       });
     }
@@ -169,11 +213,12 @@ class _PairingScreenState extends State<PairingScreen> {
     if (_checkingSavedLogin) {
       return const Scaffold(
         backgroundColor: Color(0xfff1f5ff),
-        body: Center(child: CircularProgressIndicator()),
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
       );
     }
 
-    // ✅ إصلاح: استخدام PopScope بدل WillPopScope المهجور
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, result) {
@@ -191,84 +236,110 @@ class _PairingScreenState extends State<PairingScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(Icons.link, size: 56, color: Colors.blue),
+                  const Icon(
+                    Icons.family_restroom,
+                    size: 60,
+                    color: Colors.blue,
+                  ),
                   const SizedBox(height: 16),
+
                   const Text(
-                    'تسجيل الدخول',
+                    'ربط جهاز الطفل',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  const SizedBox(height: 8),
+
+                  const SizedBox(height: 10),
+
                   const Text(
-                    'أول مرة؟ هتحتاج كود من تطبيق الوالد (شاشة "إضافة '
-                    'جهاز") مرة واحدة بس. بعد كده اسم المستخدم وكلمة '
-                    'المرور هيتحفظوا تلقائيًا على الجهاز ده والمرات '
-                    'الجاية هتدخل مباشرة من غير ما يطلبهم منك تاني.',
+                    'أدخل اسم الجهاز وبيانات حساب الوالد لربط هذا الجهاز بحساب الوالد.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: Colors.black54),
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.black54,
+                    ),
                   ),
+
                   const SizedBox(height: 24),
+
                   TextField(
                     controller: _nameController,
+                    textAlign: TextAlign.center,
                     decoration: const InputDecoration(
                       labelText: 'اسم هذا الجهاز',
+                      hintText: 'مثال: جهاز أحمد',
                       border: OutlineInputBorder(),
                     ),
                   ),
+
                   const SizedBox(height: 12),
+
                   TextField(
-                    controller: _usernameController,
+                    controller: _parentUsernameController,
                     textAlign: TextAlign.center,
+                    autocorrect: false,
                     decoration: const InputDecoration(
-                      labelText: 'اسم المستخدم',
+                      labelText: 'اسم مستخدم الوالد',
                       border: OutlineInputBorder(),
                     ),
                   ),
+
                   const SizedBox(height: 12),
+
                   TextField(
-                    controller: _passwordController,
+                    controller: _parentPasswordController,
                     obscureText: _obscurePassword,
                     textAlign: TextAlign.center,
+                    autocorrect: false,
                     decoration: InputDecoration(
-                      labelText: 'كلمة المرور',
+                      labelText: 'كلمة مرور الوالد',
                       border: const OutlineInputBorder(),
                       suffixIcon: IconButton(
-                        icon: Icon(_obscurePassword
-                            ? Icons.visibility
-                            : Icons.visibility_off),
-                        onPressed: () => setState(
-                            () => _obscurePassword = !_obscurePassword),
+                        icon: Icon(
+                          _obscurePassword
+                              ? Icons.visibility
+                              : Icons.visibility_off,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _obscurePassword = !_obscurePassword;
+                          });
+                        },
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _codeController,
-                    textAlign: TextAlign.center,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'كود من تطبيق الوالد (أول مرة بس)',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
+
                   if (_error != null) ...[
-                    const SizedBox(height: 8),
-                    Text(_error!,
-                        style: const TextStyle(color: Colors.red, fontSize: 13),
-                        textAlign: TextAlign.center),
+                    const SizedBox(height: 12),
+                    Text(
+                      _error!,
+                      style: const TextStyle(
+                        color: Colors.red,
+                        fontSize: 13,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
                   ],
-                  const SizedBox(height: 16),
+
+                  const SizedBox(height: 18),
+
                   ElevatedButton(
-                    onPressed: _loading ? null : _register,
+                    onPressed: _loading ? null : _loginWithParent,
                     style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.all(16)),
+                      padding: const EdgeInsets.all(16),
+                    ),
                     child: _loading
                         ? const SizedBox(
                             height: 20,
                             width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                            ),
                           )
-                        : const Text('دخول'),
+                        : const Text('دخول وربط الجهاز'),
                   ),
                 ],
               ),

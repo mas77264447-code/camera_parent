@@ -641,15 +641,19 @@ app.post("/pairing/claim", async (req, res) => {
 
 app.post("/pairing/register", async (req, res) => {
   const ip = clientIp(req);
-  if (!rateLimit(authAttempts, `register:${ip}`, 12)) {
-    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
+
+  if (!rateLimit(authAttempts, `pairing-register:${ip}`, 12)) {
+    return res.status(429).json({
+      error: "محاولات كثيرة. حاول لاحقًا.",
+    });
   }
   const username = normalizeUsername(req.body && req.body.username);
   const password = req.body && req.body.password ? String(req.body.password) : "";
   const deviceName =
-    (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
-    "جهاز غير مسمى";
-  const code = (req.body && req.body.code ? String(req.body.code) : "").trim();
+    req.body && req.body.device_name &&
+    String(req.body.device_name).trim()
+      ? String(req.body.device_name).trim()
+      : "جهاز الطفل";
 
   if (!username || !password) {
     return res.status(400).json({ error: "لازم تدخل اسم المستخدم وكلمة المرور." });
@@ -801,17 +805,20 @@ app.post("/pairing/register", async (req, res) => {
   const sessionId = crypto.randomBytes(16).toString("hex");
   const deviceToken = crypto.randomBytes(24).toString("hex");
 
+  const now = Date.now();
+
   await redis.set(
     `session:${sessionId}`,
     JSON.stringify({
       name: deviceName,
-      createdAt: Date.now(),
+      createdAt: now,
       ownerToken,
       deviceToken,
       username,
       source: "pairing",
     })
   );
+
   await redis.set(
     `device:${deviceToken}`,
     JSON.stringify({

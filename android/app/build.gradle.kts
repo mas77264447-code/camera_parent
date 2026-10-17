@@ -77,15 +77,8 @@ android {
                 signingConfigs.getByName("debug")
             }
 
-            // ✅ تم تعطيل R8 مؤقتاً لضمان استقرار WebRTC والكاميرا.
-            // إذا أردت تفعيله لاحقاً، غيّر القيم إلى true
-            // وتأكد من وجود ملف proguard-rules.pro
             isMinifyEnabled = false
             isShrinkResources = false
-            // proguardFiles(
-            //     getDefaultProguardFile("proguard-android-optimize.txt"),
-            //     "proguard-rules.pro"
-            // )
         }
     }
 }
