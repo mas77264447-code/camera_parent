@@ -239,10 +239,12 @@ object ForegroundServiceChannel {
             nm.createNotificationChannel(ch)
         }
 
+        // ملاحظة: هذا إشعار تقني لرفع التطبيق للمقدمة فقط (الموافقة محفوظة
+        // مسبقاً ولا تُطلب من جديد) — النص لا يجب أن يوحي بطلب موافقة.
         val notif = NotificationCompat.Builder(ctx, WAKE_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("طلب مشاهدة جديد")
-            .setContentText("جارٍ فتح الكاميرا...")
+            .setContentTitle("تشغيل الكاميرا")
+            .setContentText("جارٍ تفعيل البث المحفوظ مسبقاً...")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setFullScreenIntent(pending, true)

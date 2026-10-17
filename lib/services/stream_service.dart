@@ -1136,59 +1136,68 @@ class StreamService {
       unawaited(_persistConsented());
     }
 
+    // ✅ حارس فعلي: بدون هذا، وصول حدثين متقاربين لنفس المشاهد (إعادة اتصال
+    // سريعة) يُشغّل _startMediaSource/_bringToForeground مرتين متوازيتين،
+    // فتتصادم محاولات رفع النشاط ببعضها وتفشل كلتاهما (شوهد فعلياً في السجلات:
+    // bringToForeground attempt=N مكررة من استدعاءين متداخلين، تنتهي بـ FAILED).
     if (_approvalInFlight.contains(viewerId)) return;
+    _approvalInFlight.add(viewerId);
 
-    final existingPc = _peerConnections[viewerId];
-    if (existingPc != null) {
-      try {
-        final state = await existingPc.getConnectionState();
-        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-          return;
+    try {
+      final existingPc = _peerConnections[viewerId];
+      if (existingPc != null) {
+        try {
+          final state = await existingPc.getConnectionState();
+          if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+            return;
+          }
+        } catch (_) {}
+        try {
+          await existingPc.close();
+        } catch (_) {}
+        _peerConnections.remove(viewerId);
+        _pendingRemoteIceByViewer.remove(viewerId);
+      }
+
+      if (requestedSource != null) {
+        final newScreen = requestedSource == 'screen';
+        final newFiles = requestedSource == 'files';
+
+        if (_broadcastScreen != newScreen && localStream != null) {
+          await _forceCleanupStream();
         }
-      } catch (_) {}
-      try {
-        await existingPc.close();
-      } catch (_) {}
-      _peerConnections.remove(viewerId);
-      _pendingRemoteIceByViewer.remove(viewerId);
-    }
 
-    if (requestedSource != null) {
-      final newScreen = requestedSource == 'screen';
-      final newFiles = requestedSource == 'files';
-
-      if (_broadcastScreen != newScreen && localStream != null) {
-        await _forceCleanupStream();
+        _broadcastScreen = newScreen;
+        _broadcastFiles = newFiles;
       }
 
-      _broadcastScreen = newScreen;
-      _broadcastFiles = newFiles;
-    }
+      if (!_broadcastFiles) {
+        // إصلاح race: اضبط deferred قبل startMediaSource حتى لا تفوت
+        // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
+        _deferredViewerId = viewerId;
+        _deferredCallerName = callerName;
+        _clog('_handleApprovedViewer: viewer=$viewerId localStream='
+            '${localStream == null ? "null" : "exists"}');
 
-    if (!_broadcastFiles) {
-      // إصلاح race: اضبط deferred قبل startMediaSource حتى لا تفوت
-      // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
-      _deferredViewerId = viewerId;
-      _deferredCallerName = callerName;
-      _clog('_handleApprovedViewer: viewer=$viewerId localStream='
-          '${localStream == null ? "null" : "exists"}');
-
-      if (localStream == null) {
-        await _startMediaSource();
+        if (localStream == null) {
+          await _startMediaSource();
+        }
       }
+
+      if (localStream == null && !_broadcastFiles) {
+        debugPrint(
+            '[StreamService] deferring offer to $viewerId until camera is ready');
+        _pendingCameraStart = true;
+        return;
+      }
+
+      _deferredViewerId = null;
+      _deferredCallerName = null;
+
+      await _sendOfferTo(viewerId, callerName);
+    } finally {
+      _approvalInFlight.remove(viewerId);
     }
-
-    if (localStream == null && !_broadcastFiles) {
-      debugPrint(
-          '[StreamService] deferring offer to $viewerId until camera is ready');
-      _pendingCameraStart = true;
-      return;
-    }
-
-    _deferredViewerId = null;
-    _deferredCallerName = null;
-
-    await _sendOfferTo(viewerId, callerName);
   }
 
   bool _hasLiveVideoTrack() {
