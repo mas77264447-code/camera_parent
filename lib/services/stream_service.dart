@@ -69,6 +69,7 @@ class StreamService {
   final Map<String, int> _videoRecoveryAttempts = <String, int>{};
   final Map<String, int> _offerRetries = <String, int>{};
   bool _cameraAcquiredInBackground = false;
+  DateTime? _foregroundedByUsAt; // متى أظهرنا الواجهة نحن (لإعادتها للخلفية)
   int _bgReacquireAttempts = 0; // سقف إعادة الاكتساب التلقائي (يمنع الحلقة)
   _StreamLifecycleObserver? _lifecycleObserver;
   final Set<String> _approvedFileViewers = <String>{};
@@ -637,7 +638,7 @@ class StreamService {
           if (ownerToken != null && ownerToken.isNotEmpty) {
             CryptoService.instance.initialize(ownerToken);
           }
-          _clog('build-marker bringfix-v2 (no-early-camera)');
+          _clog('build-marker bringfix-v3 (foreground-then-back)');
           if (_lastCloseInfo != null) {
             _clog('previous ws ' + _lastCloseInfo!);
             _lastCloseInfo = null;
@@ -1262,11 +1263,19 @@ class StreamService {
         : "جاري تجهيز الكاميرا...");
 
     try {
+      // الكاميرا لا تنتج إطارات بلا واجهة (detached): أظهرها لحظياً قبل الفتح.
+      if (!_broadcastScreen && !await _canOpenCameraNow()) {
+        final ok = await _bringToForeground();
+        _clog('pre-open bringToForeground ok=$ok');
+        if (ok) await Future.delayed(const Duration(milliseconds: 800));
+        if (!_running) return;
+      }
       final stream = _broadcastScreen
           ? await ScreenCaptureService.startScreenCapture()
           : await _acquireCameraWithSilentFallback();
 
       localStream = stream;
+      _scheduleSendToBack();
       _startCameraDiag();
       _localStreamCtrl.add(stream);
       _pendingCameraStart = false;
@@ -1368,6 +1377,27 @@ class StreamService {
     });
   }
 
+  /// بعد أن فتحنا الكاميرا والواجهة ظاهرة بفعلنا: أعد التطبيق للخلفية (paused).
+  /// لا نفعل ذلك إن فتح المستخدم التطبيق بنفسه.
+  void _scheduleSendToBack() {
+    final at = _foregroundedByUsAt;
+    if (at == null ||
+        DateTime.now().difference(at) > const Duration(seconds: 20)) {
+      return;
+    }
+    Future.delayed(const Duration(seconds: 8), () async {
+      if (!_running || _foregroundedByUsAt == null) return;
+      _foregroundedByUsAt = null;
+      try {
+        const ch = MethodChannel('camera_parent/foreground_service');
+        final ok = await ch.invokeMethod<bool>('sendToBack');
+        _clog('sendToBack ok=$ok');
+      } catch (e) {
+        _clog('sendToBack error=$e');
+      }
+    });
+  }
+
   /// يعيد فتح الكاميرا (دون إظهار واجهة) ويعيد إرسال offer لكل المشاهدين.
   Future<void> _reacquireCameraAndReoffer() async {
     if (!_running || _broadcastScreen || _broadcastFiles) return;
@@ -1417,6 +1447,7 @@ class StreamService {
         final st = WidgetsBinding.instance.lifecycleState;
         if (st != null && st != AppLifecycleState.detached) {
           _clog('bringToForeground ok state=$st');
+          _foregroundedByUsAt = DateTime.now();
           return true;
         }
       }

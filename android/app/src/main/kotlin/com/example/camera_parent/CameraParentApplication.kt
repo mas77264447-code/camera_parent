@@ -25,6 +25,15 @@ class CameraParentApplication : Application() {
 
         /** true فقط عندما توجد Activity ظاهرة فعلاً (started). الـ Engine يبقى حياً بدونها. */
         fun isUiVisible(): Boolean = startedActivities.get() > 0
+
+        @Volatile
+        private var topActivityRef: java.lang.ref.WeakReference<Activity>? = null
+
+        /** يُرجع التطبيق للخلفية (شاشة مخفية = paused) دون إغلاقه. */
+        fun sendToBack(): Boolean {
+            val a = topActivityRef?.get() ?: return false
+            return try { a.moveTaskToBack(true) } catch (_: Exception) { false }
+        }
     }
 
     lateinit var flutterEngine: FlutterEngine
@@ -36,6 +45,7 @@ class CameraParentApplication : Application() {
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) {
                 startedActivities.incrementAndGet()
+                topActivityRef = java.lang.ref.WeakReference(activity)
             }
             override fun onActivityStopped(activity: Activity) {
                 if (startedActivities.decrementAndGet() < 0) startedActivities.set(0)

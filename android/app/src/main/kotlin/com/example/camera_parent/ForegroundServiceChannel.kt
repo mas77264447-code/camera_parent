@@ -105,6 +105,10 @@ object ForegroundServiceChannel {
                         result.success(anySuccess)
                     }
 
+                    "sendToBack" -> {
+                        result.success(CameraParentApplication.sendToBack())
+                    }
+
                     "isActivityVisible" -> {
                         result.success(CameraParentApplication.isUiVisible())
                     }
