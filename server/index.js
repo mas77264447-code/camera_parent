@@ -125,6 +125,33 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/signal" });
 
+// السيرفر خلف proxy واحد (منصة الاستضافة). بدون هذا السطر يأخذ req.ip قيمة
+// x-forwarded-for التي يرسلها العميل نفسه، فيتجاوز كل حدود المحاولات.
+app.set("trust proxy", 1);
+
+// Express 4 لا يلتقط أخطاء الدوال async. هذا الغلاف يمرر أي رفض إلى معالج الأخطاء.
+const wrapAsync = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+for (const method of ["get", "post", "delete"]) {
+  const original = app[method].bind(app);
+  app[method] = (path, ...handlers) =>
+    original(
+      path,
+      ...handlers.map((h) => (h.constructor.name === "AsyncFunction" ? wrapAsync(h) : h))
+    );
+}
+
+// يُستخدم لتغليف معالجات WebSocket: أي خطأ (مثل فشل Redis) يُسجَّل ولا يوقف السيرفر
+function safeWs(fn) {
+  return Promise.resolve()
+    .then(fn)
+    .catch((e) => console.error("[ws] handler error:", e && e.message));
+}
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason && reason.message ? reason.message : reason);
+});
+
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
 
@@ -171,11 +198,16 @@ const authAttempts = new Map();
 const wsAttempts = new Map();
 
 function clientIp(req) {
-  return String(
-    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
-  )
-    .split(",")[0]
-    .trim();
+  // طلبات Express: req.ip يحترم trust proxy أعلاه.
+  if (req.ip) return String(req.ip);
+  // طلبات WebSocket (upgrade) لا تمر عبر Express، فنأخذ آخر عنوان أضافه الـ proxy
+  // الموثوق (proxy واحد)، وليس أول قيمة يرسلها العميل.
+  const xff = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (xff.length) return xff[xff.length - 1];
+  return String(req.socket.remoteAddress || "unknown");
 }
 
 function rateLimit(map, key, limit) {
@@ -293,7 +325,12 @@ function closeBroadcasterOf(sessionId) {
 // Admin auth
 // ═══════════════════════════════════════════════════════════
 
+// مُعطَّل افتراضياً. فعّله بـ ADMIN_CLAIM_ENABLED=true لمرة واحدة فقط عند الإعداد الأول،
+// ثم أزله. بدونه أول طالب كان يحصل على المفتاح الرئيسي للسيرفر.
 app.post("/admin/claim", async (req, res) => {
+  if (process.env.ADMIN_CLAIM_ENABLED !== "true") {
+    return res.status(404).json({ error: "not_found" });
+  }
   const ip = clientIp(req);
   if (!rateLimit(authAttempts, `claim:${ip}`, 5)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
@@ -328,7 +365,8 @@ async function isValidOwnerToken(token) {
 
 async function requireAdminToken(req, res, next) {
   try {
-    const provided = req.query.token || req.header("x-admin-token");
+    // الهيدر فقط: التوكن في الرابط يُسجَّل في لوجات الاستضافة وسجل المتصفح
+    const provided = req.header("x-admin-token");
     if (await isValidOwnerToken(provided)) {
       req.ownerToken = provided;
       return next();
@@ -521,7 +559,9 @@ app.post("/pairing/create", requireAdminToken, async (req, res) => {
 async function recordPairingFailure(code, entry) {
   const failures = (entry.failures || 0) + 1;
   if (failures >= MAX_PAIRING_ATTEMPTS_PER_ACCOUNT) {
-    return; // الكود احترق بالفعل في getdel، لا نعيده
+    // نحرق الكود فعلياً، وإلا يبقى صالحاً حتى تنتهي مدته مهما كثرت المحاولات
+    await redis.del(`pairing:${code}`);
+    return;
   }
   await redis.set(
     `pairing:${code}`,
@@ -883,7 +923,7 @@ wss.on("connection", (ws, req) => {
     if (c) c.lastMessageAt = Date.now();
   });
 
-  ws.on("message", async (raw) => {
+  ws.on("message", (raw) => safeWs(async () => {
     let msg;
     try { msg = JSON.parse(raw); } catch (_) { return; }
 
@@ -1319,7 +1359,7 @@ wss.on("connection", (ws, req) => {
       }
       return;
     }
-  });
+  }));
 
   ws.on("close", (code) => {
     console.log(`[ws] close role=${clients[clientId]?.role} code=${code}`);
