@@ -67,6 +67,7 @@ class StreamService {
   final Set<String> _offerInFlight = <String>{};
   final Set<String> _recoveringViewers = <String>{};
   final Map<String, int> _videoRecoveryAttempts = <String, int>{};
+  final Map<String, int> _offerRetries = <String, int>{};
   bool _cameraAcquiredInBackground = false;
   _StreamLifecycleObserver? _lifecycleObserver;
   final Set<String> _approvedFileViewers = <String>{};
@@ -1456,7 +1457,15 @@ class StreamService {
       final offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      if (_ws == null || _ws!.readyState != WebSocket.open) return;
+      if (_ws == null || _ws!.readyState != WebSocket.open) {
+        // لا نترك PC ميتاً في حالة New بلا offer مرسل.
+        _clog('offer NOT sent: ws not open viewer=$viewerId');
+        _peerConnections.remove(viewerId);
+        try {
+          await pc.close();
+        } catch (_) {}
+        return;
+      }
 
       _ws!.add(jsonEncode({
         'type': 'offer',
@@ -1464,6 +1473,7 @@ class StreamService {
         'target': viewerId,
         'sdp': offer.sdp,
       }));
+      _clog('offer sent viewer=$viewerId fg=${WidgetsBinding.instance.lifecycleState}');
 
       _callerNames[viewerId] = callerName;
       _activeViewerId = viewerId;
@@ -1493,10 +1503,27 @@ class StreamService {
         check--;
         if (!_running || _peerConnections[viewerId] != pc) return;
         final waited = _videoRecoveryAttempts['wait:$viewerId'] ?? 0;
+        // التفاوض عالق (الـ offer أو الـ answer ضاع): أعد إرسال offer جديد.
+        final retries = _offerRetries[viewerId] ?? 0;
+        if (waited >= 2 && retries < 3) {
+          _offerRetries[viewerId] = retries + 1;
+          _clog('negotiation stuck state=${pc.connectionState} — '
+              're-sending offer (retry ${retries + 1}/3) viewer=$viewerId');
+          final callerName = _callerNames[viewerId] ?? 'Unknown';
+          _peerConnections.remove(viewerId);
+          _pendingRemoteIceByViewer.remove(viewerId);
+          try {
+            await pc.close();
+          } catch (_) {}
+          if (!_running) return;
+          await _sendOfferTo(viewerId, callerName);
+          return;
+        }
         if (waited > 10) return;
         _videoRecoveryAttempts['wait:$viewerId'] = waited + 1;
         continue;
       }
+      _offerRetries.remove(viewerId);
 
       int frames = 0;
       try {
@@ -1590,7 +1617,11 @@ class StreamService {
     final sdp = data['sdp'] as String?;
     if (viewerId == null || sdp == null) return;
     final pc = _peerConnections[viewerId];
-    if (pc == null) return;
+    if (pc == null) {
+      _clog('answer ignored: no pc for viewer=$viewerId');
+      return;
+    }
+    _clog('answer received viewer=$viewerId');
     try {
       await pc.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
 

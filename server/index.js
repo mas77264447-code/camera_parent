@@ -1165,9 +1165,16 @@ wss.on("connection", (ws, req) => {
         client.role !== "broadcaster" ||
         !liveSession ||
         liveSession.broadcaster !== clientId
-      ) return;
+      ) {
+        console.log(`[offer] dropped: not current broadcaster role=${client.role} live=${!!liveSession}`);
+        return;
+      }
       const viewerInfo = liveSession.viewers.get(msg.viewerId);
-      if (!viewerInfo || !viewerInfo.approved) return;
+      if (!viewerInfo || !viewerInfo.approved) {
+        console.log(`[offer] dropped: viewer unknown/unapproved key=${String(msg.viewerId).slice(0, 8)} known=${!!viewerInfo}`);
+        return;
+      }
+      console.log(`[offer] relay to viewer key=${String(msg.viewerId).slice(0, 8)} clientId=${viewerInfo.currentClientId ? "yes" : "NONE"}`);
       sendToViewer(liveSession, msg.viewerId, {
         type: "offer",
         sdp: msg.sdp,
