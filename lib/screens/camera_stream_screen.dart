@@ -30,7 +30,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
   bool _renderersReady = false;
-  bool _showLocalPreview = true;
+  bool _showLocalPreview = false;
 
   StreamSubscription? _statusSub;
   StreamSubscription? _callersSub;
@@ -46,10 +46,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   MediaStream? _activeRemote;
   MediaStream? _local;
 
-  // ✅ إصلاح حرج: منع ظهور نافذة الموافقة أكثر من مرة لنفس المشاهد
-  // (كانت السبب الرئيسي في حلقة "وافقت → رجعت ظهرت → وهكذا").
-  final Set<String> _dialogsShownFor = <String>{};
-
   @override
   void initState() {
     super.initState();
@@ -58,6 +54,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   }
 
   Future<void> _init() async {
+    // 1) صلاحيات
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
     await Permission.notification.request();
@@ -67,6 +64,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       return;
     }
 
+    // 2) Renderers
     try {
       await _localRenderer.initialize();
       await _remoteRenderer.initialize();
@@ -92,86 +90,56 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     _pendingSub = _svc.onPendingRequests.listen((p) {
       if (!mounted) return;
       setState(() => _pending = p);
-      _maybeShowApprovalDialog();
     });
     _mediaSub = _svc.onRemoteMedia.listen((s) {
       if (mounted) setState(() => _activeRemote = s);
     });
     _localSub = _svc.onLocalStream.listen((s) {
-      if (!mounted) return;
-      setState(() => _local = s);
-      if (_showLocalPreview && _renderersReady) {
-        _localRenderer.srcObject = s;
-      }
+      if (mounted) setState(() => _local = s);
     });
 
+    // 4) ابدأ الـ Service
     await _svc.start(
       sessionId: widget.sessionId,
       deviceToken: widget.deviceToken,
       cameraName: widget.cameraName,
     );
+  }
 
-    // بعد إعادة تشغيل التطبيق تكون الخدمة جديدة ولا يوجد بث قديم؛
-    // ابدأ الكاميرا فوراً ولا تنتظر طلب مشاهدة من الوالد.
-    await _svc.ensureCameraStarted();
-    if (mounted) {
-      final current = _svc.localStream;
-      setState(() => _local = current);
-      if (_showLocalPreview && _renderersReady) {
-        _localRenderer.srcObject = current;
+  Future<void> _showApprovalDialog() async {
+    final entries = _pending.entries.toList();
+    for (final e in entries) {
+      final callerName = e.value;
+      if (!mounted) return;
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text("طلب اتصال"),
+          content: Text("$callerName يطلب مشاهدة الجهاز.\nهل توافق؟"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text("رفض"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text("موافقة"),
+            ),
+          ],
+        ),
+      );
+      if (approved == true) {
+        await _svc.approvePendingViewer(e.key, "camera");
+      } else {
+        _svc.rejectPendingViewer(e.key);
       }
-    }
-  }
-
-  /// ✅ إصلاح: تعرض النافذة لمشاهد واحد فقط في كل مرة، وتتجاهل أي مشاهد
-  /// سبق أن عرضنا له نافذة الموافقة (لمنع التكرار).
-  Future<void> _maybeShowApprovalDialog() async {
-    // تنظيف المشاهدين الذين غادروا
-    _dialogsShownFor.removeWhere((id) => !_pending.containsKey(id));
-
-    for (final e in _pending.entries.toList()) {
-      if (_dialogsShownFor.contains(e.key)) continue;
-      _dialogsShownFor.add(e.key);
-      await _showApprovalDialogFor(e.key, e.value);
-    }
-  }
-
-  Future<void> _showApprovalDialogFor(String viewerId, String callerName) async {
-    if (!mounted) return;
-
-    final approved = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Text("طلب اتصال"),
-        content: Text("$callerName يطلب مشاهدة الجهاز.\nهل توافق؟"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text("رفض"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text("موافقة"),
-          ),
-        ],
-      ),
-    );
-
-    if (!mounted) return;
-
-    // احذف من السجل لأننا انتهينا من هذه النافذة
-    _dialogsShownFor.remove(viewerId);
-
-    if (approved == true) {
-      await _svc.approvePendingViewer(viewerId, "camera");
-    } else {
-      _svc.rejectPendingViewer(viewerId);
     }
   }
 
   @override
   void dispose() {
+    // ⚠️ مهم: لا نوقف StreamService هنا.
+    // الخدمة تستمر في العمل بالخلفية.
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
