@@ -69,6 +69,7 @@ class StreamService {
   final Map<String, int> _videoRecoveryAttempts = <String, int>{};
   final Map<String, int> _offerRetries = <String, int>{};
   bool _cameraAcquiredInBackground = false;
+  int _bgReacquireAttempts = 0; // سقف إعادة الاكتساب التلقائي (يمنع الحلقة)
   _StreamLifecycleObserver? _lifecycleObserver;
   final Set<String> _approvedFileViewers = <String>{};
 
@@ -203,8 +204,8 @@ class StreamService {
 
     await _connectWebSocket();
 
-    // بعد إعادة التشغيل: افتح الكاميرا فوراً، فيتصل المشاهد المعتمد مباشرة.
-    unawaited(ensureCameraStarted());
+    // ملاحظة: لا نفتح الكاميرا هنا. الفتح المبكر (قبل اكتمال startForeground بنوع camera)
+    // يعطي track بلا إطارات (encoded=0). تُفتح عند وصول مشاهد معتمد (_handleApprovedViewer).
   }
 
   Future<void> _requestOverlayPermissionOnce(MethodChannel channel) async {
@@ -300,6 +301,7 @@ class StreamService {
     // ✅ تصفير حالات الانتظار
     _pendingCameraStart = false;
     _foregroundRequestInFlight = false;
+    _bgReacquireAttempts = 0;
     _deferredViewerId = null;
     _deferredCallerName = null;
 
@@ -635,7 +637,7 @@ class StreamService {
           if (ownerToken != null && ownerToken.isNotEmpty) {
             CryptoService.instance.initialize(ownerToken);
           }
-          _clog('build-marker bringfix-v1 (0737b84+marker)');
+          _clog('build-marker bringfix-v2 (no-early-camera)');
           if (_lastCloseInfo != null) {
             _clog('previous ws ' + _lastCloseInfo!);
             _lastCloseInfo = null;
@@ -719,10 +721,31 @@ class StreamService {
 
     final old = _peerConnections.remove(viewerId);
     _pendingRemoteIceByViewer.remove(viewerId);
+
+    // اقرأ الإطارات المرمّزة قبل إغلاق الاتصال: إن كانت صفراً فالكاميرا ميتة.
+    var cameraDead = false;
+    if (old != null && !_broadcastScreen && !_broadcastFiles) {
+      try {
+        for (final r in await old.getStats()) {
+          if (r.type != 'outbound-rtp') continue;
+          final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
+          if (kind != 'video') continue;
+          final n = int.tryParse(
+                  '${r.values['framesEncoded'] ?? 0}'.split('.').first) ??
+              0;
+          cameraDead = n == 0;
+        }
+      } catch (_) {}
+    }
     try {
       await old?.close();
     } catch (_) {}
 
+    if (cameraDead && localStream != null && _peerConnections.isEmpty) {
+      _clog('restart-ice: encoded=0 — re-acquiring camera viewer=$viewerId');
+      await _forceCleanupStream();
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
     if (localStream == null || !_hasLiveVideoTrack()) {
       if (!(_broadcastScreen && _keepScreenStreamAlive && localStream != null)) {
         await _forceCleanupStream();
@@ -1306,6 +1329,11 @@ class StreamService {
     int best = -1;
     for (final pc in List<RTCPeerConnection>.from(_peerConnections.values)) {
       try {
+        // اتصال لم يكتمل بعد: لا نحكم على الإطارات (تفادي إنذار كاذب).
+        if (pc.connectionState !=
+            RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          continue;
+        }
         final reports = await pc.getStats();
         for (final r in reports) {
           if (r.type != 'outbound-rtp') continue;
@@ -1330,10 +1358,36 @@ class StreamService {
       }
       final encoded = await _maxVideoFramesEncoded();
       _clog('bg frame check encoded=$encoded');
-      if (encoded == 0) {
-        await _bringToForeground();
+      if (encoded > 0) {
+        _bgReacquireAttempts = 0;
+      } else if (encoded == 0 && _bgReacquireAttempts < 2) {
+        _bgReacquireAttempts++;
+        _clog('bg frame check: no frames — re-acquire attempt $_bgReacquireAttempts/2');
+        await _reacquireCameraAndReoffer();
       }
     });
+  }
+
+  /// يعيد فتح الكاميرا (دون إظهار واجهة) ويعيد إرسال offer لكل المشاهدين.
+  Future<void> _reacquireCameraAndReoffer() async {
+    if (!_running || _broadcastScreen || _broadcastFiles) return;
+    final viewers = <String, String>{
+      for (final k in _peerConnections.keys) k: _callerNames[k] ?? 'Unknown',
+    };
+    for (final pc in List<RTCPeerConnection>.from(_peerConnections.values)) {
+      try {
+        await pc.close();
+      } catch (_) {}
+    }
+    _peerConnections.clear();
+    _pendingRemoteIceByViewer.clear();
+    await _forceCleanupStream();
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _startMediaSource();
+    if (!_running || localStream == null) return;
+    for (final e in viewers.entries) {
+      await _sendOfferTo(e.key, e.value);
+    }
   }
 
   /// يُظهر واجهة التطبيق عندما لا توجد واجهة أصلاً (الحالة detached بعد إغلاق X).

@@ -151,7 +151,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   void _startVideoFrameWatchdog() {
     _videoFrameWatchdog?.cancel();
     _videoStallChecks = 0;
-    _stallIceRestartTried = false;
+    // لا نُصفّر _stallIceRestartTried هنا: كل offer جديد كان يعيد تشغيل المؤقت
+    // فتتكرر الدورة (طلب restart كل ~10 ثوانٍ بلا نهاية). يُصفّر فقط عند ظهور الفيديو.
 
     _videoFrameWatchdog = Timer.periodic(const Duration(seconds: 2), (timer) {
       if (_disposed || !mounted) {
@@ -166,6 +167,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       if (stream.getVideoTracks().isEmpty) return;
 
       if (_remoteRenderer.videoWidth > 0) {
+        _stallIceRestartTried = false;
         debugPrint('[Watchdog] video OK ${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}');
         if (mounted) setState(() => _status = "متصل ✓");
         timer.cancel();
