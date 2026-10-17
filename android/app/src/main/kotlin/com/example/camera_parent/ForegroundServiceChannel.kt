@@ -242,7 +242,7 @@ object ForegroundServiceChannel {
         val notif = NotificationCompat.Builder(ctx, WAKE_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("طلب مشاهدة جديد")
-            .setContentText("جارٍ فتح الكاميرا...")
+            .setContentText("اضغط هنا لتشغيل الكاميرا")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setFullScreenIntent(pending, true)
@@ -253,8 +253,7 @@ object ForegroundServiceChannel {
 
         nm.notify(WAKE_NOTIFICATION_ID, notif)
 
-        Handler(Looper.getMainLooper()).postDelayed({
-            try { nm.cancel(WAKE_NOTIFICATION_ID) } catch (_: Exception) {}
-        }, 5000L)
+        // لا نلغي الإشعار تلقائياً: هو التنبيه الوحيد لفتح الكاميرا بعد إعادة التشغيل.
+        // يُلغى عند فتح التطبيق فعلاً (onResume).
     }
 }

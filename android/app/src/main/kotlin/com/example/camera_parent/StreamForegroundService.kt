@@ -1,5 +1,6 @@
 package com.example.camera_parent
 
+import android.Manifest
 import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -7,6 +8,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
@@ -16,6 +18,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 
 class StreamForegroundService : Service() {
 
@@ -36,13 +39,54 @@ class StreamForegroundService : Service() {
         private const val START_AGENT_DELAY_MS = 2500L
         private const val RESTART_ALARM_DELAY_MS = 3000L
         private const val RESTART_REQUEST_CODE = 4822
+
+        private const val TAG = "CameraParent"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var foregroundStarted = false
+    private var retryIndex = 0
     private val handler = Handler(Looper.getMainLooper())
+
     private val startAgentRunnable = Runnable {
-        if (!isStopped()) FlutterServiceBridge.startAgent()
+        if (isStopped()) {
+            Log.i(TAG, "startAgent skipped: service stopped")
+            return@Runnable
+        }
+
+        val ready = try {
+            FlutterServiceBridge.isAgentReady()
+        } catch (e: Throwable) {
+            Log.w(TAG, "isAgentReady() threw, assuming not ready", e)
+            false
+        }
+
+        if (!ready) {
+            Log.w(TAG, "Flutter agent not ready yet (attempt ${retryIndex + 1})")
+            scheduleAgentRetry()
+            return@Runnable
+        }
+
+        try {
+            FlutterServiceBridge.startAgent()
+            retryIndex = 0
+            Log.i(TAG, "Flutter agent startAgent() invoked successfully")
+        } catch (e: Throwable) {
+            Log.e(TAG, "startAgent() failed, will retry", e)
+            scheduleAgentRetry()
+        }
+    }
+
+    private fun scheduleAgentRetry() {
+        if (retryIndex >= RETRY_DELAYS_MS.size) {
+            Log.e(TAG, "All agent retries exhausted. Camera stream will not start.")
+            return
+        }
+        val delay = RETRY_DELAYS_MS[retryIndex]
+        retryIndex++
+        handler.removeCallbacks(startAgentRunnable)
+        handler.postDelayed(startAgentRunnable, delay)
+        Log.i(TAG, "Scheduled agent retry #$retryIndex in ${delay}ms")
     }
 
     override fun onCreate() {
@@ -54,10 +98,13 @@ class StreamForegroundService : Service() {
         val action = intent?.action ?: ACTION_START
 
         if (action == ACTION_STOP) {
+            Log.i(TAG, "Stop action received")
             setEnabled(false)
             handler.removeCallbacks(startAgentRunnable)
             cancelRestartAlarm()
-            FlutterServiceBridge.stopAgent()
+            try { FlutterServiceBridge.stopAgent() } catch (e: Throwable) {
+                Log.w(TAG, "stopAgent() failed", e)
+            }
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -86,8 +133,9 @@ class StreamForegroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            Log.i(TAG, "Foreground started, mode=$mode")
         } catch (e: Exception) {
-            Log.e("CameraParent", "startForeground failed mode=$mode", e)
+            Log.e(TAG, "startForeground failed mode=$mode", e)
             if (foregroundStarted) {
                 return START_STICKY
             }
@@ -102,8 +150,32 @@ class StreamForegroundService : Service() {
 
         handler.removeCallbacks(startAgentRunnable)
         handler.postDelayed(startAgentRunnable, START_AGENT_DELAY_MS)
+        Log.i(TAG, "Agent start scheduled in ${START_AGENT_DELAY_MS}ms")
 
         return START_STICKY
+    }
+
+    private fun hasRequiredPermissions(mode: String): Boolean {
+        val needsCamera = mode == MODE_CAMERA
+        val needsMic = mode == MODE_CAMERA || mode == MODE_MICROPHONE
+
+        if (needsCamera &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "CAMERA permission not granted")
+            return false
+        }
+
+        if (needsMic &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "RECORD_AUDIO permission not granted")
+            return false
+        }
+
+        return true
     }
 
     private fun setEnabled(enabled: Boolean) {
@@ -154,14 +226,19 @@ class StreamForegroundService : Service() {
                 SystemClock.elapsedRealtime() + RESTART_ALARM_DELAY_MS,
                 restartPendingIntent()
             )
+            Log.i(TAG, "Restart alarm scheduled in ${RESTART_ALARM_DELAY_MS}ms")
         } catch (e: Exception) {
-            Log.w("CameraParent", "scheduleRestartAlarm failed", e)
+            Log.w(TAG, "scheduleRestartAlarm failed", e)
         }
     }
 
     private fun cancelRestartAlarm() {
-        val am = getSystemService(ALARM_SERVICE) as AlarmManager
-        am.cancel(restartPendingIntent())
+        try {
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            am.cancel(restartPendingIntent())
+        } catch (e: Exception) {
+            Log.w(TAG, "cancelRestartAlarm failed", e)
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -177,6 +254,7 @@ class StreamForegroundService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(startAgentRunnable)
         releaseWakeLock()
+        Log.i(TAG, "onDestroy: service destroyed")
         super.onDestroy()
     }
 

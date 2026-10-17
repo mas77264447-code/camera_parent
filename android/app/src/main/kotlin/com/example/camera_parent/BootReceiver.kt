@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import androidx.core.content.ContextCompat
 
 class BootReceiver : BroadcastReceiver() {
 
@@ -79,6 +80,7 @@ class BootReceiver : BroadcastReceiver() {
                 context.startService(service)
             }
 
+            ContextCompat.startForegroundService(context, service)
             ServiceWatchdog.scheduleNext(context, 60_000L)
         } catch (e: Exception) {
             Log.w(TAG, "Boot: FGS start failed: ${e.message}")

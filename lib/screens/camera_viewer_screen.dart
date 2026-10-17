@@ -32,6 +32,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   WebSocket? _ws;
   String? _broadcasterId;
   String _status = "جاري الاتصال...";
+  Timer? _offerTimer;
   bool _remoteAudioMuted = false;
 
   bool _textureRefreshedForThisTrack = false;
@@ -798,6 +799,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
+    _offerTimer?.cancel();
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
     _diagTimer?.cancel();

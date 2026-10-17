@@ -87,6 +87,7 @@ async function redisCommand(...args) {
 }
 
 const redis = {
+  // get: يرجع null عند الخطأ (سلوك قديم محفوظ)
   async get(k) {
     const v = await redisCommand("GET", k);
     return v ?? null;
@@ -95,6 +96,11 @@ const redis = {
     const v = await redisCommand("GETDEL", k);
     return v ?? null;
   },
+  // getStrict: يرمي عند فشل القراءة — يُستخدم حيث يكون الخطأ خطيراً (التسجيل)
+  async getStrict(k) {
+    return (await redisCommand("GET", String(k))) || null;
+  },
+  // set(k, v, { ex, nx }) — nx: يكتب فقط إذا لم يكن موجوداً
   async set(k, v, opts) {
     const value = typeof v === "string" ? v : JSON.stringify(v);
     const args = ["SET", k, value];
@@ -122,8 +128,14 @@ const redis = {
 // ═══════════════════════════════════════════════════════════
 
 const app = express();
+// نثق بـ proxy واحد فقط (Render)، حتى لا يستطيع العميل تزوير X-Forwarded-For
+app.set("trust proxy", Number(process.env.TRUST_PROXY || 1));
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal" });
+const wss = new WebSocketServer({
+  server,
+  path: "/signal",
+  maxPayload: 1024 * 1024, // 1MB: أكبر من أي رسالة مشروعة (chunk ≈ 67KB)
+});
 
 // السيرفر خلف proxy واحد (منصة الاستضافة). بدون هذا السطر يأخذ req.ip قيمة
 // x-forwarded-for التي يرسلها العميل نفسه، فيتجاوز كل حدود المحاولات.
@@ -1157,6 +1169,21 @@ wss.on("connection", (ws, req) => {
       client.role = null;
       client.viewerKey = null;
       try { client.ws.close(1000, "left"); } catch (_) {}
+      return;
+    }
+
+    if (msg.type === "viewer-status") {
+      const liveSession = live[client.sessionId];
+      if (
+        client.role !== "broadcaster" ||
+        !liveSession ||
+        liveSession.broadcaster !== clientId
+      ) return;
+      if (!liveSession.viewers.get(msg.target)) return;
+      sendToViewer(liveSession, msg.target, {
+        type: "viewer-status",
+        status: String(msg.status || ""),
+      });
       return;
     }
 

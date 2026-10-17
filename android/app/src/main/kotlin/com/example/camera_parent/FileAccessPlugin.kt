@@ -238,7 +238,7 @@ object FileAccessPlugin {
         }
 
         val dir = File(requestedPath)
-        if (!dir.exists() || !dir.isDirectory) {
+        if (!isAllowedLocalPath(requestedPath) || !dir.exists() || !dir.isDirectory) {
             result.success(mapOf(
                 "path" to requestedPath,
                 "parent" to "/",
@@ -437,6 +437,10 @@ object FileAccessPlugin {
             }
             result.error("NOT_FOUND", "الملف غير موجود", null)
         } else {
+            if (!isAllowedLocalPath(uriString)) {
+                result.error("PERMISSION_DENIED", "المسار خارج المسموح", null)
+                return
+            }
             val f = File(uriString)
             if (!f.exists()) {
                 result.error("NOT_FOUND", "الملف غير موجود", null)
@@ -470,6 +474,10 @@ object FileAccessPlugin {
                 CameraParentApplication.appContext()
                     ?.contentResolver?.openInputStream(uri)
             } else {
+                if (!isAllowedLocalPath(uriString)) {
+                    result.error("PERMISSION_DENIED", "المسار خارج المسموح", null)
+                    return
+                }
                 val f = File(uriString)
                 if (!f.exists() || f.isDirectory) null else FileInputStream(f)
             }
@@ -492,8 +500,16 @@ object FileAccessPlugin {
                 skipped += s
             }
 
-            val buffer = ByteArray(length)
-            val read = input.read(buffer)
+            // حد أعلى للحجم حتى لا يُنشأ مصفوفة ضخمة من طلب واحد
+            val size = length.coerceIn(1, 1024 * 1024)
+            val buffer = ByteArray(size)
+            // نكرر القراءة حتى تمتلئ المصفوفة أو نصل للنهاية، لأن read() الواحدة قد ترجع أقل
+            var read = 0
+            while (read < size) {
+                val n = input.read(buffer, read, size - read)
+                if (n < 0) break
+                read += n
+            }
 
             if (read <= 0) {
                 result.success(mapOf("eof" to true, "data" to ""))
@@ -502,7 +518,7 @@ object FileAccessPlugin {
 
             val b64 = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP)
             result.success(mapOf(
-                "eof" to (read < length),
+                "eof" to (read < size),
                 "data" to b64,
                 "bytesRead" to read
             ))
@@ -585,3 +601,20 @@ object FileAccessPlugin {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════
+// مسارات الملفات المسموحة: التخزين المشترك فقط.
+// بيانات التطبيق الخاصة (مثل shared_prefs والتوكنات) موجودة في /data/data
+// وتُرفض تلقائياً لأنها خارج هذا الجذر. أي مسار يُحل إلى خارج الجذر
+// (بما في ذلك عبر ../ أو symlink) يُرفض.
+// ═══════════════════════════════════════════════════════════
+private fun isAllowedLocalPath(path: String): Boolean {
+    return try {
+        val root = android.os.Environment.getExternalStorageDirectory().canonicalPath
+        val target = File(path).canonicalPath
+        target == root || target.startsWith("$root/")
+    } catch (e: Exception) {
+        false
+    }
+}
+

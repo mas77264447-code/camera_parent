@@ -283,10 +283,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
 
   void _preview(String uri, String name, String mime) {
     if (_ws?.readyState != WebSocket.open || !_approved) return;
-    if (!CryptoService.instance.isInitialized) {
-      setState(() => _status = 'E2E غير مُهيَّأ');
-      return;
-    }
     final requestId = _uid();
     setState(() {
       _transfers[requestId] = _TransferState(
@@ -307,10 +303,6 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
 
   Future<void> _startDownload(String uri, String name, String mime) async {
     if (_ws?.readyState != WebSocket.open || !_approved) return;
-    if (!CryptoService.instance.isInitialized) {
-      setState(() => _status = 'E2E غير مُهيَّأ');
-      return;
-    }
     final dest = await _askSaveLocation(name);
     if (dest == null) return;
 
@@ -499,6 +491,21 @@ class _DeviceFilesScreenState extends State<DeviceFilesScreen>
     final state = _transfers[requestId];
     if (state == null) return;
     if (state.canceled) return;
+
+    // الطرف الآخر أبلغ عن خطأ أو قراءة غير مكتملة: لا نحفظ ملفاً مبتوراً
+    if (endMsg['error'] != null) {
+      await state.sink?.close();
+      state.sink = null;
+      if (state.tempFile != null && await state.tempFile!.exists()) {
+        await state.tempFile!.delete();
+      }
+      if (!mounted) return;
+      setState(() => _transfers.remove(requestId));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('فشل التحميل: الملف لم يُقرأ كاملاً')),
+      );
+      return;
+    }
 
     if (state.mode == TransferMode.preview) {
       final builder = BytesBuilder();

@@ -96,9 +96,15 @@ class _HomeScreenState extends State<HomeScreen> {
       _authError = null;
     });
 
-    final token = register
-        ? await CameraService.parentRegister(username, password)
-        : await CameraService.parentLogin(username, password);
+    String? token;
+    try {
+      token = register
+          ? await CameraService.parentRegister(username, password)
+          : await CameraService.parentLogin(username, password);
+    } catch (e) {
+      // أي فشل شبكي أو رد غير متوقع: نُعيد الواجهة لحالتها الطبيعية بدل التعليق
+      token = null;
+    }
 
     if (token == null || token.isEmpty) {
       setState(() {

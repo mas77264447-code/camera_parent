@@ -29,6 +29,41 @@ object FlutterServiceBridge {
 
     private var retryCount = 0
 
+    private val retryRunnable = Runnable {
+        synchronized(lock) {
+            if (agentRunning) {
+                startInFlight = false
+                return@synchronized
+            }
+            attemptStartLocked()
+        }
+    }
+
+    fun isAgentReady(): Boolean {
+        synchronized(lock) {
+            if (agentRunning) return true
+
+            val engine = ensureEngine() ?: run {
+                Log.d(TAG, "isAgentReady: no engine")
+                return false
+            }
+
+            val dartReady = try {
+                engine.dartExecutor.isExecutingDart
+            } catch (e: Throwable) {
+                Log.w(TAG, "isAgentReady: dartExecutor check failed", e)
+                false
+            }
+
+            if (!dartReady) {
+                Log.d(TAG, "isAgentReady: engine present but Dart not executing yet")
+            }
+            return dartReady
+        }
+    }
+
+    fun isAgentRunning(): Boolean = agentRunning
+
     fun startAgent() {
         synchronized(lock) {
             if (agentRunning) {
@@ -42,6 +77,7 @@ object FlutterServiceBridge {
             }
 
             startInFlight = true
+            retryCount = 0
             attemptStartLocked()
         }
     }
@@ -51,6 +87,16 @@ object FlutterServiceBridge {
 
         if (engine == null) {
             scheduleRetryLocked("FlutterEngine not ready")
+            return
+        }
+
+        val dartReady = try {
+            engine.dartExecutor.isExecutingDart
+        } catch (e: Throwable) {
+            false
+        }
+        if (!dartReady) {
+            scheduleRetryLocked("Dart isolate not executing yet")
             return
         }
 
@@ -101,7 +147,7 @@ object FlutterServiceBridge {
             Log.e(TAG, "startAgent invoke failed", e)
             synchronized(lock) {
                 agentRunning = false
-                scheduleRetryLocked("exception")
+                scheduleRetryLocked("exception: ${e.message}")
             }
         }
     }
@@ -124,23 +170,13 @@ object FlutterServiceBridge {
                 "${RETRY_DELAY_MS}ms. reason=$reason"
         )
 
-        mainHandler.postDelayed(
-            {
-                synchronized(lock) {
-                    if (agentRunning) {
-                        startInFlight = false
-                        return@synchronized
-                    }
-                    attemptStartLocked()
-                }
-            },
-            RETRY_DELAY_MS
-        )
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS)
     }
 
     fun stopAgent() {
         synchronized(lock) {
-            mainHandler.removeCallbacksAndMessages(null)
+            mainHandler.removeCallbacks(retryRunnable)
 
             if (!agentRunning && currentChannel == null) {
                 startInFlight = false
