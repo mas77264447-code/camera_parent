@@ -100,29 +100,13 @@ object ForegroundServiceChannel {
                             Log.w(TAG, "startActivity failed: ${e.message}")
                         }
 
-                        // محاولة 2: Full-Screen Intent
-                        try {
-                            val canFSI = if (Build.VERSION.SDK_INT >= 34) {
-                                try {
-                                    val nm = appContext.getSystemService(
-                                        Context.NOTIFICATION_SERVICE
-                                    ) as NotificationManager
-                                    nm.canUseFullScreenIntent()
-                                } catch (_: Exception) { false }
-                            } else true
-
-                            if (canFSI) {
-                                showFullScreenWakeNotification(appContext)
-                                Log.i(TAG, "full-screen wake posted")
-                                anySuccess = true
-                            } else {
-                                Log.w(TAG, "FSI not permitted")
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "full-screen failed: ${e.message}")
-                        }
+                        // لا نُنشر أي إشعار "طلب مشاهدة": الموافقة محفوظة، والفتح صامت.
 
                         result.success(anySuccess)
+                    }
+
+                    "isActivityVisible" -> {
+                        result.success(CameraParentApplication.isUiVisible())
                     }
 
                     "canUseFullScreenIntent" -> {

@@ -53,7 +53,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   @override
   void initState() {
     super.initState();
-    _svc.uiMounted = true;
     WakelockPlus.enable();
     _init();
   }
@@ -173,7 +172,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
   @override
   void dispose() {
-    _svc.uiMounted = false;
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();

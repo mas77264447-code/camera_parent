@@ -1,6 +1,9 @@
 package com.example.camera_parent
 
+import android.app.Activity
 import android.app.Application
+import android.os.Bundle
+import java.util.concurrent.atomic.AtomicInteger
 import android.content.Context
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
@@ -17,6 +20,11 @@ class CameraParentApplication : Application() {
         private var appContext: Context? = null
 
         fun appContext(): Context? = appContext
+
+        private val startedActivities = AtomicInteger(0)
+
+        /** true فقط عندما توجد Activity ظاهرة فعلاً (started). الـ Engine يبقى حياً بدونها. */
+        fun isUiVisible(): Boolean = startedActivities.get() > 0
     }
 
     lateinit var flutterEngine: FlutterEngine
@@ -25,6 +33,19 @@ class CameraParentApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         appContext = applicationContext
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                startedActivities.incrementAndGet()
+            }
+            override fun onActivityStopped(activity: Activity) {
+                if (startedActivities.decrementAndGet() < 0) startedActivities.set(0)
+            }
+            override fun onActivityCreated(a: Activity, b: Bundle?) {}
+            override fun onActivityResumed(a: Activity) {}
+            override fun onActivityPaused(a: Activity) {}
+            override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
+            override fun onActivityDestroyed(a: Activity) {}
+        })
         ensureEngine()
     }
 

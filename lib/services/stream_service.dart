@@ -201,6 +201,9 @@ class StreamService {
     } catch (_) {}
 
     await _connectWebSocket();
+
+    // بعد إعادة التشغيل: افتح الكاميرا فوراً، فيتصل المشاهد المعتمد مباشرة.
+    unawaited(ensureCameraStarted());
   }
 
   Future<void> _requestOverlayPermissionOnce(MethodChannel channel) async {
@@ -398,20 +401,22 @@ class StreamService {
     } catch (_) {}
   }
 
-  /// تضبطه شاشة الكاميرا عند ظهورها. عند الإقلاع البارد قد تكون حالة
-  /// lifecycleState مساوية null/inactive/detached رغم أن الواجهة ظاهرة فعلاً،
-  /// فكان الكود يظن أن التطبيق في الخلفية ويُطلق إشعار "طلب مشاهدة جديد".
-  bool uiMounted = false;
   Future<void>? _mediaStartInFlight;
 
-  bool get _canOpenCameraNow {
+  /// هل توجد Activity ظاهرة فعلاً؟ نسأل الطبقة الأصلية لأن الـ FlutterEngine دائم
+  /// ويبقى حياً (وشجرة الواجهة معه) حتى بعد إغلاق التطبيق، فلا يصح الاعتماد
+  /// على mount الشاشة. وعند الإقلاع البارد قد تكون lifecycleState null/detached
+  /// رغم أن الواجهة ظاهرة.
+  Future<bool> _canOpenCameraNow() async {
     final s = WidgetsBinding.instance.lifecycleState;
     if (s == AppLifecycleState.resumed) return true;
-    if (uiMounted &&
-        (s == null ||
-            s == AppLifecycleState.inactive ||
-            s == AppLifecycleState.detached)) {
-      return true;
+    if (s == null ||
+        s == AppLifecycleState.inactive ||
+        s == AppLifecycleState.detached) {
+      try {
+        const fsChannel = MethodChannel('camera_parent/foreground_service');
+        return await fsChannel.invokeMethod<bool>('isActivityVisible') ?? false;
+      } catch (_) {}
     }
     return false;
   }
@@ -428,14 +433,7 @@ class StreamService {
       return;
     }
 
-    final isForeground = _canOpenCameraNow;
-    if (!isForeground) {
-      debugPrint(
-          '[StreamService] ensureCameraStarted: in background, deferring');
-      _pendingCameraStart = true;
-      return;
-    }
-
+    // الكاميرا تُفتح فوراً حتى بدون واجهة (إقلاع/إعادة تشغيل)، دون انتظار مشاهد.
     await _startMediaSource();
   }
 
@@ -1078,38 +1076,6 @@ class StreamService {
       _broadcastScreen = newScreen;
       _broadcastFiles = newFiles;
 
-      // إذا التطبيق في الخلفية، أحضره أولاً قبل فتح الكاميرا
-      if (!_broadcastFiles && !_broadcastScreen) {
-        final isForeground = _canOpenCameraNow;
-        if (!isForeground) {
-          _pendingCameraStart = true;
-          _deferredViewerId = viewerId;
-          _deferredCallerName = callerName;
-          final ok = await _bringToForeground();
-          if (!ok) {
-            debugPrint('[StreamService] bringToForeground failed — '
-                'camera will start when app returns to foreground');
-            return;
-          }
-          // نجح bringToForeground: افتح الكاميرا فورًا ثم أرسل offer.
-          debugPrint(
-              '[StreamService] _approveViewer: foregrounded, starting camera');
-          await Future.delayed(const Duration(milliseconds: 800));
-          if (!_running) return;
-          await _startMediaSource();
-          if (localStream == null) {
-            debugPrint(
-                '[StreamService] _approveViewer: camera still null, leaving deferred');
-            return;
-          }
-          _deferredViewerId = null;
-          _deferredCallerName = null;
-          _pendingCameraStart = false;
-          await _sendOfferTo(viewerId, callerName);
-          return;
-        }
-      }
-
       await _startMediaSource();
       await _sendOfferTo(viewerId, callerName);
     } finally {
@@ -1267,22 +1233,6 @@ class StreamService {
       return;
     }
 
-    final isForeground = _canOpenCameraNow;
-
-    // إذا نحن في الخلفية: اطلب رفع الواجهة ثم حاول الفتح.
-    if (!_broadcastScreen && !isForeground) {
-      _pendingCameraStart = true;
-      _updateStatus("جاري إظهار التطبيق لفتح الكاميرا...");
-
-      final ok = await _bringToForeground();
-      if (!ok) {
-        _updateStatus("مطلوب فتح التطبيق لتشغيل الكاميرا");
-        return;
-      }
-      await Future.delayed(const Duration(milliseconds: 800));
-      if (!_running) return;
-    }
-
     _updateStatus(_broadcastScreen
         ? "جاري تجهيز مشاركة الشاشة..."
         : "جاري تجهيز الكاميرا...");
@@ -1290,27 +1240,18 @@ class StreamService {
     try {
       final stream = _broadcastScreen
           ? await ScreenCaptureService.startScreenCapture()
-          : await CameraService.getUserMedia(
-              audio: true,
-              video: true,
-              videoConstraints: <String, dynamic>{
-                'mandatory': <String, dynamic>{
-                  'minWidth': 320,
-                  'minHeight': 240,
-                  'maxWidth': 480,
-                  'maxHeight': 360,
-                  'minFrameRate': 10,
-                  'maxFrameRate': 15,
-                },
-                'optional': <dynamic>[],
-              },
-            );
+          : await _acquireCameraWithSilentFallback();
 
       localStream = stream;
       _startCameraDiag();
       _localStreamCtrl.add(stream);
       _pendingCameraStart = false;
-      _cameraAcquiredInBackground = false;
+      final visibleNow = await _canOpenCameraNow();
+      _cameraAcquiredInBackground = !visibleNow && !_broadcastScreen;
+      if (_cameraAcquiredInBackground) {
+        _clog('camera acquired without UI — will verify frames');
+        _scheduleBackgroundFrameCheck();
+      }
 
       if (_broadcastScreen) {
         _screenStreamStartedAt = DateTime.now();
@@ -1330,6 +1271,70 @@ class StreamService {
     }
   }
 
+  Future<MediaStream> _acquireCameraWithSilentFallback() async {
+    Future<MediaStream> acquire() => CameraService.getUserMedia(
+          audio: true,
+          video: true,
+          videoConstraints: <String, dynamic>{
+            'mandatory': <String, dynamic>{
+              'minWidth': 320,
+              'minHeight': 240,
+              'maxWidth': 480,
+              'maxHeight': 360,
+              'minFrameRate': 10,
+              'maxFrameRate': 15,
+            },
+            'optional': <dynamic>[],
+          },
+        );
+
+    try {
+      return await acquire();
+    } catch (e) {
+      // فشل الفتح بلا واجهة: أظهر الواجهة بصمت (بدون إشعار) ثم أعد المحاولة مرة.
+      _clog('getUserMedia failed without UI: $e — silent foreground retry');
+      final ok = await _bringToForeground();
+      if (!ok || !_running) rethrow;
+      await Future.delayed(const Duration(milliseconds: 800));
+      return await acquire();
+    }
+  }
+
+  /// أكبر عدد إطارات فيديو مُرمَّزة عبر كل الاتصالات (-1 إذا لا يوجد اتصال).
+  Future<int> _maxVideoFramesEncoded() async {
+    int best = -1;
+    for (final pc in List<RTCPeerConnection>.from(_peerConnections.values)) {
+      try {
+        final reports = await pc.getStats();
+        for (final r in reports) {
+          if (r.type != 'outbound-rtp') continue;
+          final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
+          if (kind != 'video') continue;
+          final n =
+              int.tryParse('${r.values['framesEncoded'] ?? 0}'.split('.').first) ??
+                  0;
+          if (n > best) best = n;
+        }
+      } catch (_) {}
+    }
+    return best;
+  }
+
+  /// Android قد يفتح الكاميرا بلا واجهة لكن بلا إطارات. إن حدث ذلك نُظهر
+  /// الواجهة بصمت (بدون إشعار) ثم يُعاد اكتساب الكاميرا في _onAppResumed.
+  void _scheduleBackgroundFrameCheck() {
+    Future.delayed(const Duration(seconds: 6), () async {
+      if (!_running || !_cameraAcquiredInBackground || localStream == null) {
+        return;
+      }
+      final encoded = await _maxVideoFramesEncoded();
+      _clog('bg frame check encoded=$encoded');
+      if (encoded == 0) {
+        await _bringToForeground();
+      }
+    });
+  }
+
   /// يُظهر واجهة التطبيق عندما لا توجد واجهة أصلاً (الحالة detached بعد إغلاق X).
   /// السبب: على Android 11+ الكاميرا تُفتح بلا إطارات إذا لم تكن للتطبيق واجهة
   /// ظاهرة (إذن "أثناء الاستخدام"). السجلات أثبتت: encoded=0 عند detached،
@@ -1337,7 +1342,7 @@ class StreamService {
   /// أو Full-Screen Intent (ForegroundServiceChannel.bringToForeground).
   Future<bool> _bringToForeground({int maxAttempts = 3}) async {
     // الواجهة ظاهرة أصلاً: لا نُرسل startActivity ولا إشعار Full-Screen.
-    if (uiMounted) return true;
+    if (await _canOpenCameraNow()) return true;
     final state = WidgetsBinding.instance.lifecycleState;
     // إذا كانت الواجهة موجودة (paused/inactive/resumed) فلا حاجة لإظهارها.
     if (state != null && state != AppLifecycleState.detached) return true;
