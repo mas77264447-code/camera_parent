@@ -140,19 +140,4 @@ class CameraService {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // (اختياري) createCameraSession — قديم، لكن نبقيه للتوافق
-  // ═══════════════════════════════════════════════════════════
-
-  static Future<Map<String, dynamic>> createCameraSession() async {
-    final response = await http.post(Uri.parse("$server/camera/create"));
-    if (response.statusCode == 200) {
-      final body = jsonDecode(response.body);
-      return {
-        "sessionId": body["data"]["session_id"],
-        "childUrl": body["data"]["child_url"],
-      };
-    }
-    throw Exception("Server error: ${response.statusCode}");
-  }
 }

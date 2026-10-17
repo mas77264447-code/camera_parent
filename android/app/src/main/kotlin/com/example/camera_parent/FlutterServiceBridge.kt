@@ -31,11 +31,9 @@ object FlutterServiceBridge {
 
     fun startAgent() {
         synchronized(lock) {
-            if (agentRunning) {
-                Log.d(TAG, "startAgent: already running")
-                return
-            }
-
+            // لا نخرج عند agentRunning: قد يكون الوكيل في Dart توقّف دون علم
+            // الطبقة الأصلية. استدعاء start في Dart آمن (يرجع فوراً إن كان يعمل
+            // ويتأكد من WebSocket)، فيستطيع الـwatchdog إحياء الوكيل.
             if (startInFlight) {
                 Log.d(TAG, "startAgent: start already in progress")
                 return

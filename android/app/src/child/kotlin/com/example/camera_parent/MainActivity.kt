@@ -35,6 +35,13 @@ class MainActivity : FlutterActivity() {
         //    للكاميرا إنتاج إطارات، ثم نغلق الواجهة تلقائيًا.
         if (intent?.getBooleanExtra("from_boot", false) == true) {
             Log.i("CameraParent", "MainActivity: from_boot detected — will close in 8s")
+            // واجهة الإقلاع المؤقتة لا تلتقط اللمس ولا التركيز (كما في build-365)
+            try {
+                window.addFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                )
+            } catch (_: Exception) {}
             Handler(Looper.getMainLooper()).postDelayed({
                 try {
                     finishAndRemoveTask()

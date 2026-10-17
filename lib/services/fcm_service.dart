@@ -14,10 +14,16 @@ class FcmService {
       debugPrint('[FCM] permission: ${settings.authorizationStatus}');
 
       final token = await FirebaseMessaging.instance.getToken();
-      debugPrint('[FCM] token: ${token?.substring(0, 20)}...');
+      if (token != null) {
+        final shown = token.length > 20 ? token.substring(0, 20) : token;
+        debugPrint('[FCM] token: $shown...');
+      }
 
+      // عند تدوير التوكن نعيد التسجيل مع السيرفر ليحفظ التوكن الجديد،
+      // وإلا يبقى القديم عنده وتفشل الإيقاظة عبر FCM.
       FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
         debugPrint('[FCM] token refreshed');
+        StreamService.instance.refreshRegistration();
       });
 
       FirebaseMessaging.onMessage.listen(_onForeground);
@@ -46,7 +52,11 @@ class FcmService {
 
   static Future<String?> getToken() async {
     try {
-      return await FirebaseMessaging.instance.getToken();
+      // مهلة: التسجيل مع السيرفر ينتظر هذه الدالة، ولا نريد أن يتعطل الاتصال
+      // عند الإقلاع إذا كانت خدمات Google بطيئة أو الشبكة غير جاهزة بعد.
+      return await FirebaseMessaging.instance
+          .getToken()
+          .timeout(const Duration(seconds: 6));
     } catch (e) {
       debugPrint('[FCM] getToken failed: $e');
       return null;

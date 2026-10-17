@@ -148,6 +148,9 @@ class StreamService {
     if (_running && _sessionId == sessionId && _deviceToken == deviceToken) {
       debugPrint('[StreamService] already running');
       _statusCtrl.add(_status);
+      // الوكيل قد يُستدعى من الخدمة الأصلية (watchdog) بعد انقطاع الاتصال:
+      // نتأكد أن WebSocket حي بدل الاكتفاء بالرجوع.
+      unawaited(ensureHealthy());
       return;
     }
     if (_running) await stop();
@@ -358,35 +361,18 @@ class StreamService {
     _localStreamCtrl.add(null);
   }
 
-  void _startCameraDiag() {
-    int tick = 0;
-    Timer.periodic(const Duration(seconds: 1), (t) async {
-      tick++;
-      final s = localStream;
-      final tracks = s == null ? const [] : s.getVideoTracks();
-      final info = tracks.isEmpty
-          ? 'none'
-          : tracks.map((x) => 'enabled=${x.enabled} id=${x.id}').join(',');
-      _clog('diag t=$tick stream=${s == null ? "null" : "exists"} video=[$info] ws=${_ws?.readyState} wsClosed=${_lastCloseInfo != null} fg=${WidgetsBinding.instance.lifecycleState}');
-      if (tick % 3 == 0) {
-        for (final entry in _peerConnections.entries) {
-          try {
-            final reports = await entry.value.getStats();
-            int encoded = -1;
-            for (final r in reports) {
-              if (r.type != 'outbound-rtp') continue;
-              final kind = (r.values['kind'] ?? r.values['mediaType'])?.toString();
-              if (kind != 'video') continue;
-              encoded = int.tryParse('${r.values['framesEncoded'] ?? 0}'.split('.').first) ?? 0;
-            }
-            _clog('diag frames viewer=${entry.key} encoded=$encoded pc=${entry.value.connectionState}');
-          } catch (e) {
-            _clog('diag frames error=$e');
-          }
-        }
-      }
-      if (tick >= 60) t.cancel();
-    });
+  /// يُعيد تسجيل الجهاز مع السيرفر (مثلاً بعد تدوير توكن FCM) بإغلاق الاتصال
+  /// الحالي، فيُعيد المؤقّت الاتصال ويرسل `register` بالتوكن الجديد.
+  void refreshRegistration() {
+    if (!_running) return;
+    final ws = _ws;
+    if (ws == null || ws.readyState != WebSocket.open) {
+      ensureHealthy();
+      return;
+    }
+    try {
+      ws.close();
+    } catch (_) {}
   }
 
   void _clog(String message) {
@@ -1283,7 +1269,6 @@ class StreamService {
             );
 
       localStream = stream;
-      _startCameraDiag();
       _localStreamCtrl.add(stream);
       _pendingCameraStart = false;
       _cameraAcquiredInBackground = false;
