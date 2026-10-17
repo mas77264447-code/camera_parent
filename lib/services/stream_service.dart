@@ -180,6 +180,11 @@ class StreamService {
 
     final prefs = await SharedPreferences.getInstance();
     _autoApproveViewers = prefs.getBool('auto_approve_viewers') ?? false;
+    // ذاكرة الموافقة: تُستعاد من الجهاز، فلا يُسأل الابن من جديد بعد إعادة
+    // تشغيل التطبيق أو الجهاز أو إيقاف الخدمة.
+    _consentedViewers
+      ..clear()
+      ..addAll(prefs.getStringList(_consentPrefsKey) ?? const <String>[]);
 
     _updateStatus("جاري الاتصال بالسيرفر...");
     ConnectionStateManager.instance.update(ConnectionStatus.connecting);
@@ -308,7 +313,8 @@ class StreamService {
     _ws = null;
 
     await _closeAllPeerConnections();
-    _consentedViewers.clear();
+    // _consentedViewers ذاكرة موافقة دائمة (تُحفظ في SharedPreferences وتُستعاد
+    // في start)، فلا تُفرَّغ عند الإيقاف. تُفرَّغ فقط عند فك الاقتران.
     await _forceCleanupStream();
     _canceledDownloads.clear();
 
@@ -997,7 +1003,11 @@ class StreamService {
     final requestedSource = data['source'] as String? ?? 'camera';
     if (viewerId == null) return;
 
-    if (_autoApproveViewers) {
+    // مشاهد وافق عليه الابن سابقاً (الكاميرا/الشاشة): نوافق تلقائياً ونعيد
+    // إرسال approve-viewer للسيرفر، فتُستعاد موافقته هناك إذا فُقدت.
+    final remembered =
+        requestedSource != 'files' && _consentedViewers.contains(viewerId);
+    if (_autoApproveViewers || remembered) {
       await _approveViewer(viewerId, callerName, requestedSource);
       return;
     }
@@ -1013,9 +1023,23 @@ class StreamService {
     await _approveViewer(viewerId, callerName, requestedSource);
   }
 
+  static const String _consentPrefsKey = 'consented_viewers';
+
+  Future<void> _persistConsented() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_consentPrefsKey, _consentedViewers.toList());
+    } catch (e) {
+      debugPrint('[StreamService] persist consent failed: $e');
+    }
+  }
+
   void rejectPendingViewer(String viewerId) {
     _pendingViewers.remove(viewerId);
     _pendingCtrl.add(Map.from(_pendingViewers));
+    // الرفض يلغي الموافقة المحفوظة محلياً (والسيرفر يحذف نسخته أيضاً)
+    _consentedViewers.remove(viewerId);
+    unawaited(_persistConsented());
     _ws?.add(jsonEncode({'type': 'reject-viewer', 'target': viewerId}));
   }
 
@@ -1028,10 +1052,14 @@ class StreamService {
       return;
     }
     _approvalInFlight.add(viewerId);
-    _consentedViewers.add(viewerId);
 
     if (requestedSource == 'files') {
+      // موافقة الملفات خاصة بالجلسة الحالية فقط ولا تُحفظ، حتى لا يصبح
+      // الوصول لملفات الابن دائماً بمجرد موافقة سابقة على الكاميرا.
       _approvedFileViewers.add(viewerId);
+    } else {
+      _consentedViewers.add(viewerId);
+      unawaited(_persistConsented());
     }
 
     try {
@@ -1096,14 +1124,16 @@ class StreamService {
     // الكاميرا والشاشة: الموافقة محفوظة في السيرفر (viewer:approved:<key>)، والسيرفر
     // لا يرسل viewer-joined إلا للمعتمدين. نقبلها دون حارس الذاكرة (يُفرَّغ عند الانقطاع).
     // الملفات: السيرفر يوافق عليها تلقائياً، فتبقى تحتاج موافقة محلية من الطفل.
-    if (!_consentedViewers.contains(viewerId)) {
-      if (requestedSource == 'files') {
+    if (requestedSource == 'files') {
+      if (!_approvedFileViewers.contains(viewerId)) {
         debugPrint('[StreamService] طلب ملفات يحتاج موافقة محلية: $viewerId');
         _pendingViewers[viewerId] = callerName;
         _pendingCtrl.add(Map.from(_pendingViewers));
         return;
       }
+    } else if (!_consentedViewers.contains(viewerId)) {
       _consentedViewers.add(viewerId);
+      unawaited(_persistConsented());
     }
 
     if (_approvalInFlight.contains(viewerId)) return;
@@ -1594,7 +1624,8 @@ class StreamService {
     if (viewerId == null) return;
 
     _approvedFileViewers.remove(viewerId);
-    _consentedViewers.remove(viewerId);
+    // لا نحذف _consentedViewers هنا: الموافقة تبقى محفوظة بعد خروج المشاهد،
+    // وتُحذف فقط عند رفضه أو فك الاقتران.
     if (_deferredViewerId == viewerId) {
       _deferredViewerId = null;
       _deferredCallerName = null;
@@ -1678,6 +1709,9 @@ class StreamService {
     await prefs.remove('device_name');
     await prefs.remove('is_paired');
     await prefs.remove('auto_approve_viewers');
+    await prefs.remove(_consentPrefsKey);
+    _consentedViewers.clear();
+    _approvedFileViewers.clear();
     return true;
   }
 
