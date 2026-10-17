@@ -145,10 +145,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   /// إذا الفيديو موجود لكن الـ renderer ما زال 0x0:
-  /// - بعد ~4 ثواني: إعادة ربط الـ renderer (مشكلة عرض محلية).
-  /// - بعد ~10 ثواني: ICE Restart (مشكلة شبكة).
-  /// - بعد ~30 ثانية: التوقف وإبلاغ المستخدم بأن الكاميرا على الجهاز
-  ///   الآخر لا تُنتج إطارات (غالباً بسبب تشغيلها في الخلفية).
+  /// بعد ~4 ثواني يعيد الربط، وبعد ~10 ثواني يطلب إعادة ICE مرة واحدة.
   void _startVideoFrameWatchdog() {
     _videoFrameWatchdog?.cancel();
     _videoStallChecks = 0;
@@ -168,17 +165,12 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
       if (_remoteRenderer.videoWidth > 0) {
         debugPrint('[Watchdog] video OK ${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}');
-        if (mounted) setState(() => _status = "متصل ✓");
         timer.cancel();
         return;
       }
 
       _videoStallChecks++;
       debugPrint('[Watchdog] renderer still 0x0 (check $_videoStallChecks)');
-
-      if (mounted && _videoStallChecks >= 2) {
-        setState(() => _status = "جاري استقبال الفيديو...");
-      }
 
       if (_videoStallChecks == 2) {
         try {
@@ -194,15 +186,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       } else if (_videoStallChecks >= 5 && !_stallIceRestartTried) {
         _stallIceRestartTried = true;
         debugPrint('[Watchdog] no video frames after ~10s — ICE restart');
-        if (mounted) setState(() => _status = "إعادة محاولة الاتصال...");
         _tryIceRestart();
-      } else if (_videoStallChecks >= 15) {
-        debugPrint('[Watchdog] no video frames after ~30s — aborting');
-        if (mounted) {
-          setState(() => _status =
-              "تعذر استقبال الفيديو. تأكد من فتح تطبيق الكاميرا على الجهاز الآخر ومنحه صلاحية الكاميرا.");
-        }
-        timer.cancel();
       }
     });
   }
@@ -627,6 +611,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _iceRestartInProgress = false;
     _broadcasterId = msg["from"].toString();
 
+    // ⚠️ عيّن _pc = null أولًا لمنع callback القديم من إعادة تشغيل الاتصال
     final oldPc = _pc;
     _pc = null;
     if (oldPc != null) {
@@ -649,7 +634,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       _pc = pc;
 
       pc.onTrack = (event) {
-        if (_pc != pc) return;
+        if (_pc != pc) return; // callback قديم من اتصال سابق
         debugPrint('[PC] onTrack kind=${event.track.kind} streams=${event.streams.length}');
 
         if (event.streams.isEmpty) {
@@ -665,15 +650,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         _noMediaWatchdog?.cancel();
         _noMediaWatchdog = null;
 
-        // لا تعلن "متصل ✓" هنا — انتظر أول إطار فيديو فعلي
-        if (mounted) {
-          if (stream.getVideoTracks().isEmpty) {
-            setState(() => _status =
-                "متصل (بدون فيديو) — الكاميرا لا تعمل على الجهاز الآخر");
-          } else {
-            setState(() => _status = "جاري استقبال الفيديو...");
-          }
-        }
+        if (mounted) setState(() => _status = "متصل ✓");
 
         _textureRefreshedForThisTrack = true;
         _bindRemoteStream(stream);
@@ -715,6 +692,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           }
           _scheduleReconnect();
         }
+        // Closed يُتجاهل — نحن من أغلقه بأنفسنا
       };
 
       pc.onIceConnectionState = (state) {

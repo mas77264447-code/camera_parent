@@ -35,6 +35,8 @@ class BootReceiver : BroadcastReceiver() {
 
         val mode = prefs.getString(KEY_MODE, StreamForegroundService.MODE_CAMERA)
             ?: StreamForegroundService.MODE_CAMERA
+        BootLog.w("enabled=$enabled mode=$mode overlay=${Settings.canDrawOverlays(context)}")
+        if (!enabled) { BootLog.w("STOP: enabled=false"); return }
 
         Log.i(TAG, "Boot: starting FGS mode=$mode")
 
@@ -70,7 +72,17 @@ class BootReceiver : BroadcastReceiver() {
 
         // ✅ 2) شغّل FGS
         try {
-            val service = Intent(context, StreamForegroundService::class.java)
+            val w = Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                putExtra("from_boot", true)
+            }
+            context.startActivity(w)
+            BootLog.w("startActivity called")
+        } catch (e: Exception) { BootLog.w("startActivity failed: $e") }
+
+        try {
+            val s = Intent(context, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
                 .putExtra(StreamForegroundService.EXTRA_MODE, mode)
 
