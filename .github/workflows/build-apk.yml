@@ -3,7 +3,7 @@ name: Build APK with WebRTC Fixes
 on:
   workflow_dispatch:
   push:
-    branches: [main, production-merge]
+    branches: [main, production-merge, fix/final-audit]
     paths:
       - 'lib/**'
       - 'android/**'
