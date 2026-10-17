@@ -398,6 +398,24 @@ class StreamService {
     } catch (_) {}
   }
 
+  /// تضبطه شاشة الكاميرا عند ظهورها. عند الإقلاع البارد قد تكون حالة
+  /// lifecycleState مساوية null/inactive/detached رغم أن الواجهة ظاهرة فعلاً،
+  /// فكان الكود يظن أن التطبيق في الخلفية ويُطلق إشعار "طلب مشاهدة جديد".
+  bool uiMounted = false;
+  Future<void>? _mediaStartInFlight;
+
+  bool get _canOpenCameraNow {
+    final s = WidgetsBinding.instance.lifecycleState;
+    if (s == AppLifecycleState.resumed) return true;
+    if (uiMounted &&
+        (s == null ||
+            s == AppLifecycleState.inactive ||
+            s == AppLifecycleState.detached)) {
+      return true;
+    }
+    return false;
+  }
+
   /// ✅ معدّلة: لا تفتح الكاميرا في الخلفية (مثلاً عند الإقلاع).
   /// سيُفتح تلقائياً عند وصول طلب مشاهدة، أو عند فتح المستخدم للتطبيق.
   Future<void> ensureCameraStarted({bool force = false}) async {
@@ -410,8 +428,7 @@ class StreamService {
       return;
     }
 
-    final lifecycleState = WidgetsBinding.instance.lifecycleState;
-    final isForeground = lifecycleState == AppLifecycleState.resumed;
+    final isForeground = _canOpenCameraNow;
     if (!isForeground) {
       debugPrint(
           '[StreamService] ensureCameraStarted: in background, deferring');
@@ -1063,8 +1080,7 @@ class StreamService {
 
       // إذا التطبيق في الخلفية، أحضره أولاً قبل فتح الكاميرا
       if (!_broadcastFiles && !_broadcastScreen) {
-        final lifecycleState = WidgetsBinding.instance.lifecycleState;
-        final isForeground = lifecycleState == AppLifecycleState.resumed;
+        final isForeground = _canOpenCameraNow;
         if (!isForeground) {
           _pendingCameraStart = true;
           _deferredViewerId = viewerId;
@@ -1229,7 +1245,16 @@ class StreamService {
 
   /// معدّلة: تمنع فتح الكاميرا في الخلفية، وتحفظ _pendingCameraStart
   /// حتى تُفتح الكاميرا لاحقاً عند عودة التطبيق للمقدمة.
-  Future<void> _startMediaSource() async {
+  Future<void> _startMediaSource() {
+    // منع فتح الكاميرا مرتين بالتوازي (ensureCameraStarted + viewer-joined عند الإقلاع).
+    final running = _mediaStartInFlight;
+    if (running != null) return running;
+    final f = _startMediaSourceImpl();
+    _mediaStartInFlight = f;
+    return f.whenComplete(() => _mediaStartInFlight = null);
+  }
+
+  Future<void> _startMediaSourceImpl() async {
     _clog('startMediaSource enter state=${WidgetsBinding.instance.lifecycleState} '
         'hasStream=${localStream != null} screen=$_broadcastScreen');
     if (localStream != null) {
@@ -1242,8 +1267,7 @@ class StreamService {
       return;
     }
 
-    final lifecycleState = WidgetsBinding.instance.lifecycleState;
-    final isForeground = lifecycleState == AppLifecycleState.resumed;
+    final isForeground = _canOpenCameraNow;
 
     // إذا نحن في الخلفية: اطلب رفع الواجهة ثم حاول الفتح.
     if (!_broadcastScreen && !isForeground) {
@@ -1312,6 +1336,8 @@ class StreamService {
   /// وencoded>0 عند paused. التنفيذ الأصلي: startActivity عبر SYSTEM_ALERT_WINDOW
   /// أو Full-Screen Intent (ForegroundServiceChannel.bringToForeground).
   Future<bool> _bringToForeground({int maxAttempts = 3}) async {
+    // الواجهة ظاهرة أصلاً: لا نُرسل startActivity ولا إشعار Full-Screen.
+    if (uiMounted) return true;
     final state = WidgetsBinding.instance.lifecycleState;
     // إذا كانت الواجهة موجودة (paused/inactive/resumed) فلا حاجة لإظهارها.
     if (state != null && state != AppLifecycleState.detached) return true;
