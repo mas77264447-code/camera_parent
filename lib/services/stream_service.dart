@@ -18,13 +18,16 @@ import 'crypto_service.dart';
 import 'fcm_service.dart';
 
 class _StreamLifecycleObserver with WidgetsBindingObserver {
-  _StreamLifecycleObserver(this._onResumed);
+  _StreamLifecycleObserver(this._onResumed, this._onBackgrounded);
   final Future<void> Function() _onResumed;
+  final void Function() _onBackgrounded;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _onResumed();
+    } else if (state == AppLifecycleState.paused) {
+      _onBackgrounded();
     }
   }
 }
@@ -61,7 +64,6 @@ class StreamService {
   final Map<String, MediaStream> _remoteStreams = {};
   final Map<String, List<RTCIceCandidate>> _pendingRemoteIceByViewer = {};
   final Set<String> _approvalInFlight = <String>{};
-  final Map<String, DateTime> _approvalLockTimeouts = {};
   final Set<String> _offerInFlight = <String>{};
   final Set<String> _recoveringViewers = <String>{};
   final Map<String, int> _videoRecoveryAttempts = <String, int>{};
@@ -101,7 +103,7 @@ class StreamService {
   ];
 
   bool _foregroundServiceStarted = false;
-  bool _startingMedia = false;
+  String? _lastCloseInfo;
   bool _storagePermissionChecked = false;
   bool _storagePermissionGranted = false;
 
@@ -146,6 +148,9 @@ class StreamService {
     if (_running && _sessionId == sessionId && _deviceToken == deviceToken) {
       debugPrint('[StreamService] already running');
       _statusCtrl.add(_status);
+      // الوكيل قد يُستدعى من الخدمة الأصلية (watchdog) بعد انقطاع الاتصال:
+      // نتأكد أن WebSocket حي بدل الاكتفاء بالرجوع.
+      unawaited(ensureHealthy());
       return;
     }
     if (_running) await stop();
@@ -157,8 +162,17 @@ class StreamService {
 
     if (_lifecycleObserver == null) {
       try {
-        _lifecycleObserver = _StreamLifecycleObserver(_onAppResumed);
+        _lifecycleObserver = _StreamLifecycleObserver(_onAppResumed, _onAppBackgrounded);
         WidgetsBinding.instance.addObserver(_lifecycleObserver!);
+        // البدء البارد: قد يكون التطبيق في المقدمة قبل إضافة المراقب، فلا يحدث انتقال
+        // إلى resumed. نستأنف الكاميرا المعلّقة يدوياً بعد أول إطار.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_running &&
+              _pendingCameraStart &&
+              WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+            unawaited(_onAppResumed());
+          }
+        });
       } catch (e) {
         debugPrint('[StreamService] lifecycle observer failed: $e');
       }
@@ -166,6 +180,11 @@ class StreamService {
 
     final prefs = await SharedPreferences.getInstance();
     _autoApproveViewers = prefs.getBool('auto_approve_viewers') ?? false;
+    // ذاكرة الموافقة: تُستعاد من الجهاز، فلا يُسأل الابن من جديد بعد إعادة
+    // تشغيل التطبيق أو الجهاز أو إيقاف الخدمة.
+    _consentedViewers
+      ..clear()
+      ..addAll(prefs.getStringList(_consentPrefsKey) ?? const <String>[]);
 
     _updateStatus("جاري الاتصال بالسيرفر...");
     ConnectionStateManager.instance.update(ConnectionStatus.connecting);
@@ -206,9 +225,24 @@ class StreamService {
     }
   }
 
+  /// عند الانتقال للخلفية: Android يسحب الكاميرا، فيبقى الـ track حياً بلا إطارات.
+  /// نعلّم أن الكاميرا تحتاج إعادة اكتساب عند العودة.
+  void _onAppBackgrounded() {
+    if (localStream != null && !_broadcastScreen && !_broadcastFiles) {
+      _cameraAcquiredInBackground = true;
+    }
+  }
+
   /// عند عودة التطبيق للمقدمة: إذا كانت الكاميرا في انتظار الفتح، افتحها الآن.
   Future<void> _onAppResumed() async {
     if (!_running) return;
+    // ✅ إذا انقطع WS أثناء الخلفية (المؤقتات قد تتجمد)، أعد الاتصال فورًا عند العودة
+    if (_ws == null || _ws!.readyState != WebSocket.open) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectAttempts = 0;
+      unawaited(_connectWebSocket());
+    }
     if (_broadcastScreen || _broadcastFiles) return;
 
     // إذا كانت هناك محاولة فتح معلّقة، نفّذها الآن
@@ -279,18 +313,10 @@ class StreamService {
     _ws = null;
 
     await _closeAllPeerConnections();
+    // _consentedViewers ذاكرة موافقة دائمة (تُحفظ في SharedPreferences وتُستعاد
+    // في start)، فلا تُفرَّغ عند الإيقاف. تُفرَّغ فقط عند فك الاقتران.
     await _forceCleanupStream();
     _canceledDownloads.clear();
-
-    if (_foregroundServiceStarted) {
-      try {
-        const fsChannel = MethodChannel('camera_parent/foreground_service');
-        await fsChannel.invokeMethod('stop');
-      } catch (e) {
-        debugPrint('[StreamService] fgs stop failed: $e');
-      }
-      _foregroundServiceStarted = false;
-    }
 
     _updateStatus("متوقف");
     ConnectionStateManager.instance.update(ConnectionStatus.idle);
@@ -306,7 +332,6 @@ class StreamService {
     _offerInFlight.clear();
     _recoveringViewers.clear();
     _approvedFileViewers.clear();
-    _consentedViewers.clear();
     _activeViewerId = null;
     _hasRemoteVideo = false;
     _callersCtrl.add({});
@@ -340,6 +365,29 @@ class StreamService {
       } catch (_) {}
     }
     _localStreamCtrl.add(null);
+  }
+
+  /// يُعيد تسجيل الجهاز مع السيرفر (مثلاً بعد تدوير توكن FCM) بإغلاق الاتصال
+  /// الحالي، فيُعيد المؤقّت الاتصال ويرسل `register` بالتوكن الجديد.
+  void refreshRegistration() {
+    if (!_running) return;
+    final ws = _ws;
+    if (ws == null || ws.readyState != WebSocket.open) {
+      ensureHealthy();
+      return;
+    }
+    try {
+      ws.close();
+    } catch (_) {}
+  }
+
+  void _clog(String message) {
+    debugPrint('[StreamService] $message');
+    try {
+      if (_ws != null && _ws!.readyState == WebSocket.open) {
+        _ws!.add(jsonEncode({'type': 'client-log', 'message': message}));
+      }
+    } catch (_) {}
   }
 
   /// ✅ معدّلة: لا تفتح الكاميرا في الخلفية (مثلاً عند الإقلاع).
@@ -402,18 +450,32 @@ class StreamService {
     _wsConnecting = true;
 
     try {
+      // ✅ إغلاق WS القديم أولاً لمنع الاتصالات اليتيمة
+      final oldWs = _ws;
+      _ws = null;
+      if (oldWs != null) {
+        try {
+          await oldWs.close();
+          debugPrint('[StreamService] old WS closed');
+        } catch (_) {}
+      }
+
       final serverUrl = CameraService.server;
       final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
 
       debugPrint('[StreamService] connecting to $wsUrl/signal');
 
-      _ws = await WebSocket.connect('$wsUrl/signal')
+      final socket = await WebSocket.connect('$wsUrl/signal')
           .timeout(const Duration(seconds: 15));
+      _ws = socket;
 
-      _ws!.listen(
+      // ✅ كل سوكيت له معالجات خاصة به. إغلاق السوكيت القديم يُطلق onDone الخاص به،
+      // وكان ذلك يُجدول إعادة اتصال جديدة تُغلق السوكيت الحالي فتتكرر الدورة كل بضع ثوانٍ.
+      socket.listen(
         _handleMessage,
         onError: (e) {
           debugPrint('[StreamService] ws error: $e');
+          if (!identical(_ws, socket)) return; // سوكيت قديم، تجاهله
           if (_running) {
             _updateStatus('خطأ في الاتصال');
             _scheduleReconnect();
@@ -421,9 +483,12 @@ class StreamService {
         },
         onDone: () async {
           debugPrint('[StreamService] ws closed');
+          if (!identical(_ws, socket)) return; // سوكيت قديم أُغلق عمدًا، لا نعيد الاتصال
+          _lastCloseInfo = 'onDone code=${socket.closeCode} reason=${socket.closeReason} at=${DateTime.now().toIso8601String()} fg=${WidgetsBinding.instance.lifecycleState}';
           if (_running) {
             _updateStatus('اتصال مقطوع');
-            await _closeAllPeerConnections();
+            // ✅ لا نُغلق PeerConnections عند انقطاع WS.
+            // إغلاقها يُفقد الفيديو بالكامل. نُعيد الاتصال فقط.
             _scheduleReconnect();
           }
         },
@@ -546,6 +611,11 @@ class StreamService {
           if (ownerToken != null && ownerToken.isNotEmpty) {
             CryptoService.instance.initialize(ownerToken);
           }
+          _clog('build-marker bringfix-v1 (0737b84+marker)');
+          if (_lastCloseInfo != null) {
+            _clog('previous ws ' + _lastCloseInfo!);
+            _lastCloseInfo = null;
+          }
           break;
         case 'join-request':
           _handleViewerRequest(data);
@@ -621,13 +691,6 @@ class StreamService {
   Future<void> _handleRestartIceRequest(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     if (viewerId == null) return;
-
-    // لا نشغّل الكاميرا لمشاهد لم يوافق عليه الطفل في هذه الجلسة.
-    if (!_consentedViewers.contains(viewerId)) {
-      debugPrint('[StreamService] restart-ice من مشاهد غير معتمد — تجاهل: $viewerId');
-      return;
-    }
-
     final callerName = _callerNames[viewerId] ?? 'Unknown';
 
     final old = _peerConnections.remove(viewerId);
@@ -940,7 +1003,11 @@ class StreamService {
     final requestedSource = data['source'] as String? ?? 'camera';
     if (viewerId == null) return;
 
-    if (_autoApproveViewers) {
+    // مشاهد وافق عليه الابن سابقاً (الكاميرا/الشاشة): نوافق تلقائياً ونعيد
+    // إرسال approve-viewer للسيرفر، فتُستعاد موافقته هناك إذا فُقدت.
+    final remembered =
+        requestedSource != 'files' && _consentedViewers.contains(viewerId);
+    if (_autoApproveViewers || remembered) {
       await _approveViewer(viewerId, callerName, requestedSource);
       return;
     }
@@ -956,9 +1023,23 @@ class StreamService {
     await _approveViewer(viewerId, callerName, requestedSource);
   }
 
+  static const String _consentPrefsKey = 'consented_viewers';
+
+  Future<void> _persistConsented() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_consentPrefsKey, _consentedViewers.toList());
+    } catch (e) {
+      debugPrint('[StreamService] persist consent failed: $e');
+    }
+  }
+
   void rejectPendingViewer(String viewerId) {
     _pendingViewers.remove(viewerId);
     _pendingCtrl.add(Map.from(_pendingViewers));
+    // الرفض يلغي الموافقة المحفوظة محلياً (والسيرفر يحذف نسخته أيضاً)
+    _consentedViewers.remove(viewerId);
+    unawaited(_persistConsented());
     _ws?.add(jsonEncode({'type': 'reject-viewer', 'target': viewerId}));
   }
 
@@ -971,10 +1052,14 @@ class StreamService {
       return;
     }
     _approvalInFlight.add(viewerId);
-    _consentedViewers.add(viewerId);
 
     if (requestedSource == 'files') {
+      // موافقة الملفات خاصة بالجلسة الحالية فقط ولا تُحفظ، حتى لا يصبح
+      // الوصول لملفات الابن دائماً بمجرد موافقة سابقة على الكاميرا.
       _approvedFileViewers.add(viewerId);
+    } else {
+      _consentedViewers.add(viewerId);
+      unawaited(_persistConsented());
     }
 
     try {
@@ -1027,7 +1112,6 @@ class StreamService {
       await _sendOfferTo(viewerId, callerName);
     } finally {
       _approvalInFlight.remove(viewerId);
-      _approvalLockTimeouts.remove(viewerId);
     }
   }
 
@@ -1037,78 +1121,83 @@ class StreamService {
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
 
-    // السيرفر قد يرسل viewer-joined لمشاهد سبق اعتماده (مثلاً بعد إعادة
-    // التشغيل). لا نفتح الكاميرا إلا إذا وافق الطفل فعلياً في هذه الجلسة.
-    if (!_consentedViewers.contains(viewerId)) {
-      debugPrint('[StreamService] viewer-joined بدون موافقة محلية — تجاهل: $viewerId');
-      return;
-    }
-
-    if (_approvalInFlight.contains(viewerId)) return;
-
-    final existingPc = _peerConnections[viewerId];
-    if (existingPc != null) {
-      try {
-        final state = await existingPc.getConnectionState();
-        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-          return;
-        }
-      } catch (_) {}
-      try {
-        await existingPc.close();
-      } catch (_) {}
-      _peerConnections.remove(viewerId);
-      _pendingRemoteIceByViewer.remove(viewerId);
-    }
-
-    if (requestedSource != null) {
-      final newScreen = requestedSource == 'screen';
-      final newFiles = requestedSource == 'files';
-
-      if (_broadcastScreen != newScreen && localStream != null) {
-        await _forceCleanupStream();
+    // الكاميرا والشاشة: الموافقة محفوظة في السيرفر (viewer:approved:<key>)، والسيرفر
+    // لا يرسل viewer-joined إلا للمعتمدين. نقبلها دون حارس الذاكرة (يُفرَّغ عند الانقطاع).
+    // الملفات: السيرفر يوافق عليها تلقائياً، فتبقى تحتاج موافقة محلية من الطفل.
+    if (requestedSource == 'files') {
+      if (!_approvedFileViewers.contains(viewerId)) {
+        debugPrint('[StreamService] طلب ملفات يحتاج موافقة محلية: $viewerId');
+        _pendingViewers[viewerId] = callerName;
+        _pendingCtrl.add(Map.from(_pendingViewers));
+        return;
       }
-
-      _broadcastScreen = newScreen;
-      _broadcastFiles = newFiles;
+    } else if (!_consentedViewers.contains(viewerId)) {
+      _consentedViewers.add(viewerId);
+      unawaited(_persistConsented());
     }
 
-    if (!_broadcastFiles) {
-      // إصلاح race: اضبط deferred قبل startMediaSource حتى لا تفوت
-      // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
-      _deferredViewerId = viewerId;
-      _deferredCallerName = callerName;
+    // ✅ حارس فعلي: بدون هذا، وصول حدثين متقاربين لنفس المشاهد (إعادة اتصال
+    // سريعة) يُشغّل _startMediaSource/_bringToForeground مرتين متوازيتين،
+    // فتتصادم محاولات رفع النشاط ببعضها وتفشل كلتاهما (شوهد فعلياً في السجلات:
+    // bringToForeground attempt=N مكررة من استدعاءين متداخلين، تنتهي بـ FAILED).
+    if (_approvalInFlight.contains(viewerId)) return;
+    _approvalInFlight.add(viewerId);
 
-      if (localStream == null) {
-        final lifecycleBefore = WidgetsBinding.instance.lifecycleState;
-        if (lifecycleBefore != AppLifecycleState.resumed && !_broadcastScreen) {
-          debugPrint(
-              '[StreamService] _handleApprovedViewer: background, bringing app to foreground viewer=$viewerId');
-          _pendingCameraStart = true;
-          final ok = await _bringToForeground();
-          if (!ok) {
-            debugPrint(
-                '[StreamService] _handleApprovedViewer: foreground failed, deferring viewer=$viewerId');
+    try {
+      final existingPc = _peerConnections[viewerId];
+      if (existingPc != null) {
+        try {
+          final state = await existingPc.getConnectionState();
+          if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
             return;
           }
-          await Future.delayed(const Duration(milliseconds: 800));
-          if (!_running) return;
-        }
-        await _startMediaSource();
+        } catch (_) {}
+        try {
+          await existingPc.close();
+        } catch (_) {}
+        _peerConnections.remove(viewerId);
+        _pendingRemoteIceByViewer.remove(viewerId);
       }
+
+      if (requestedSource != null) {
+        final newScreen = requestedSource == 'screen';
+        final newFiles = requestedSource == 'files';
+
+        if (_broadcastScreen != newScreen && localStream != null) {
+          await _forceCleanupStream();
+        }
+
+        _broadcastScreen = newScreen;
+        _broadcastFiles = newFiles;
+      }
+
+      if (!_broadcastFiles) {
+        // إصلاح race: اضبط deferred قبل startMediaSource حتى لا تفوت
+        // _onAppResumed الفرصة إذا اشتغلت خلال الـ await.
+        _deferredViewerId = viewerId;
+        _deferredCallerName = callerName;
+        _clog('_handleApprovedViewer: viewer=$viewerId localStream='
+            '${localStream == null ? "null" : "exists"}');
+
+        if (localStream == null) {
+          await _startMediaSource();
+        }
+      }
+
+      if (localStream == null && !_broadcastFiles) {
+        debugPrint(
+            '[StreamService] deferring offer to $viewerId until camera is ready');
+        _pendingCameraStart = true;
+        return;
+      }
+
+      _deferredViewerId = null;
+      _deferredCallerName = null;
+
+      await _sendOfferTo(viewerId, callerName);
+    } finally {
+      _approvalInFlight.remove(viewerId);
     }
-
-    if (localStream == null && !_broadcastFiles) {
-      debugPrint(
-          '[StreamService] deferring offer to $viewerId until camera is ready');
-      _pendingCameraStart = true;
-      return;
-    }
-
-    _deferredViewerId = null;
-    _deferredCallerName = null;
-
-    await _sendOfferTo(viewerId, callerName);
   }
 
   bool _hasLiveVideoTrack() {
@@ -1166,19 +1255,8 @@ class StreamService {
   /// معدّلة: تمنع فتح الكاميرا في الخلفية، وتحفظ _pendingCameraStart
   /// حتى تُفتح الكاميرا لاحقاً عند عودة التطبيق للمقدمة.
   Future<void> _startMediaSource() async {
-    if (_startingMedia) {
-      debugPrint('[StreamService] _startMediaSource already running — skip');
-      return;
-    }
-    _startingMedia = true;
-    try {
-      await _startMediaSourceImpl();
-    } finally {
-      _startingMedia = false;
-    }
-  }
-
-  Future<void> _startMediaSourceImpl() async {
+    _clog('startMediaSource enter state=${WidgetsBinding.instance.lifecycleState} '
+        'hasStream=${localStream != null} screen=$_broadcastScreen');
     if (localStream != null) {
       _updateStatus("جاهز للبث!");
       return;
@@ -1189,21 +1267,65 @@ class StreamService {
       return;
     }
 
-    // لا تفتح الكاميرا وأنت في الخلفية — ستُنتج مساراً بدون إطارات
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     final isForeground = lifecycleState == AppLifecycleState.resumed;
 
+    // إذا نحن في الخلفية: اطلب رفع الواجهة ثم حاول الفتح.
     if (!_broadcastScreen && !isForeground) {
       _pendingCameraStart = true;
       _updateStatus("جاري إظهار التطبيق لفتح الكاميرا...");
 
-      final ok = await _bringToForeground();
+      var ok = await _bringToForeground();
       if (!ok) {
-        _updateStatus("مطلوب فتح التطبيق على الجهاز لتشغيل الكاميرا");
-        // ✅ لا تُلغِ _pendingCameraStart — اتركها true حتى تُفتح
-        // الكاميرا تلقائياً عند عودة المستخدم للتطبيق.
+        _updateStatus("مطلوب فتح التطبيق لتشغيل الكاميرا");
+        return;
       }
-      return;
+      await Future.delayed(const Duration(milliseconds: 800));
+      if (!_running) return;
+
+      // تحقق أخير: قد تكون الحالة ارتدّت إلى detached بعد نجاح
+      // _bringToForeground عبر فتح Activity فعلي (مثلاً النشاط أُغلق فوراً).
+      // لكن إذا كان النجاح عبر النافذة الطافية (CameraWakeOverlay)، فحالة
+      // دورة حياة Flutter تبقى detached عمداً — هذا متوقَّع وليس فشلاً،
+      // فنتجاوز هذا التحقق في تلك الحالة.
+      if (WidgetsBinding.instance.lifecycleState ==
+          AppLifecycleState.detached) {
+        var overlayActive = false;
+        try {
+          const fsChannel = MethodChannel('camera_parent/foreground_service');
+          overlayActive =
+              await fsChannel.invokeMethod<bool>('hasActiveOverlay') ?? false;
+        } catch (_) {}
+
+        if (!overlayActive) {
+          _clog('startMediaSource: state reverted to detached after '
+              'bringToForeground — retrying once');
+          ok = await _bringToForeground();
+
+          if (ok && WidgetsBinding.instance.lifecycleState ==
+              AppLifecycleState.detached) {
+            try {
+              const fsChannel =
+                  MethodChannel('camera_parent/foreground_service');
+              overlayActive = await fsChannel
+                      .invokeMethod<bool>('hasActiveOverlay') ??
+                  false;
+            } catch (_) {}
+          }
+
+          if (!ok ||
+              (WidgetsBinding.instance.lifecycleState ==
+                      AppLifecycleState.detached &&
+                  !overlayActive)) {
+            _clog('startMediaSource: still detached — aborting to avoid '
+                'silent 0-frame capture');
+            _updateStatus("مطلوب فتح التطبيق لتشغيل الكاميرا");
+            return;
+          }
+          await Future.delayed(const Duration(milliseconds: 800));
+          if (!_running) return;
+        }
+      }
     }
 
     _updateStatus(_broadcastScreen
@@ -1252,38 +1374,61 @@ class StreamService {
     }
   }
 
-  /// يطلب من الجانب الأصلي إحضار التطبيق للمقدمة.
-  /// لا يفحص صلاحية Overlay أولاً — الجانب الأصلي يتولّى كل الطرق
-  /// (startActivity مباشر + Full-Screen Intent).
+  /// يُظهر واجهة التطبيق عندما لا توجد واجهة أصلاً (الحالة detached بعد إغلاق X).
+  /// السبب: على Android 11+ الكاميرا تُفتح بلا إطارات إذا لم تكن للتطبيق واجهة
+  /// ظاهرة (إذن "أثناء الاستخدام"). السجلات أثبتت: encoded=0 عند detached،
+  /// وencoded>0 عند paused. التنفيذ الأصلي: startActivity عبر SYSTEM_ALERT_WINDOW
+  /// أو Full-Screen Intent (ForegroundServiceChannel.bringToForeground).
   Future<bool> _bringToForeground({int maxAttempts = 3}) async {
-    if (_foregroundRequestInFlight) return false;
-    _foregroundRequestInFlight = true;
+    final state = WidgetsBinding.instance.lifecycleState;
+    // إذا كانت الواجهة موجودة (paused/inactive/resumed) فلا حاجة لإظهارها.
+    if (state != null && state != AppLifecycleState.detached) return true;
+
+    const fsChannel = MethodChannel('camera_parent/foreground_service');
+
+    // ✅ النافذة الطافية (CameraWakeOverlay) تعمل طوال عمر خدمة البث، ولا
+    // تعتمد على فتح Activity (المحظور من خدمة خلفية على Android الحديث).
+    // إن كانت نشطة فالعملية مرئية فعلياً لدى Android بغض النظر عن حالة
+    // دورة حياة Flutter — لا داعي لانتظار startActivity/Full-Screen-Intent
+    // التي تفشل دائماً (شوهد في السجلات: FAILED بعد 3 محاولات في كل مرة).
     try {
-      const channel = MethodChannel('camera_parent/foreground_service');
-
-      for (int i = 0; i < maxAttempts; i++) {
-        try {
-          final ok = await channel.invokeMethod<bool>('bringToForeground');
-          debugPrint('[StreamService] bring attempt ${i + 1} → $ok');
-
-          // انتظر لنتأكد أن التطبيق فعلاً في المقدمة
-          await Future.delayed(const Duration(milliseconds: 900));
-          final state = WidgetsBinding.instance.lifecycleState;
-          if (state == AppLifecycleState.resumed) {
-            debugPrint('[StreamService] bringToForeground SUCCESS');
+      final hasOverlay =
+          await fsChannel.invokeMethod<bool>('hasActiveOverlay') ?? false;
+      if (hasOverlay) {
+        _clog('bringToForeground: active overlay present — proceeding '
+            'without waiting for Activity');
+        return true;
+      }
+    } catch (e) {
+      _clog('bringToForeground: hasActiveOverlay check failed: $e');
+    }
+    for (var i = 0; i < maxAttempts; i++) {
+      if (!_running) return false;
+      try {
+        final sent = await fsChannel.invokeMethod<bool>('bringToForeground');
+        _clog('bringToForeground attempt=${i + 1} sent=$sent');
+      } catch (e) {
+        _clog('bringToForeground attempt=${i + 1} error=$e');
+      }
+      // انتظر حتى 3 ثوانٍ لتظهر الواجهة (resumed).
+      for (var w = 0; w < 15; w++) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        final st = WidgetsBinding.instance.lifecycleState;
+        if (st != null && st != AppLifecycleState.detached) {
+          // قراءة واحدة قد تكون وامضة (محاولة فتح فشلت فعلياً لكن الحالة
+          // تبدّلت للحظة). نؤكد الاستقرار بقراءة ثانية بعد 400ms قبل القبول.
+          await Future.delayed(const Duration(milliseconds: 400));
+          final confirm = WidgetsBinding.instance.lifecycleState;
+          if (confirm != null && confirm != AppLifecycleState.detached) {
+            _clog('bringToForeground ok state=$confirm (confirmed)');
             return true;
           }
-          debugPrint('[StreamService] still in background (state=$state)');
-        } catch (e) {
-          debugPrint('[StreamService] bring attempt ${i + 1} error: $e');
+          _clog('bringToForeground flicker: state=$st then reverted to $confirm — retrying');
         }
-        await Future.delayed(const Duration(milliseconds: 700));
       }
-      debugPrint('[StreamService] bringToForeground FAILED after $maxAttempts');
-      return false;
-    } finally {
-      _foregroundRequestInFlight = false;
     }
+    _clog('bringToForeground FAILED: no activity (check overlay permission)');
+    return false;
   }
 
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
@@ -1437,7 +1582,17 @@ class StreamService {
 
     if (!_running || _peerConnections[viewerId] != pc) return;
     final attempts = _videoRecoveryAttempts[viewerId] ?? 0;
-    if (attempts >= 2) return;
+    if (attempts >= 2) {
+      // ✅ لا نستسلم بصمت: الكاميرا لا تنتج إطارات غالبًا لأن التطبيق في الخلفية (بعد الإقلاع).
+      // نؤجل المحاولة حتى يعود التطبيق للمقدمة، وعندها يفتح _onAppResumed الكاميرا ويرسل offer للمشاهد.
+      debugPrint('[StreamService] no video frames after $attempts attempts — deferring until app is foreground');
+      _videoRecoveryAttempts.remove(viewerId);
+      _pendingCameraStart = true;
+      _deferredViewerId = viewerId;
+      _deferredCallerName = _callerNames[viewerId] ?? 'Unknown';
+      _updateStatus("افتح تطبيق الابن لتشغيل الكاميرا");
+      return;
+    }
     _videoRecoveryAttempts[viewerId] = attempts + 1;
 
     final callerName = _callerNames[viewerId] ?? 'Unknown';
@@ -1546,13 +1701,8 @@ class StreamService {
     if (viewerId == null) return;
 
     _approvedFileViewers.remove(viewerId);
-    _consentedViewers.remove(viewerId);
-    _approvalInFlight.remove(viewerId);
-    _offerInFlight.remove(viewerId);
-    _approvalLockTimeouts.remove(viewerId);
-    _recoveringViewers.remove(viewerId);
-    _videoRecoveryAttempts.remove(viewerId);
-    _videoRecoveryAttempts.remove('wait:$viewerId');
+    // لا نحذف _consentedViewers هنا: الموافقة تبقى محفوظة بعد خروج المشاهد،
+    // وتُحذف فقط عند رفضه أو فك الاقتران.
     if (_deferredViewerId == viewerId) {
       _deferredViewerId = null;
       _deferredCallerName = null;
@@ -1636,6 +1786,9 @@ class StreamService {
     await prefs.remove('device_name');
     await prefs.remove('is_paired');
     await prefs.remove('auto_approve_viewers');
+    await prefs.remove(_consentPrefsKey);
+    _consentedViewers.clear();
+    _approvedFileViewers.clear();
     return true;
   }
 
