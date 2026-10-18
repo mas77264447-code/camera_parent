@@ -61,6 +61,7 @@ class StreamService {
   final Map<String, MediaStream> _remoteStreams = {};
   final Map<String, List<RTCIceCandidate>> _pendingRemoteIceByViewer = {};
   final Set<String> _approvalInFlight = <String>{};
+  final Map<String, DateTime> _approvalLockTimeouts = {};
   final Set<String> _offerInFlight = <String>{};
   final Set<String> _recoveringViewers = <String>{};
   final Map<String, int> _videoRecoveryAttempts = <String, int>{};
@@ -1026,6 +1027,7 @@ class StreamService {
       await _sendOfferTo(viewerId, callerName);
     } finally {
       _approvalInFlight.remove(viewerId);
+      _approvalLockTimeouts.remove(viewerId);
     }
   }
 
@@ -1545,6 +1547,9 @@ class StreamService {
 
     _approvedFileViewers.remove(viewerId);
     _consentedViewers.remove(viewerId);
+    _approvalInFlight.remove(viewerId);
+    _offerInFlight.remove(viewerId);
+    _approvalLockTimeouts.remove(viewerId);
     _recoveringViewers.remove(viewerId);
     _videoRecoveryAttempts.remove(viewerId);
     _videoRecoveryAttempts.remove('wait:$viewerId');
