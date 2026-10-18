@@ -12,35 +12,24 @@ object FlutterServiceBridge {
     private const val TAG = "FlutterServiceBridge"
     private const val CHANNEL = "camera_parent/service_agent"
     private const val ENGINE_ID = CameraParentApplication.ENGINE_ID
-
     private const val RETRY_DELAY_MS = 500L
     private const val MAX_START_RETRIES = 20
 
     private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
-
     private var currentChannel: MethodChannel? = null
+    private var retryRunnable: Runnable? = null
 
-    @Volatile
-    private var agentRunning = false
-
-    @Volatile
-    private var startInFlight = false
-
+    @Volatile private var agentRunning = false
+    @Volatile private var startInFlight = false
     private var retryCount = 0
 
     fun startAgent() {
         synchronized(lock) {
-            if (agentRunning) {
-                Log.d(TAG, "startAgent: already running")
-                return
-            }
-
             if (startInFlight) {
-                Log.d(TAG, "startAgent: start already in progress")
+                Log.d(TAG, "startAgent: already in progress")
                 return
             }
-
             startInFlight = true
             attemptStartLocked()
         }
@@ -48,60 +37,47 @@ object FlutterServiceBridge {
 
     private fun attemptStartLocked() {
         val engine = ensureEngine()
-
         if (engine == null) {
             scheduleRetryLocked("FlutterEngine not ready")
             return
         }
-
-        val channel = MethodChannel(
-            engine.dartExecutor.binaryMessenger,
-            CHANNEL
-        )
-
+        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
         currentChannel = channel
-
         try {
-            channel.invokeMethod(
-                "start",
-                null,
-                object : MethodChannel.Result {
+            channel.invokeMethod("start", null, object : MethodChannel.Result {
+                override fun success(result: Any?) {
+                    synchronized(lock) {
+                        agentRunning = true
+                        startInFlight = false
+                        retryCount = 0
+                    }
+                    Log.i(TAG, "agent started successfully")
+                }
 
-                    override fun success(result: Any?) {
-                        synchronized(lock) {
-                            agentRunning = true
+                override fun error(code: String, msg: String?, details: Any?) {
+                    synchronized(lock) {
+                        agentRunning = false
+                        if (code == "NO_SESSION") {
                             startInFlight = false
-                            retryCount = 0
+                            Log.w(TAG, "NO_SESSION — waiting for pair")
+                            return
                         }
-                        Log.i(TAG, "agent started successfully")
-                    }
-
-                    override fun error(
-                        code: String,
-                        msg: String?,
-                        details: Any?
-                    ) {
-                        synchronized(lock) {
-                            agentRunning = false
-                            scheduleRetryLocked("error $code / $msg")
-                        }
-                    }
-
-                    override fun notImplemented() {
-                        synchronized(lock) {
-                            agentRunning = false
-                            scheduleRetryLocked(
-                                "MethodChannel not implemented yet"
-                            )
-                        }
+                        scheduleRetryLocked("error $code / $msg")
                     }
                 }
-            )
+
+                override fun notImplemented() {
+                    synchronized(lock) {
+                        agentRunning = false
+                        scheduleRetryLocked("not implemented")
+                    }
+                }
+            })
         } catch (e: Exception) {
             Log.e(TAG, "startAgent invoke failed", e)
             synchronized(lock) {
                 agentRunning = false
-                scheduleRetryLocked("exception")
+                scheduleRetryLocked("exception ${e.message}")
             }
         }
     }
@@ -109,45 +85,30 @@ object FlutterServiceBridge {
     private fun scheduleRetryLocked(reason: String) {
         if (retryCount >= MAX_START_RETRIES) {
             startInFlight = false
-            Log.e(
-                TAG,
-                "startAgent: giving up after $retryCount retries. reason=$reason"
-            )
+            Log.e(TAG, "giving up after $retryCount retries. reason=$reason")
             return
         }
-
         retryCount++
-
-        Log.w(
-            TAG,
-            "startAgent: retry $retryCount/$MAX_START_RETRIES in " +
-                "${RETRY_DELAY_MS}ms. reason=$reason"
-        )
-
-        mainHandler.postDelayed(
-            {
-                synchronized(lock) {
-                    if (agentRunning) {
-                        startInFlight = false
-                        return@synchronized
-                    }
-                    attemptStartLocked()
-                }
-            },
-            RETRY_DELAY_MS
-        )
+        Log.w(TAG, "retry $retryCount/$MAX_START_RETRIES in ${RETRY_DELAY_MS}ms. reason=$reason")
+        retryRunnable?.let { mainHandler.removeCallbacks(it) }
+        retryRunnable = Runnable {
+            synchronized(lock) {
+                if (agentRunning) { startInFlight = false; return@synchronized }
+                attemptStartLocked()
+            }
+        }
+        mainHandler.postDelayed(retryRunnable!!, RETRY_DELAY_MS)
     }
 
     fun stopAgent() {
         synchronized(lock) {
-            mainHandler.removeCallbacksAndMessages(null)
-
+            retryRunnable?.let { mainHandler.removeCallbacks(it) }
+            retryRunnable = null
             if (!agentRunning && currentChannel == null) {
                 startInFlight = false
                 retryCount = 0
                 return
             }
-
             try {
                 currentChannel?.invokeMethod("stop", null)
             } catch (e: Exception) {
@@ -162,13 +123,9 @@ object FlutterServiceBridge {
     }
 
     private fun ensureEngine(): FlutterEngine? {
-        FlutterEngineCache.getInstance().get(ENGINE_ID)?.let {
-            return it
-        }
-
+        FlutterEngineCache.getInstance().get(ENGINE_ID)?.let { return it }
         val ctx = CameraParentApplication.appContext() ?: return null
         val app = ctx.applicationContext as? CameraParentApplication ?: return null
-
         return try {
             app.ensureEngine()
         } catch (e: Exception) {

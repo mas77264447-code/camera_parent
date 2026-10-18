@@ -11,7 +11,13 @@ class ServiceAgentChannel {
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
         case 'start':
-          await _startFromPersistedState();
+          final started = await _startFromPersistedState();
+          if (!started) {
+            throw PlatformException(
+              code: 'NO_SESSION',
+              message: 'No paired session — waiting for user to pair',
+            );
+          }
           return true;
         case 'stop':
           await StreamService.instance.stop();
@@ -22,20 +28,23 @@ class ServiceAgentChannel {
     });
   }
 
-  static Future<void> _startFromPersistedState() async {
+  static Future<bool> _startFromPersistedState() async {
     final prefs = await SharedPreferences.getInstance();
     final sessionId = prefs.getString('session_id');
     final deviceToken = prefs.getString('device_token');
     final deviceName = prefs.getString('device_name') ?? 'جهاز الطفل';
     final isPaired = prefs.getBool('is_paired') ?? false;
+
     if (!isPaired || sessionId == null || deviceToken == null) {
-      debugPrint('[ServiceAgent] no persisted session, skipping start');
-      return;
+      debugPrint('[ServiceAgent] no persisted session — returning false');
+      return false;
     }
+
     await StreamService.instance.start(
       sessionId: sessionId,
       deviceToken: deviceToken,
       cameraName: deviceName,
     );
+    return true;
   }
 }

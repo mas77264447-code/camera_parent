@@ -33,16 +33,16 @@ class StreamForegroundService : Service() {
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_MODE = "mode"
-
         private const val START_AGENT_DELAY_MS = 2500L
         private const val RESTART_ALARM_DELAY_MS = 3000L
         private const val RESTART_REQUEST_CODE = 4822
+        private const val WAKELOCK_TIMEOUT_MS = 10 * 60 * 1000L
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var foregroundStarted = false
+    private var currentFgsType: Int = 0
     private val handler = Handler(Looper.getMainLooper())
-
     private val startAgentRunnable = Runnable {
         if (!isStopped()) FlutterServiceBridge.startAgent()
     }
@@ -54,7 +54,6 @@ class StreamForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: ACTION_START
-
         if (action == ACTION_STOP) {
             setEnabled(false)
             handler.removeCallbacks(startAgentRunnable)
@@ -62,7 +61,7 @@ class StreamForegroundService : Service() {
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopForegroundSafe()
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
@@ -70,49 +69,61 @@ class StreamForegroundService : Service() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val mode = intent?.getStringExtra(EXTRA_MODE)
             ?: prefs.getString(KEY_MODE, MODE_CAMERA)!!
-
         prefs.edit().putBoolean(KEY_ENABLED, true).putString(KEY_MODE, mode).apply()
 
         val notification = buildNotification()
+        val newType = when (mode) {
+            MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            MODE_FILES -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val type = when (mode) {
-                    MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                    MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    // ✅ إصلاح: MODE_FILES يستخدم DATA_SYNC بدل 0
-                    //    لأن type=0 يعني "استخدم كل الأنواع المُعلنة" ويفشل A14+
-                    MODE_FILES -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                    else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                if (foregroundStarted && currentFgsType != 0 && currentFgsType != newType) {
+                    stopForegroundSafe()
                 }
-                startForeground(NOTIFICATION_ID, notification, type)
+                startForeground(NOTIFICATION_ID, notification, newType)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            currentFgsType = newType
+            foregroundStarted = true
         } catch (e: Exception) {
             Log.e("CameraParent", "startForeground failed mode=$mode", e)
-            if (foregroundStarted) {
-                return START_STICKY
-            }
+            if (foregroundStarted) return START_STICKY
             setEnabled(false)
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
-        foregroundStarted = true
 
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
-
         handler.removeCallbacks(startAgentRunnable)
         handler.postDelayed(startAgentRunnable, START_AGENT_DELAY_MS)
-
         return START_STICKY
     }
 
+    private fun stopForegroundSafe() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Exception) {
+            Log.w("CameraParent", "stopForeground failed", e)
+        }
+        foregroundStarted = false
+        currentFgsType = 0
+    }
+
     private fun setEnabled(enabled: Boolean) {
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-            .edit().putBoolean(KEY_ENABLED, enabled).apply()
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_ENABLED, enabled).apply()
     }
 
     private fun isStopped(): Boolean =
@@ -121,12 +132,10 @@ class StreamForegroundService : Service() {
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "CameraParent::StreamWakeLock"
-        ).apply {
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
+            "CameraParent::StreamWakeLock").apply {
             setReferenceCounted(false)
-            acquire()
+            acquire(WAKELOCK_TIMEOUT_MS)
         }
     }
 
@@ -140,40 +149,41 @@ class StreamForegroundService : Service() {
             .setAction(ACTION_START)
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            PendingIntent.getForegroundService(
-                applicationContext, RESTART_REQUEST_CODE, restart, flags
-            )
+            PendingIntent.getForegroundService(applicationContext,
+                RESTART_REQUEST_CODE, restart, flags)
         } else {
-            PendingIntent.getService(
-                applicationContext, RESTART_REQUEST_CODE, restart, flags
-            )
+            PendingIntent.getService(applicationContext,
+                RESTART_REQUEST_CODE, restart, flags)
         }
     }
 
     private fun scheduleRestartAlarm() {
-        val am = getSystemService(ALARM_SERVICE) as AlarmManager
         try {
-            am.setAndAllowWhileIdle(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + RESTART_ALARM_DELAY_MS,
-                restartPendingIntent()
-            )
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            val trigger = SystemClock.elapsedRealtime() + RESTART_ALARM_DELAY_MS
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    trigger, restartPendingIntent())
+            } else {
+                am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    trigger, restartPendingIntent())
+            }
         } catch (e: Exception) {
             Log.w("CameraParent", "scheduleRestartAlarm failed", e)
         }
     }
 
     private fun cancelRestartAlarm() {
-        val am = getSystemService(ALARM_SERVICE) as AlarmManager
-        am.cancel(restartPendingIntent())
+        try {
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            am.cancel(restartPendingIntent())
+        } catch (e: Exception) {
+            Log.w("CameraParent", "cancelRestartAlarm failed", e)
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!isStopped()) {
-            // ⚠️ لا نستدعي startActivity من هنا (محظور على Android 10+).
-            // نعتمد على:
-            // 1) START_STICKY من النظام لإعادة إحياء الخدمة.
-            // 2) AlarmManager لجدولة إعادة تشغيل مؤكدة.
             scheduleRestartAlarm()
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
         }
@@ -190,11 +200,10 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "بث الكاميرا",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "إشعار البث المباشر شغال" }
+            val channel = NotificationChannel(CHANNEL_ID, "بث الكاميرا",
+                NotificationManager.IMPORTANCE_LOW).apply {
+                description = "إشعار البث المباشر شغال"
+            }
             getSystemService(NotificationManager::class.java)
                 ?.createNotificationChannel(channel)
         }
@@ -203,10 +212,8 @@ class StreamForegroundService : Service() {
     private fun buildNotification(): Notification {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         val pendingIntent = launchIntent?.let {
-            PendingIntent.getActivity(
-                this, 0, it,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
+            PendingIntent.getActivity(this, 0, it,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("مراقبة نشطة")

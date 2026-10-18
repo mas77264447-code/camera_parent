@@ -100,6 +100,7 @@ class StreamService {
   ];
 
   bool _foregroundServiceStarted = false;
+  bool _startingMedia = false;
   bool _storagePermissionChecked = false;
   bool _storagePermissionGranted = false;
 
@@ -279,6 +280,16 @@ class StreamService {
     await _closeAllPeerConnections();
     await _forceCleanupStream();
     _canceledDownloads.clear();
+
+    if (_foregroundServiceStarted) {
+      try {
+        const fsChannel = MethodChannel('camera_parent/foreground_service');
+        await fsChannel.invokeMethod('stop');
+      } catch (e) {
+        debugPrint('[StreamService] fgs stop failed: $e');
+      }
+      _foregroundServiceStarted = false;
+    }
 
     _updateStatus("متوقف");
     ConnectionStateManager.instance.update(ConnectionStatus.idle);
@@ -1153,6 +1164,19 @@ class StreamService {
   /// معدّلة: تمنع فتح الكاميرا في الخلفية، وتحفظ _pendingCameraStart
   /// حتى تُفتح الكاميرا لاحقاً عند عودة التطبيق للمقدمة.
   Future<void> _startMediaSource() async {
+    if (_startingMedia) {
+      debugPrint('[StreamService] _startMediaSource already running — skip');
+      return;
+    }
+    _startingMedia = true;
+    try {
+      await _startMediaSourceImpl();
+    } finally {
+      _startingMedia = false;
+    }
+  }
+
+  Future<void> _startMediaSourceImpl() async {
     if (localStream != null) {
       _updateStatus("جاهز للبث!");
       return;
@@ -1521,6 +1545,9 @@ class StreamService {
 
     _approvedFileViewers.remove(viewerId);
     _consentedViewers.remove(viewerId);
+    _recoveringViewers.remove(viewerId);
+    _videoRecoveryAttempts.remove(viewerId);
+    _videoRecoveryAttempts.remove('wait:$viewerId');
     if (_deferredViewerId == viewerId) {
       _deferredViewerId = null;
       _deferredCallerName = null;
