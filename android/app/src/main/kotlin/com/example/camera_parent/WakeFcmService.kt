@@ -41,12 +41,4 @@ class WakeFcmService : FirebaseMessagingService() {
             }
         }
     }
-
-    override fun onNewToken(token: String) {
-        Log.i(TAG, "New FCM token: ${token.take(20)}...")
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-            .edit()
-            .putString(KEY_FCM_TOKEN, token)
-            .apply()
-    }
 }

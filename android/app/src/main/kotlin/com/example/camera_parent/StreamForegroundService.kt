@@ -50,6 +50,7 @@ class StreamForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        CameraWakeOverlay.show(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -192,6 +193,7 @@ class StreamForegroundService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(startAgentRunnable)
+        CameraWakeOverlay.hide()
         releaseWakeLock()
         super.onDestroy()
     }
