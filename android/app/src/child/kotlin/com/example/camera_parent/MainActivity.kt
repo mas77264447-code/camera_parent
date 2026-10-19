@@ -568,7 +568,6 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         (application as CameraParentApplication).flutterEngine
-            .plugins
             .onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
