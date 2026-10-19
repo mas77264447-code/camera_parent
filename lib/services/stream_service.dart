@@ -208,12 +208,13 @@ class StreamService {
     await Future.delayed(const Duration(milliseconds: 600));
     if (!_running) return;
 
-    // إجبار إعادة تهيئة الكاميرا (لأن أندرويد 14 يقطع الاتصال الفيزيائي في الخلفية)
-    await _forceCleanupStream();
-    await _startMediaSource();
-    
-    // إذا كان هناك مشاهدون متصلون، نقوم بتحديث اتصالهم بالمسار الجديد
-    if (_peerConnections.isNotEmpty) {
+    // دورة واحدة فقط لفتح الكاميرا. refreshAllViewers تُعيد اكتساب الكاميرا بنفسها
+    // (force) وتعيد التفاوض، فلا نُغلق الكاميرا ونفتحها قبلها (كان يحدث 3 دورات
+    // متتالية في ثانية واحدة فتبقى الكاميرا متصلة بلا إطارات: encoded=0).
+    if (_peerConnections.isEmpty) {
+      await _forceCleanupStream();
+      await _startMediaSource();
+    } else {
       await refreshAllViewers();
     }
   }
