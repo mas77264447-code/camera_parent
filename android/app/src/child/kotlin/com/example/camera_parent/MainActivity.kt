@@ -563,9 +563,10 @@ class MainActivity : FlutterActivity() {
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
-        permissions: Array<String>,
+        permissions: Array<out String>,
         grantResults: IntArray
     ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         (application as CameraParentApplication).flutterEngine
             .plugins
             .onRequestPermissionsResult(requestCode, permissions, grantResults)
