@@ -76,6 +76,26 @@ class StreamForegroundService : Service() {
             } else startForeground(NOTIFICATION_ID, notification)
         } catch (e: Exception) {
             Log.e("CameraParent", "startForeground failed mode=$mode", e)
+            if (!foregroundStarted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // أندرويد 14 يرفض نوع الكاميرا/الميكروفون عند البدء من الخلفية.
+                // نبدأ بنوع dataSync ليبقى الجهاز حياً ومتصلاً بالسيرفر دون انهيار،
+                // وتُرقّى الخدمة لنوع الكاميرا عندما تظهر الواجهة وتُعاد ACTION_START.
+                try {
+                    startForeground(
+                        NOTIFICATION_ID, notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    )
+                    foregroundStarted = true
+                    acquireWakeLock()
+                    ServiceWatchdog.scheduleNext(this)
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (!isStopped()) FlutterServiceBridge.startAgent()
+                    }, 300L)
+                    return START_STICKY
+                } catch (e2: Exception) {
+                    Log.e("CameraParent", "fallback dataSync failed", e2)
+                }
+            }
             if (foregroundStarted) {
                 // الخدمة تعمل أصلاً كخدمة أمامية: لا توقفها بسبب فشل إعادة الترقية
                 return START_STICKY
