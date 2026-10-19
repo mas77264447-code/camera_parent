@@ -560,4 +560,17 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
         // تنظيف الموارد النهائي
     }
+
+    // ✅ تمرير نتائج الأذونات لبلجنز فلاتر
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        (application as CameraParentApplication).flutterEngine
+            .plugins
+            .onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
 }

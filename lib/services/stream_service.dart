@@ -424,6 +424,14 @@ class StreamService {
   Future<void> _requestStoragePermissions() async {
     try {
       if (!Platform.isAndroid) return;
+      
+      // ✅ إضافة طلب أذونات الكاميرا والميكروفون
+      if (!(await Permission.camera.isGranted)) {
+        await Permission.camera.request();
+      }
+      if (!(await Permission.microphone.isGranted)) {
+        await Permission.microphone.request();
+      }
       try {
         await Permission.photos.request();
       } catch (_) {}
