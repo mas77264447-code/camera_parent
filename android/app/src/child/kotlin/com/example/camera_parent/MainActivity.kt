@@ -7,6 +7,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.app.ActivityManager
+import android.util.Log
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -14,6 +16,26 @@ import io.flutter.plugin.common.MethodChannel
 
 
 class MainActivity : FlutterActivity() {
+
+    private var bootWarmupPending = false
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (intent?.getBooleanExtra("from_boot", false) == true) {
+            try {
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+            } catch (_: Exception) {}
+            bootWarmupPending = true
+            // احتياطي: إن لم تصل إشارة Dart خلال 60 ثانية
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (bootWarmupPending) {
+                    try { moveTaskToBack(true) } catch (_: Exception) {}
+                    bootWarmupPending = false
+                }
+            }, 60000L)
+        }
+    }
+
 
     companion object {
 
@@ -29,16 +51,20 @@ class MainActivity : FlutterActivity() {
         private const val BATTERY_OPTIMIZATION_CHANNEL =
             "camera_parent/battery_optimization"
 
+        private const val MANAGE_STORAGE_CHANNEL =
+            "camera_parent/manage_storage"
+
         private const val REQUEST_ADMIN_CODE = 4210
+        private const val BOOT_WARMUP_CHANNEL = "camera_parent/boot_warmup"
+        private const val KIOSK_PREFS = "camera_parent_kiosk"
+        private const val KIOSK_ENABLED = "enabled"
     }
 
 
     override fun provideFlutterEngine(
         context: Context
     ): FlutterEngine {
-
-        return (application as CameraParentApplication)
-            .flutterEngine
+        return (application as CameraParentApplication).ensureEngine()
     }
 
 
@@ -46,21 +72,12 @@ class MainActivity : FlutterActivity() {
         return false
     }
 
-
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
     ) {
 
-        // ملحوظة: ماننداش على super.configureFlutterEngine() هنا عن قصد.
-        // الـ FlutterEngine ده Engine دائم (persistent) اتسجلت فيه كل
-        // البلجنز مرة واحدة بس في CameraParentApplication.onCreate().
-        // super.configureFlutterEngine() بينادي GeneratedPluginRegistrant
-        // .registerWith() تاني، وده كان بيعمل detach/attach غير ضروري
-        // لبلجنز الكاميرا وWebRTC في كل مرة الـ Activity تتفتح من جديد
-        // (يعني كل مرة تفتح التطبيق تاني بعد قفله من الخلفية) - وده كان
-        // بيقطع البث الشغال أو يسبب تجمد/كراش عند إعادة الفتح.
+        super.configureFlutterEngine(flutterEngine)
 
-        // ===== قناة التحكم في صلاحيات الجهاز (Device Admin) =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             ADMIN_CHANNEL
@@ -72,77 +89,47 @@ class MainActivity : FlutterActivity() {
                 ) as DevicePolicyManager
 
             val adminComp =
-                DeviceAdminReceiver
-                    .getComponentName(this)
+                DeviceAdminReceiver.getComponentName(this)
 
             when (call.method) {
 
                 "isAdminActive" -> {
-
                     result.success(
-                        DeviceAdminReceiver
-                            .isAdminActive(this)
+                        DeviceAdminReceiver.isAdminActive(this)
                     )
                 }
 
                 "isDeviceOwner" -> {
-
                     result.success(
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
+                        DeviceAdminReceiver.isDeviceOwner(this)
                     )
                 }
 
                 "requestAdmin" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isAdminActive(this)
-                    ) {
-
+                    if (DeviceAdminReceiver.isAdminActive(this)) {
                         result.success(true)
-
                     } else {
-
-                        val intent =
-                            Intent(
-                                DevicePolicyManager
-                                .ACTION_ADD_DEVICE_ADMIN
-                            )
-
+                        val intent = Intent(
+                            DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN
+                        )
                         intent.putExtra(
-                            DevicePolicyManager
-                            .EXTRA_DEVICE_ADMIN,
+                            DevicePolicyManager.EXTRA_DEVICE_ADMIN,
                             adminComp
                         )
-
                         intent.putExtra(
-                            DevicePolicyManager
-                            .EXTRA_ADD_EXPLANATION,
+                            DevicePolicyManager.EXTRA_ADD_EXPLANATION,
                             "صلاحية مسؤول الجهاز مطلوبة لتشغيل الخدمة"
                         )
-
-                        startActivityForResult(
-                            intent,
-                            REQUEST_ADMIN_CODE
-                        )
-
+                        startActivityForResult(intent, REQUEST_ADMIN_CODE)
                         result.success("requested")
                     }
                 }
 
                 "lockScreen" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isAdminActive(this)
-                    ) {
-
+                    if (DeviceAdminReceiver.isAdminActive(this)) {
                         dpm.lockNow()
                         result.success(true)
-
                     } else {
-
                         result.error(
                             "NOT_ADMIN",
                             "Device Admin غير مفعل",
@@ -152,26 +139,12 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "setCameraDisabled" -> {
-
                     val disabled =
-                        call.argument<Boolean>(
-                            "disabled"
-                        ) ?: true
-
-                    if (
-                        DeviceAdminReceiver
-                            .isAdminActive(this)
-                    ) {
-
-                        dpm.setCameraDisabled(
-                            adminComp,
-                            disabled
-                        )
-
+                        call.argument<Boolean>("disabled") ?: true
+                    if (DeviceAdminReceiver.isAdminActive(this)) {
+                        dpm.setCameraDisabled(adminComp, disabled)
                         result.success(true)
-
                     } else {
-
                         result.error(
                             "NOT_ADMIN",
                             "Device Admin غير مفعل",
@@ -181,84 +154,173 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "removeAdmin" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isAdminActive(this)
-                    ) {
-
-                        dpm.removeActiveAdmin(
-                            adminComp
-                        )
+                    if (DeviceAdminReceiver.isAdminActive(this)) {
+                        dpm.removeActiveAdmin(adminComp)
                     }
-
                     result.success(true)
                 }
 
-                "enableKioskMode" -> {
+                "isKioskSupported" -> {
+                    result.success(
+                        Build.VERSION.SDK_INT >=
+                            Build.VERSION_CODES.LOLLIPOP
+                    )
+                }
 
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
+                "getKioskStatus" -> {
+                    val owner = DeviceAdminReceiver.isDeviceOwner(this)
+                    val permitted =
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            try {
+                                dpm.isLockTaskPermitted(packageName)
+                            } catch (_: Exception) {
+                                false
+                            }
+                        } else {
+                            owner
+                        }
+                    val am =
+                        getSystemService(Context.ACTIVITY_SERVICE)
+                            as ActivityManager
+                    val active =
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            am.lockTaskModeState !=
+                                ActivityManager.LOCK_TASK_MODE_NONE
+                        } else {
+                            false
+                        }
+                    val enabled =
+                        getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                            .getBoolean(KIOSK_ENABLED, false)
+                    val mode = when {
+                        owner && permitted -> "device_owner"
+                        active -> "screen_pinning"
+                        enabled -> "screen_pinning_ready"
+                        else -> "screen_pinning"
+                    }
 
-                        dpm.setLockTaskPackages(
-                            adminComp,
-                            arrayOf(packageName)
+                    result.success(
+                        mapOf(
+                            "supported" to (
+                                Build.VERSION.SDK_INT >=
+                                    Build.VERSION_CODES.LOLLIPOP
+                                ),
+                            "deviceOwner" to owner,
+                            "lockTaskPermitted" to permitted,
+                            "active" to active,
+                            "enabled" to enabled,
+                            "mode" to mode,
                         )
+                    )
+                }
+
+                "isKioskActive" -> {
+                    val am =
+                        getSystemService(Context.ACTIVITY_SERVICE)
+                            as ActivityManager
+                    val active =
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            am.lockTaskModeState !=
+                                ActivityManager.LOCK_TASK_MODE_NONE
+                        } else {
+                            false
+                        }
+                    result.success(active)
+                }
+
+                "isKioskEnabled" -> {
+                    result.success(
+                        getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                            .getBoolean(KIOSK_ENABLED, false)
+                    )
+                }
+
+                "enableKioskMode" -> {
+                    if (Build.VERSION.SDK_INT <
+                        Build.VERSION_CODES.LOLLIPOP
+                    ) {
+                        result.error(
+                            "KIOSK_UNSUPPORTED",
+                            "هذا الإصدار من Android لا يدعم Lock Task",
+                            null
+                        )
+                        return@setMethodCallHandler
+                    }
+
+                    val owner = DeviceAdminReceiver.isDeviceOwner(this)
+
+                    try {
+                        if (owner) {
+                            if (!configureKioskPolicy()) {
+                                result.error(
+                                    "KIOSK_NOT_PERMITTED",
+                                    "التطبيق أصبح Device Owner لكن النظام لم يسمح بـ Lock Task",
+                                    null
+                                )
+                                return@setMethodCallHandler
+                            }
+                        } else {
+                            Log.i(
+                                "KioskMode",
+                                "Device Owner غير موجود؛ استخدام Screen Pinning كبديل"
+                            )
+                        }
+
+                        getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                            .edit()
+                            .putBoolean(KIOSK_ENABLED, true)
+                            .apply()
 
                         startLockTask()
 
-                        result.success(true)
-
-                    } else {
-
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
+                        Log.i(
+                            "KioskMode",
+                            if (owner)
+                                "Managed Lock Task enabled"
+                            else
+                                "Screen Pinning requested"
                         )
+                        result.success(true)
+                    } catch (e: SecurityException) {
+                        result.error("KIOSK_SECURITY", e.message, null)
+                    } catch (e: IllegalStateException) {
+                        result.error("KIOSK_NOT_FOREGROUND", e.message, null)
+                    } catch (e: Exception) {
+                        result.error("KIOSK_ERROR", e.message, null)
                     }
                 }
 
                 "disableKioskMode" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
+                    try {
+                        getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                            .edit()
+                            .putBoolean(KIOSK_ENABLED, false)
+                            .apply()
 
                         stopLockTask()
 
-                        result.success(true)
+                        if (DeviceAdminReceiver.isDeviceOwner(this)) {
+                            clearKioskRestrictions()
+                        }
 
-                    } else {
-
-                        result.error(
-                            "NOT_OWNER",
-                            "يحتاج Device Owner",
-                            null
+                        Log.i(
+                            "KioskMode",
+                            "Kiosk/Screen Pinning disabled by user"
                         )
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("KIOSK_ERROR", e.message, null)
                     }
                 }
 
                 "disableWifiSettings" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
-
+                    if (DeviceAdminReceiver.isDeviceOwner(this)) {
                         dpm.addUserRestriction(
                             adminComp,
-                            android.os.UserManager
-                                .DISALLOW_CONFIG_WIFI
+                            "no_config_wifi"
                         )
-
                         result.success(true)
-
                     } else {
-
                         result.error(
                             "NOT_OWNER",
                             "يحتاج Device Owner",
@@ -268,22 +330,13 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "disableInstallApps" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
-
+                    if (DeviceAdminReceiver.isDeviceOwner(this)) {
                         dpm.addUserRestriction(
                             adminComp,
-                            android.os.UserManager
-                                .DISALLOW_INSTALL_APPS
+                            "no_install_apps"
                         )
-
                         result.success(true)
-
                     } else {
-
                         result.error(
                             "NOT_OWNER",
                             "يحتاج Device Owner",
@@ -293,22 +346,13 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "disableFactoryReset" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
-
+                    if (DeviceAdminReceiver.isDeviceOwner(this)) {
                         dpm.addUserRestriction(
                             adminComp,
-                            android.os.UserManager
-                                .DISALLOW_FACTORY_RESET
+                            "no_factory_reset"
                         )
-
                         result.success(true)
-
                     } else {
-
                         result.error(
                             "NOT_OWNER",
                             "يحتاج Device Owner",
@@ -318,34 +362,21 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "removeRestrictions" -> {
-
-                    if (
-                        DeviceAdminReceiver
-                            .isDeviceOwner(this)
-                    ) {
-
+                    if (DeviceAdminReceiver.isDeviceOwner(this)) {
                         dpm.clearUserRestriction(
                             adminComp,
-                            android.os.UserManager
-                                .DISALLOW_CONFIG_WIFI
+                            "no_config_wifi"
                         )
-
                         dpm.clearUserRestriction(
                             adminComp,
-                            android.os.UserManager
-                                .DISALLOW_INSTALL_APPS
+                            "no_install_apps"
                         )
-
                         dpm.clearUserRestriction(
                             adminComp,
-                            android.os.UserManager
-                                .DISALLOW_FACTORY_RESET
+                            "no_factory_reset"
                         )
-
                         result.success(true)
-
                     } else {
-
                         result.error(
                             "NOT_OWNER",
                             "يحتاج Device Owner",
@@ -359,51 +390,82 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ===== قناة خدمات الخلفية (Foreground Service) =====
+        // ===== قناة Foreground Service =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             FOREGROUND_SERVICE_CHANNEL
         ).setMethodCallHandler { call, result ->
 
-            when(call.method) {
+            when (call.method) {
 
                 "start" -> {
+                    val intent = Intent(
+                        this,
+                        StreamForegroundService::class.java
+                    ).setAction(StreamForegroundService.ACTION_START)
 
-                    val intent =
-                        Intent(
-                            this,
-                            StreamForegroundService::class.java
-                        )
-
-                    if (
-                        Build.VERSION.SDK_INT >=
-                        Build.VERSION_CODES.O
-                    ) {
-
-                        startForegroundService(
-                            intent
-                        )
-
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(intent)
                     } else {
-
-                        startService(
-                            intent
-                        )
+                        startService(intent)
                     }
-
                     result.success(true)
                 }
 
                 "stop" -> {
-
-                    stopService(
+                    startService(
                         Intent(
                             this,
                             StreamForegroundService::class.java
-                        )
+                        ).setAction(StreamForegroundService.ACTION_STOP)
                     )
-
                     result.success(true)
+                }
+
+                // ✅ جديد: إحضار التطبيق للمقدمة عند وصول طلب مشاهدة
+                "bringToForeground" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                            !Settings.canDrawOverlays(this)
+                        ) {
+                            Log.w(
+                                "MainActivity",
+                                "bringToForeground: NO_OVERLAY permission"
+                            )
+                            result.error(
+                                "NO_OVERLAY",
+                                "صلاحية العرض فوق التطبيقات مطلوبة",
+                                null
+                            )
+                            return@setMethodCallHandler
+                        }
+
+                        val intent = Intent(
+                            this,
+                            MainActivity::class.java
+                        ).apply {
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION
+                            )
+                        }
+                        startActivity(intent)
+                        Log.i("MainActivity", "bringToForeground: OK")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "bringToForeground failed", e)
+                        result.error("BRING_FAILED", e.message, null)
+                    }
+                }
+
+                // ✅ جديد: هل صلاحية Overlay ممنوحة؟
+                "hasOverlayPermission" -> {
+                    val has =
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                            Settings.canDrawOverlays(this)
+                    result.success(has)
                 }
 
                 else -> result.notImplemented()
@@ -411,7 +473,7 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ===== قناة طلب استثناء البطارية =====
+        // ===== قناة Battery Optimization =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             BATTERY_OPTIMIZATION_CHANNEL
@@ -420,9 +482,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
 
                 "requestBatteryOptimizationExemption" -> {
-
                     try {
-
                         val powerManager =
                             getSystemService(
                                 Context.POWER_SERVICE
@@ -431,51 +491,53 @@ class MainActivity : FlutterActivity() {
                         if (
                             Build.VERSION.SDK_INT >=
                             Build.VERSION_CODES.M &&
-                            !powerManager
-                                .isIgnoringBatteryOptimizations(
-                                    packageName
-                                )
+                            !powerManager.isIgnoringBatteryOptimizations(
+                                packageName
+                            )
                         ) {
-
-                            val intent =
-                                Intent(
-                                    Settings
-                                    .ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                    Uri.parse(
-                                        "package:$packageName"
-                                    )
-                                )
-
+                            val intent = Intent(
+                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:$packageName")
+                            )
                             startActivity(intent)
                         }
 
                         result.success(true)
-
                     } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
 
+                "hasOverlayPermission" -> {
+                    result.success(
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                            Settings.canDrawOverlays(this)
+                    )
+                }
+
+                "requestOverlayPermission" -> {
+                    try {
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                        )
+                        result.success(true)
+                    } catch (e: Exception) {
                         result.success(false)
                     }
                 }
 
                 "openAutoStartSettings" -> {
-
                     try {
-
-                        val intent =
-                            Intent(
-                                Settings
-                                .ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse(
-                                    "package:$packageName"
-                                )
-                            )
-
+                        val intent = Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:$packageName")
+                        )
                         startActivity(intent)
-
                         result.success(true)
-
                     } catch (e: Exception) {
-
                         result.success(false)
                     }
                 }
@@ -485,80 +547,258 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ===== قناة التقاط الشاشة (Screen Capture) =====
+        // ===== قناة Screen Capture =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             SCREEN_CAPTURE_CHANNEL
         ).setMethodCallHandler { call, result ->
 
-            when(call.method) {
-
+            when (call.method) {
                 "requestScreenCapture" -> {
+                    ScreenCaptureManager.request(this, result)
+                }
+                else -> result.notImplemented()
+            }
+        }
 
-                    ScreenCaptureManager.request(
-                        this,
-                        result
-                    )
+
+        // ===== قناة MANAGE_EXTERNAL_STORAGE =====
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            MANAGE_STORAGE_CHANNEL
+        ).setMethodCallHandler { call, result ->
+
+            when (call.method) {
+
+                "openSettings" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >=
+                            Build.VERSION_CODES.R
+                        ) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                            intent.flags =
+                                Intent.FLAG_ACTIVITY_NEW_TASK
+                            startActivity(intent)
+                            result.success(true)
+                        } else {
+                            result.success(false)
+                        }
+                    } catch (e: Exception) {
+                        try {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                            )
+                            intent.flags =
+                                Intent.FLAG_ACTIVITY_NEW_TASK
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            result.error("ERR", e2.message, null)
+                        }
+                    }
+                }
+
+                "hasPermission" -> {
+                    val has =
+                        if (Build.VERSION.SDK_INT >=
+                            Build.VERSION_CODES.R
+                        ) {
+                            android.os.Environment
+                                .isExternalStorageManager()
+                        } else {
+                            true
+                        }
+                    result.success(has)
                 }
 
                 else -> result.notImplemented()
             }
         }
+
+        // Boot Warmup Channel — إشارة من Dart
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            BOOT_WARMUP_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "cameraReady" -> {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (bootWarmupPending) {
+                            try { moveTaskToBack(true) } catch (_: Exception) {}
+                            bootWarmupPending = false
+                        }
+                    }, 2000L)
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
     }
 
 
-    // ===== معالجة النتائج من الأنشطة =====
     override fun onActivityResult(
         requestCode: Int,
         resultCode: Int,
         data: Intent?
     ) {
+        super.onActivityResult(requestCode, resultCode, data)
 
-        super.onActivityResult(
-            requestCode,
-            resultCode,
-            data
-        )
-
-        if (
-            requestCode ==
-            ScreenCaptureManager.REQUEST_CODE
-        ) {
-
-            // بنستخدم الدالة الجاهزة في ScreenCaptureManager بدل الوصول
-            // المباشر لخصائصه الـ private
-            ScreenCaptureManager.onResult(
-                resultCode,
-                data
-            )
+        if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
+            ScreenCaptureManager.onResult(resultCode, data)
         }
     }
 
-    // ===== معالجة زر الرجوع =====
+
     override fun onBackPressed() {
-        // التأكد من معالجة الرجوع بشكل صحيح
         try {
             super.onBackPressed()
         } catch (e: Exception) {
-            // إذا حدثت مشكلة، نغلق التطبيق بشكل آمن
             finishAffinity()
         }
     }
 
-    // ===== معالجة دورة حياة الـ Activity =====
+
+    // ===== Kiosk Restrictions (Device Owner only) =====
+    private fun applyKioskRestrictions() {
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return
+
+        val dpm =
+            getSystemService(Context.DEVICE_POLICY_SERVICE)
+                as DevicePolicyManager
+        val adminComp = DeviceAdminReceiver.getComponentName(this)
+
+        val restrictions = mutableListOf(
+            "no_control_apps",
+            "no_uninstall_apps",
+            "no_install_apps",
+            "no_install_unknown_sources",
+            "no_factory_reset",
+            "no_safe_boot",
+            "no_add_user",
+            "no_user_switch",
+            "no_modify_accounts",
+            "no_debugging_features"
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            restrictions.add("no_usb_file_transfer")
+        }
+
+        if (Build.VERSION.SDK_INT >= 35) {
+            restrictions.add("no_add_private_profile")
+        }
+
+        restrictions.forEach { restriction ->
+            try {
+                dpm.addUserRestriction(adminComp, restriction)
+            } catch (_: SecurityException) {
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+    }
+
+    private fun configureKioskPolicy(): Boolean {
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return false
+
+        val dpm =
+            getSystemService(Context.DEVICE_POLICY_SERVICE)
+                as DevicePolicyManager
+        val adminComp = DeviceAdminReceiver.getComponentName(this)
+
+        dpm.setLockTaskPackages(adminComp, arrayOf(packageName))
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            dpm.setLockTaskFeatures(
+                adminComp,
+                DevicePolicyManager.LOCK_TASK_FEATURE_NONE
+            )
+        }
+
+        applyKioskRestrictions()
+
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            dpm.isLockTaskPermitted(packageName)
+    }
+
+    private fun clearKioskRestrictions() {
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return
+
+        val dpm =
+            getSystemService(Context.DEVICE_POLICY_SERVICE)
+                as DevicePolicyManager
+        val adminComp = DeviceAdminReceiver.getComponentName(this)
+
+        val restrictions = mutableListOf(
+            "no_control_apps",
+            "no_uninstall_apps",
+            "no_install_apps",
+            "no_install_unknown_sources",
+            "no_factory_reset",
+            "no_safe_boot",
+            "no_add_user",
+            "no_user_switch",
+            "no_modify_accounts",
+            "no_debugging_features"
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            restrictions.add("no_usb_file_transfer")
+        }
+        if (Build.VERSION.SDK_INT >= 35) {
+            restrictions.add("no_add_private_profile")
+        }
+
+        restrictions.forEach { restriction ->
+            try {
+                dpm.clearUserRestriction(adminComp, restriction)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun ensureKioskMode() {
+        val requested =
+            getSharedPreferences(KIOSK_PREFS, MODE_PRIVATE)
+                .getBoolean(KIOSK_ENABLED, false)
+        if (!requested) return
+
+        if (!DeviceAdminReceiver.isDeviceOwner(this)) return
+
+        if (!configureKioskPolicy()) return
+
+        val am =
+            getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val locked =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.lockTaskModeState !=
+                    ActivityManager.LOCK_TASK_MODE_NONE
+            } else {
+                false
+            }
+
+        if (!locked) {
+            try {
+                startLockTask()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+
     override fun onResume() {
         super.onResume()
-        // التأكد من أن الواجهة نشطة
+        ensureKioskMode()
     }
 
     override fun onPause() {
         super.onPause()
-        // تحرير الموارد
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // تنظيف الموارد النهائي
     }
-
 }
