@@ -561,14 +561,4 @@ class MainActivity : FlutterActivity() {
         // تنظيف الموارد النهائي
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        (application as CameraParentApplication).flutterEngine
-            .onRequestPermissionsResult(requestCode, permissions, grantResults)
-    }
-
 }
