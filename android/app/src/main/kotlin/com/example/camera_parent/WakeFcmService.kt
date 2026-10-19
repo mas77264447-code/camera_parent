@@ -36,19 +36,8 @@ class WakeFcmService : FirebaseMessagingService() {
                     StreamForegroundService.MODE_CAMERA
                 )
 
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(intent)
-                } else {
-                    startService(intent)
-                }
-                Log.i(TAG, "FGS start requested OK")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start FGS", e)
-            }
-
-            // الكاميرا لا تعمل من الخلفية بدون واجهة ظاهرة (تظهر صورة سوداء)،
-            // لذلك نحاول إظهار واجهة التطبيق.
+            // أندرويد 14 يمنع تشغيل الخدمة من الخلفية.
+            // الحل: نفتح واجهة التطبيق أولاً، وعندما يستيقظ، سيقوم كود فلاتر بتشغيل الخدمة والكاميرا.
             bringAppToForeground()
         }
     }
