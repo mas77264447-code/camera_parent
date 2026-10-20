@@ -331,13 +331,17 @@ class StreamService {
       debugPrint('[StreamService] connecting to $wsUrl/signal');
 
       // ✅ إصلاح: timeout على الاتصال
-      _ws = await WebSocket.connect('$wsUrl/signal')
+      final socket = await WebSocket.connect('$wsUrl/signal')
           .timeout(const Duration(seconds: 15));
+      _ws = socket;
 
       // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
-      _ws!.listen(
+      // ✅ إصلاح: أي callback من سوكيت قديم (ليس الحالي) يُتجاهل، حتى لا يهدم
+      // اتصالات المشاهدين التي تخص السوكيت الجديد.
+      socket.listen(
         _handleMessage,
         onError: (e) {
+          if (!identical(_ws, socket)) return;
           debugPrint('[StreamService] ws error: $e');
           if (_running) {
             _updateStatus('خطأ في الاتصال');
@@ -345,6 +349,10 @@ class StreamService {
           }
         },
         onDone: () async {
+          if (!identical(_ws, socket)) {
+            debugPrint('[StreamService] stale ws closed — ignored');
+            return;
+          }
           debugPrint('[StreamService] ws closed');
           if (_running) {
             _updateStatus('اتصال مقطوع');
@@ -356,7 +364,7 @@ class StreamService {
       );
 
       final _fcmToken = await FcmService.getToken();
-      _ws!.add(jsonEncode({
+      socket.add(jsonEncode({
         'type': 'register',
         'role': 'broadcaster',
         'deviceToken': _deviceToken,

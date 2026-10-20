@@ -25,6 +25,9 @@ class CameraParentApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         appContext = applicationContext
+        BootLog.init(this)
+        BootLog.w("process start pid=${android.os.Process.myPid()} sdk=${android.os.Build.VERSION.SDK_INT} model=${android.os.Build.MANUFACTURER}/${android.os.Build.MODEL}")
+        logPreviousExitReasons()
         installCrashLogger()
         ensureEngine()
     }
@@ -38,19 +41,52 @@ class CameraParentApplication : Application() {
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
-                val dir = android.os.Environment.getExternalStoragePublicDirectory(
-                    android.os.Environment.DIRECTORY_DOWNLOADS
+                BootLog.w(
+                    "CRASH [kotlin/${thread.name}]\n" +
+                        android.util.Log.getStackTraceString(throwable)
                 )
-                val file = java.io.File(dir, "camera_parent_crash.log")
-                file.appendText(
-                    "\n=== ${java.util.Date()} [native/${thread.name}] ===\n" +
-                        android.util.Log.getStackTraceString(throwable) + "\n"
-                )
-            } catch (_: Exception) {
-                // تجاهل: لا نريد أن يفشل تسجيل الكرش بسبب كرش آخر
+            } catch (_: Throwable) {
             }
             defaultHandler?.uncaughtException(thread, throwable)
         }
+    }
+
+    /** سبب موت العمليات السابقة (Android 11+): crash / native crash / low memory / kill ... */
+    private fun logPreviousExitReasons() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return
+        try {
+            val am = getSystemService(android.app.ActivityManager::class.java) ?: return
+            val list = am.getHistoricalProcessExitReasons(packageName, 0, 6)
+            for (r in list) {
+                BootLog.w(
+                    "PREV-EXIT time=${r.timestamp} reason=${r.reason}(${exitReasonName(r.reason)}) " +
+                        "status=${r.status} importance=${r.importance} desc=${r.description}"
+                )
+            }
+            if (list.isEmpty()) BootLog.w("PREV-EXIT none recorded")
+        } catch (e: Throwable) {
+            BootLog.w("PREV-EXIT failed: $e")
+        }
+    }
+
+    private fun exitReasonName(r: Int): String = when (r) {
+        1 -> "EXIT_SELF"
+        2 -> "SIGNALED"
+        3 -> "LOW_MEMORY"
+        4 -> "CRASH"
+        5 -> "CRASH_NATIVE"
+        6 -> "ANR"
+        7 -> "INITIALIZATION_FAILURE"
+        8 -> "PERMISSION_CHANGE"
+        9 -> "EXCESSIVE_RESOURCE_USAGE"
+        10 -> "USER_REQUESTED"
+        11 -> "USER_STOPPED"
+        12 -> "DEPENDENCY_DIED"
+        13 -> "OTHER"
+        14 -> "FREEZER"
+        15 -> "PACKAGE_STATE_CHANGE"
+        16 -> "PACKAGE_UPDATED"
+        else -> "UNKNOWN"
     }
 
     @Synchronized
@@ -71,6 +107,14 @@ class CameraParentApplication : Application() {
             applicationContext,
             MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/file_access")
         )
+
+        MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/diag_log")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "log") {
+                    BootLog.w(call.arguments?.toString() ?: "")
+                    result.success(true)
+                } else result.notImplemented()
+            }
 
         ConnectivityChannel.setup(engine)
         NetworkConnectivityListener(applicationContext) { online ->

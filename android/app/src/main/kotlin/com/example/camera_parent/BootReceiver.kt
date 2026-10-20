@@ -8,6 +8,7 @@ import android.provider.Settings
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        BootLog.init(context)
         val a = intent.action
         BootLog.w("receiver got $a sdk=${Build.VERSION.SDK_INT}")
         if (a != Intent.ACTION_BOOT_COMPLETED &&
