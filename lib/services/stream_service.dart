@@ -932,42 +932,54 @@ class StreamService {
 
     debugPrint('[StreamService] viewer-joined: $viewerId source=$requestedSource');
 
+    // ✅ إصلاح: كان هذا الشرط يتحقق من _approvalInFlight فقط دون أن يضيف
+    // إليها أبداً — حارس بلا أثر (no-op). ونداء هذه الدالة من معالج رسائل
+    // الـwebsocket لا يُنتظر (await) أصلاً، فإذا وصلت عدة رسائل
+    // "viewer-joined" لنفس viewerId خلال ثوانٍ (كما في سجل السيرفر: 3 طلبات
+    // متتالية خلال ~20 ثانية) تتنفّذ عدة نسخ من هذه الدالة بالتوازي فعلياً،
+    // وتتسابق على فتح/إغلاق الكاميرا ونفس PeerConnection في نفس اللحظة —
+    // وهذا هو سبب انهيار العملية (ws close code=1006) عند الطلب الثالث.
     if (_approvalInFlight.contains(viewerId)) {
       debugPrint('[StreamService] approval in flight for $viewerId → skip');
       return;
     }
+    _approvalInFlight.add(viewerId);
 
-    final existingPc = _peerConnections[viewerId];
-    if (existingPc != null) {
-      try {
-        final state = await existingPc.getConnectionState();
-        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-          return;
+    try {
+      final existingPc = _peerConnections[viewerId];
+      if (existingPc != null) {
+        try {
+          final state = await existingPc.getConnectionState();
+          if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+            return;
+          }
+        } catch (_) {}
+        try { await existingPc.close(); } catch (_) {}
+        _peerConnections.remove(viewerId);
+        _pendingRemoteIceByViewer.remove(viewerId);
+      }
+
+      if (requestedSource != null) {
+        final newScreen = requestedSource == 'screen';
+        final newFiles = requestedSource == 'files';
+
+        if (_broadcastScreen != newScreen && localStream != null) {
+          await _forceCleanupStream();
         }
-      } catch (_) {}
-      try { await existingPc.close(); } catch (_) {}
-      _peerConnections.remove(viewerId);
-      _pendingRemoteIceByViewer.remove(viewerId);
-    }
 
-    if (requestedSource != null) {
-      final newScreen = requestedSource == 'screen';
-      final newFiles = requestedSource == 'files';
-
-      if (_broadcastScreen != newScreen && localStream != null) {
-        await _forceCleanupStream();
+        _broadcastScreen = newScreen;
+        _broadcastFiles = newFiles;
       }
 
-      _broadcastScreen = newScreen;
-      _broadcastFiles = newFiles;
-    }
-
-    if (!_broadcastFiles) {
-      if (localStream == null) {
-        await _startMediaSource();
+      if (!_broadcastFiles) {
+        if (localStream == null) {
+          await _startMediaSource();
+        }
       }
+      await _sendOfferTo(viewerId, callerName);
+    } finally {
+      _approvalInFlight.remove(viewerId);
     }
-    await _sendOfferTo(viewerId, callerName);
   }
 
   bool _hasLiveVideoTrack() {
