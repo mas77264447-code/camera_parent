@@ -36,8 +36,25 @@ class WakeFcmService : FirebaseMessagingService() {
                     StreamForegroundService.MODE_CAMERA
                 )
 
-            // أندرويد 14 يمنع تشغيل الخدمة من الخلفية.
-            // الحل: نفتح واجهة التطبيق أولاً، وعندما يستيقظ، سيقوم كود فلاتر بتشغيل الخدمة والكاميرا.
+            // ✅ إصلاح: كان هذا الـ intent يُبنى ولا يُستخدم إطلاقاً — الاستيقاظ
+            // كان يعتمد فقط على bringAppToForeground() (أي startActivity من
+            // الخلفية)، وهذا محجوب من أندرويد 10+ (BAL) إن لم يكن هناك Overlay
+            // ظاهر أصلاً. بدء خدمة أمامية من داخل onMessageReceived مسموح
+            // رسمياً (استثناء موثّق لرسائل FCM)، وهو ما يرفع CameraWakeOverlay
+            // ويشغّل الكاميرا فعلياً بدون أي حاجة لإظهار الواجهة.
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+                Log.i(TAG, "StreamForegroundService started directly from FCM wake")
+            } catch (e: Exception) {
+                Log.e(TAG, "startForegroundService failed from wake", e)
+            }
+
+            // أفضل-جهد فقط لإظهار الواجهة للمستخدم إن أمكن (الكاميرا لم تعد
+            // تعتمد على نجاح هذا الاستدعاء بعد الإصلاح أعلاه).
             bringAppToForeground()
         }
     }
