@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'services/connectivity_method_channel.dart';
+import 'services/crash_logger.dart';
 import 'services/fcm_service.dart';
 import 'services/native_bridge.dart';
 import 'services/network_monitor.dart';
@@ -18,8 +21,25 @@ const bool isChildBuild =
     bool.fromEnvironment('IS_CHILD_BUILD', defaultValue: false);
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  // أداة تشخيص مؤقتة: تسجّل أي استثناء Dart غير مُلتقط (سواء داخل
+  // شجرة الواجهات أو خارجها، مثل async callbacks في stream_service.dart)
+  // إلى نفس ملف لوق الكرش الأصلي — لمعرفة سبب انقطاع اتصال الابن
+  // المفاجئ (ws close code=1006) عند قبول مشاهد جديد.
+  runZonedGuarded<void>(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
+    FlutterError.onError = (FlutterErrorDetails details) {
+      FlutterError.presentError(details);
+      unawaited(CrashLogger.log('FlutterError', details.exception, details.stack));
+    };
+
+    await _bootstrap();
+  }, (Object error, StackTrace stack) {
+    unawaited(CrashLogger.log('runZonedGuarded', error, stack));
+  });
+}
+
+Future<void> _bootstrap() async {
   // ═══ Firebase + FCM ═══
   try {
     await Firebase.initializeApp();

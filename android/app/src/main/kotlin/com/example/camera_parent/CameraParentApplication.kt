@@ -25,7 +25,32 @@ class CameraParentApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         appContext = applicationContext
+        installCrashLogger()
         ensureEngine()
+    }
+
+    /**
+     * يكتب أي استثناء غير مُلتقط (JVM-level) في ملف داخل Downloads العامة،
+     * قابل للقراءة من Termux بدون adb. أداة تشخيص مؤقتة لتتبع سبب انهيار
+     * العملية عند قبول مشاهد جديد (ws close code=1006).
+     */
+    private fun installCrashLogger() {
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS
+                )
+                val file = java.io.File(dir, "camera_parent_crash.log")
+                file.appendText(
+                    "\n=== ${java.util.Date()} [native/${thread.name}] ===\n" +
+                        android.util.Log.getStackTraceString(throwable) + "\n"
+                )
+            } catch (_: Exception) {
+                // تجاهل: لا نريد أن يفشل تسجيل الكرش بسبب كرش آخر
+            }
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
     }
 
     @Synchronized
