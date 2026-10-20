@@ -49,6 +49,7 @@ class StreamForegroundService : Service() {
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
+            CameraWakeOverlay.hide()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelfResult(startId)
             return START_NOT_STICKY
@@ -84,6 +85,13 @@ class StreamForegroundService : Service() {
             return START_NOT_STICKY
         }
         foregroundStarted = true
+
+        // يرفع أهمية العملية إلى IMPORTANCE_VISIBLE بدون الحاجة لـ Activity ظاهر،
+        // وهذا يتجاوز قيد أندرويد الذي يمنع الكاميرا من إنتاج إطارات فعلية
+        // عندما تُفتح من خدمة خلفية بحتة (راجع CameraWakeOverlay.kt للتفاصيل).
+        if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
+            CameraWakeOverlay.show(applicationContext)
+        }
 
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
@@ -148,6 +156,7 @@ class StreamForegroundService : Service() {
 
     override fun onDestroy() {
         releaseWakeLock()
+        CameraWakeOverlay.hide()
         super.onDestroy()
     }
 

@@ -468,6 +468,12 @@ class MainActivity : FlutterActivity() {
                     result.success(has)
                 }
 
+                // ✅ هل نافذة CameraWakeOverlay مضافة فعلياً الآن؟
+                // (أهمية العملية IMPORTANCE_VISIBLE بدون الحاجة لـ Activity ظاهر)
+                "hasActiveOverlay" -> {
+                    result.success(CameraWakeOverlay.isActive())
+                }
+
                 else -> result.notImplemented()
             }
         }
