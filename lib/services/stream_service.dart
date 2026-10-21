@@ -1068,11 +1068,24 @@ class StreamService {
       return;
     }
     _offerInFlight.add(viewerId);
+    _trace('offer:enter $viewerId');
     try {
       await _sendOfferToImpl(viewerId, callerName);
     } finally {
       _offerInFlight.remove(viewerId);
     }
+  }
+
+  /// نقاط تتبع: تُكتب بشكل متزامن ومُفرَّغ (flush) قبل كل خطوة أصلية،
+  /// فإذا انهارت العملية بشكل أصلي يبقى آخر سطر دليلاً على الخطوة القاتلة.
+  static void _trace(String step) {
+    try {
+      File('/storage/emulated/0/Download/cp_trace.log').writeAsStringSync(
+        '${DateTime.now().toIso8601String()} $step\n',
+        mode: FileMode.append,
+        flush: true,
+      );
+    } catch (_) {}
   }
 
   Future<void> _sendOfferToImpl(String viewerId, String callerName) async {
@@ -1099,7 +1112,9 @@ class StreamService {
     }
     _pendingRemoteIceByViewer.remove(viewerId);
 
+    _trace('pc:creating');
     final pc = await createPeerConnection({'iceServers': _iceServers});
+    _trace('pc:created');
     _peerConnections[viewerId] = pc;
 
     pc.onTrack = (RTCTrackEvent event) {
@@ -1147,11 +1162,16 @@ class StreamService {
 
     try {
       for (final track in localStream!.getTracks()) {
+        _trace('addTrack:start ${track.kind} ${track.id}');
         await pc.addTrack(track, localStream!);
+        _trace('addTrack:done ${track.kind}');
       }
 
+      _trace('createOffer:start');
       final offer = await pc.createOffer();
+      _trace('createOffer:done');
       await pc.setLocalDescription(offer);
+      _trace('setLocalDescription:done');
 
       if (_ws == null || _ws!.readyState != WebSocket.open) return;
 
