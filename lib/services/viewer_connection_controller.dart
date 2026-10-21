@@ -37,7 +37,6 @@ class ViewerConnectionController extends ChangeNotifier {
   String get diag => _diag;
   bool get rejected => _rejected;
   bool get remoteAudioMuted => _remoteAudioMuted;
-  bool get isScreenShare => _requestedSource == 'screen';
 
   MediaStream? _remoteStream;
   String _status = 'جاري الاتصال...';

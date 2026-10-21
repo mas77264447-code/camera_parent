@@ -53,26 +53,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
   }
 
-  Future<String?> _chooseRequestedSource() {
-    return showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('اختر مصدر البث'),
-        content: const Text('هل تريد بث الكاميرا أم مشاركة شاشة الجهاز؟'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'camera'),
-            child: const Text('📷 الكاميرا'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'screen'),
-            child: const Text('🖥️ الشاشة'),
-          ),
-        ],
-      ),
-    );
-  }
+  // مشاهدة الكاميرا فقط: ميزة مشاركة الشاشة أُلغيت.
+  Future<String?> _chooseRequestedSource() async => 'camera';
 
   Future<bool> _handleBack() async {
     await _controller.leaveSession();
@@ -103,7 +85,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
               if (mounted) Navigator.of(context).pop();
             },
           ),
-          title: Text(c.isScreenShare ? '${widget.name} - الشاشة' : widget.name),
+          title: Text(widget.name),
           centerTitle: true,
           actions: [
             if (c.remoteStream != null)
@@ -112,12 +94,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
                 onPressed: c.toggleRemoteAudio,
                 tooltip: c.remoteAudioMuted ? 'تشغيل صوت الطفل' : 'كتم صوت الطفل',
               ),
-            if (!c.isScreenShare)
-              IconButton(
-                icon: const Icon(Icons.cameraswitch),
-                onPressed: c.remoteStream != null ? c.switchRemoteCamera : null,
-                tooltip: 'تبديل كاميرا الطفل (أمامية/خلفية)',
-              ),
+            IconButton(
+              icon: const Icon(Icons.cameraswitch),
+              onPressed: c.remoteStream != null ? c.switchRemoteCamera : null,
+              tooltip: 'تبديل كاميرا الطفل (أمامية/خلفية)',
+            ),
           ],
         ),
         body: Column(
@@ -141,30 +122,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
                       ),
                     ),
                   ),
-                  if (c.isScreenShare && c.remoteStream != null)
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade700,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.screen_share, color: Colors.white, size: 16),
-                            SizedBox(width: 6),
-                            Text(
-                              'بث الشاشة',
-                              style: TextStyle(
-                                  color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
                   if (c.rejected)
                     const Positioned.fill(
                       child: Center(

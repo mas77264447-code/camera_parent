@@ -42,11 +42,17 @@ class WakeFcmService : FirebaseMessagingService() {
             // ظاهر أصلاً. بدء خدمة أمامية من داخل onMessageReceived مسموح
             // رسمياً (استثناء موثّق لرسائل FCM)، وهو ما يرفع CameraWakeOverlay
             // ويشغّل الكاميرا فعلياً بدون أي حاجة لإظهار الواجهة.
+            //
+            // ⚠️ أُعيد تفعيله: تعطيله سابقاً (لظنّ أنه سبب انهيار ws
+            // code=1006) كان خطأ تشخيص — السبب الفعلي المؤكَّد بسجل السيرفر
+            // هو خلل سباق في _handleApprovedViewer (Dart)، تم إصلاحه بمعزل
+            // عن هذا الاستدعاء. تعطيل هذا السطر يُرجع مشكلة مختلفة تماماً:
+            // "إعادة التشغيل عن بُعد لا تعمل إطلاقاً" عند قتل التطبيق بالكامل.
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    // startForegroundService(intent) // Disabled for Android 14
+                    startForegroundService(intent)
                 } else {
-                    // startService(intent) // Disabled for Android 14
+                    startService(intent)
                 }
                 Log.i(TAG, "StreamForegroundService started directly from FCM wake")
             } catch (e: Exception) {
