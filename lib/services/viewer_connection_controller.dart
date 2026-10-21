@@ -68,11 +68,20 @@ class ViewerConnectionController extends ChangeNotifier {
 
   int _videoStallChecks = 0;
   bool _stallIceRestartTried = false;
+  int _stallFullReconnects = 0;
+  static const int maxStallFullReconnects = 3;
+  Timer? _offerWaitTimer;
+  int _offerGen = 0;
   int _reconnectAttempts = 0;
   int _consecutiveFailures = 0;
   bool _iceRestartInProgress = false;
 
   bool _disposed = false;
+
+  /// لا نُشعر المستمعين بعد التخلّص من الكائن (callbacks متأخرة من الشبكة).
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
 
   // ─────────────────────────── دورة الحياة ───────────────────────────
 
@@ -83,8 +92,11 @@ class ViewerConnectionController extends ChangeNotifier {
   /// للواجهة بعرض حوار اختيار المصدر دون أن يعرف هذا الكائن شيئاً عن الـUI.
   Future<void> start({required Future<String?> Function() chooseSource}) async {
     _requestedSource = initialSource ?? await chooseSource() ?? 'camera';
+    if (_disposed) return;
     await _loadIceServers();
+    if (_disposed) return;
     await remoteRenderer.initialize();
+    if (_disposed) return;
     _startHealthCheck();
     _diagTimer = Timer.periodic(const Duration(seconds: 2), (_) => _updateDiag());
     await _connectSignaling();
@@ -98,6 +110,7 @@ class ViewerConnectionController extends ChangeNotifier {
     _pingTimer?.cancel();
     _diagTimer?.cancel();
     _noMediaWatchdog?.cancel();
+    _offerWaitTimer?.cancel();
     _cancelRendererTimers();
 
     try {
@@ -132,6 +145,7 @@ class ViewerConnectionController extends ChangeNotifier {
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
     _noMediaWatchdog?.cancel();
+    _offerWaitTimer?.cancel();
     _cancelRendererTimers();
 
     final socket = _ws;
@@ -168,7 +182,7 @@ class ViewerConnectionController extends ChangeNotifier {
     for (final t in _remoteStream!.getAudioTracks()) {
       t.enabled = !_remoteAudioMuted;
     }
-    notifyListeners();
+    _notify();
   }
 
   // ─────────────────────────── تشخيص ───────────────────────────
@@ -208,7 +222,7 @@ class ViewerConnectionController extends ChangeNotifier {
     }
     if (_disposed) return;
     _diag = lines.join('\n');
-    notifyListeners();
+    _notify();
   }
 
   // ─────────────────────────── ربط الـrenderer ───────────────────────────
@@ -225,7 +239,7 @@ class ViewerConnectionController extends ChangeNotifier {
       if (_disposed || !identical(_remoteStream, stream)) return;
       try {
         remoteRenderer.srcObject = stream;
-        notifyListeners();
+        _notify();
         debugPrint('[Viewer] renderer bound to stream ${stream.id}');
       } catch (e) {
         debugPrint('[Viewer] renderer bind failed: $e');
@@ -242,8 +256,9 @@ class ViewerConnectionController extends ChangeNotifier {
   ///   إعادة اتصال كاملة تمر بمسار قبول مشاهد جديد عنده تفعل ذلك.
   void _startVideoFrameWatchdog() {
     _videoFrameWatchdog?.cancel();
-    _videoStallChecks = 0;
-    _stallIceRestartTried = false;
+    // لا نُصفّر العدّادات هنا: كل offer جديد يمر على هذه الدالة، وتصفيرها كان
+    // يمنع الوصول لمرحلة إعادة الاتصال الكاملة ويُنتج حلقة restart-ice لا تنتهي.
+    // تُصفَّر فقط عند وصول إطار فعلي أو بعد إعادة اتصال كاملة.
 
     _videoFrameWatchdog = Timer.periodic(const Duration(seconds: 2), (timer) {
       if (_disposed) {
@@ -259,6 +274,11 @@ class ViewerConnectionController extends ChangeNotifier {
 
       if (remoteRenderer.videoWidth > 0) {
         debugPrint('[Watchdog] video OK ${remoteRenderer.videoWidth}x${remoteRenderer.videoHeight}');
+        _videoStallChecks = 0;
+        _stallIceRestartTried = false;
+        _stallFullReconnects = 0;
+        _status = 'متصل ✓';
+        _notify();
         timer.cancel();
         return;
       }
@@ -273,7 +293,7 @@ class ViewerConnectionController extends ChangeNotifier {
             if (_disposed || !identical(_remoteStream, stream)) return;
             try {
               remoteRenderer.srcObject = stream;
-              notifyListeners();
+              _notify();
             } catch (_) {}
           });
         } catch (_) {}
@@ -283,7 +303,16 @@ class ViewerConnectionController extends ChangeNotifier {
         _tryIceRestart();
       } else if (_videoStallChecks >= 15) {
         timer.cancel();
-        debugPrint('[Watchdog] still no video after ~30s despite ICE restart — full reconnect');
+        if (_stallFullReconnects >= maxStallFullReconnects) {
+          debugPrint('[Watchdog] giving up after $_stallFullReconnects full reconnects');
+          _status = 'تعذر استقبال الفيديو: الكاميرا على جهاز الطفل لا تُنتج إطارات.';
+          _notify();
+          return;
+        }
+        _stallFullReconnects++;
+        _videoStallChecks = 0;
+        _stallIceRestartTried = false;
+        debugPrint('[Watchdog] still no video after ~30s despite ICE restart — full reconnect #$_stallFullReconnects');
         _reconnectFull();
       }
     });
@@ -304,7 +333,7 @@ class ViewerConnectionController extends ChangeNotifier {
     Future.microtask(() {
       if (_disposed) return;
       remoteRenderer.srcObject = stream;
-      notifyListeners();
+      _notify();
     });
   }
 
@@ -337,6 +366,7 @@ class ViewerConnectionController extends ChangeNotifier {
   }
 
   void _performHealthCheck() {
+    if (_rejected) return;
     final wsConnected = _ws?.readyState == WebSocket.open;
     final pcState = _pc?.connectionState;
     final pcConnected = _pc == null ||
@@ -369,33 +399,52 @@ class ViewerConnectionController extends ChangeNotifier {
 
   Future<void> _tryIceRestart() async {
     if (_iceRestartInProgress || _disposed) return;
+    // يبقى الحارس مفعّلاً حتى يصل offer جديد (_handleOffer) أو تنتهي مهلة 30ث،
+    // لمنع طلبات restart-ice المتكررة من أكثر من مصدر في وقت واحد.
     _iceRestartInProgress = true;
 
-    try {
-      _status = 'إعادة محاولة الاتصال...';
-      notifyListeners();
-      debugPrint('[ICE] sending request-restart-ice');
+    _status = 'إعادة محاولة الاتصال...';
+    _notify();
+    debugPrint('[ICE] sending request-restart-ice');
 
+    try {
+      _ws?.add(jsonEncode({'type': 'request-restart-ice'}));
+    } catch (e) {
+      debugPrint('[ICE] send failed: $e');
+      _iceRestartInProgress = false;
+      _reconnectFull();
+      return;
+    }
+
+    _noMediaWatchdog?.cancel();
+    _noMediaWatchdog = Timer(const Duration(seconds: 30), () {
+      _iceRestartInProgress = false;
+      if (_disposed) return;
+      if (_remoteStream == null) {
+        debugPrint('[ICE] no offer after restart request — full reconnect');
+        _reconnectFull();
+      }
+    });
+  }
+
+  /// بعد الموافقة: إذا لم يصل offer خلال 20 ثانية نطلب من المُذيع إعادة
+  /// الإرسال مرة واحدة، ثم نعيد الاتصال كاملاً إذا استمر الصمت.
+  void _startOfferWaitTimer() {
+    _offerWaitTimer?.cancel();
+    _offerWaitTimer = Timer(const Duration(seconds: 20), () {
+      if (_disposed || _remoteStream != null || _pc != null) return;
+      debugPrint('[Viewer] no offer 20s after approval — requesting restart');
+      _status = 'لم يبدأ البث بعد. قد يحتاج الجهاز الآخر لفتح التطبيق...';
+      _notify();
       try {
         _ws?.add(jsonEncode({'type': 'request-restart-ice'}));
-      } catch (e) {
-        debugPrint('[ICE] send failed: $e');
-        _iceRestartInProgress = false;
+      } catch (_) {}
+      _offerWaitTimer = Timer(const Duration(seconds: 25), () {
+        if (_disposed || _remoteStream != null || _pc != null) return;
+        debugPrint('[Viewer] still no offer — full reconnect');
         _reconnectFull();
-        return;
-      }
-
-      _noMediaWatchdog?.cancel();
-      _noMediaWatchdog = Timer(const Duration(seconds: 30), () {
-        if (_disposed) return;
-        if (_remoteStream == null) {
-          debugPrint('[ICE] no offer after restart request — full reconnect');
-          _reconnectFull();
-        }
       });
-    } finally {
-      _iceRestartInProgress = false;
-    }
+    });
   }
 
   void _startPingServer() {
@@ -443,7 +492,7 @@ class ViewerConnectionController extends ChangeNotifier {
       }));
 
       _status = 'في انتظار موافقة صاحب الكاميرا...';
-      notifyListeners();
+      _notify();
 
       _startPingServer();
 
@@ -466,22 +515,22 @@ class ViewerConnectionController extends ChangeNotifier {
             remoteRenderer.srcObject = null;
           } catch (_) {}
           _status = 'انقطع الاتصال - جاري إعادة المحاولة...';
-          notifyListeners();
+          _notify();
           _scheduleReconnect();
         },
         onError: (e) {
           _status = 'خطأ: $e';
-          notifyListeners();
+          _notify();
           _scheduleReconnect();
         },
       );
     } on TimeoutException {
       _status = 'انتهت مهلة الاتصال - جاري إعادة المحاولة...';
-      notifyListeners();
+      _notify();
       _scheduleReconnect();
     } catch (e) {
       _status = 'فشل الاتصال بالسيرفر - جاري إعادة المحاولة...';
-      notifyListeners();
+      _notify();
       _scheduleReconnect();
     }
   }
@@ -500,7 +549,7 @@ class ViewerConnectionController extends ChangeNotifier {
 
     if (_reconnectAttempts > maxReconnectAttempts) {
       _status = 'فشل الاتصال - تم تجاوز الحد الأقصى';
-      notifyListeners();
+      _notify();
       return;
     }
 
@@ -520,6 +569,9 @@ class ViewerConnectionController extends ChangeNotifier {
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
     _noMediaWatchdog?.cancel();
+    _offerWaitTimer?.cancel();
+    _offerWaitTimer = null;
+    _iceRestartInProgress = false;
     _reconnectTimer = null;
     _noMediaWatchdog = null;
 
@@ -544,7 +596,7 @@ class ViewerConnectionController extends ChangeNotifier {
     } catch (_) {}
 
     _status = 'إعادة الاتصال الكاملة...';
-    notifyListeners();
+    _notify();
 
     await Future.delayed(const Duration(seconds: 3));
 
@@ -564,11 +616,12 @@ class ViewerConnectionController extends ChangeNotifier {
       switch (type) {
         case 'await-approval':
           _status = 'في انتظار موافقة صاحب الكاميرا...';
-          notifyListeners();
+          _notify();
           break;
         case 'viewer-approved':
           _status = 'تمت الموافقة - جاري الاتصال...';
-          notifyListeners();
+          _notify();
+          _startOfferWaitTimer();
           break;
         case 'join-rejected':
           _rejected = true;
@@ -584,7 +637,7 @@ class ViewerConnectionController extends ChangeNotifier {
             } catch (_) {}
           }
           _status = 'صاحب الكاميرا رفض طلب الاتصال';
-          notifyListeners();
+          _notify();
           break;
         case 'offer':
           await _handleOffer(msg);
@@ -610,6 +663,11 @@ class ViewerConnectionController extends ChangeNotifier {
       return;
     }
 
+    final gen = ++_offerGen;
+    bool stale() => gen != _offerGen || _disposed;
+    _offerWaitTimer?.cancel();
+    _offerWaitTimer = null;
+    _iceRestartInProgress = false;
     _broadcasterId = msg['from'].toString();
 
     // ⚠️ عيّن _pc = null أولاً لمنع callback القديم من إعادة تشغيل الاتصال
@@ -628,8 +686,16 @@ class ViewerConnectionController extends ChangeNotifier {
       remoteRenderer.srcObject = null;
     } catch (_) {}
 
+    if (stale()) return;
+
     try {
       final pc = await createPeerConnection({'iceServers': _iceServers});
+      if (stale()) {
+        try {
+          await pc.close();
+        } catch (_) {}
+        return;
+      }
       _pc = pc;
 
       pc.onTrack = (event) {
@@ -649,8 +715,9 @@ class ViewerConnectionController extends ChangeNotifier {
         _noMediaWatchdog?.cancel();
         _noMediaWatchdog = null;
 
-        _status = 'متصل ✓';
-        notifyListeners();
+        // لا نعلن "متصل ✓" هنا: ننتظر أول إطار فيديو فعلي (يعلنها الـwatchdog).
+        _status = 'جاري استقبال الفيديو...';
+        _notify();
 
         _bindRemoteStream(stream);
       };
@@ -692,6 +759,7 @@ class ViewerConnectionController extends ChangeNotifier {
       };
 
       await pc.setRemoteDescription(RTCSessionDescription(sdp, 'offer'));
+      if (stale() || _pc != pc) return;
 
       _remoteDescSet = true;
       for (final c in _pendingRemoteIce) {
@@ -703,6 +771,7 @@ class ViewerConnectionController extends ChangeNotifier {
 
       final answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      if (stale() || _pc != pc) return;
 
       _ws?.add(jsonEncode({
         'type': 'answer',
@@ -736,7 +805,7 @@ class ViewerConnectionController extends ChangeNotifier {
     _noMediaWatchdog?.cancel();
     _noMediaWatchdog = null;
     _status = 'انقطع جهاز الطفل - في انتظار عودة البث...';
-    notifyListeners();
+    _notify();
   }
 
   Future<void> _handleIceCandidate(Map<String, dynamic> msg) async {
