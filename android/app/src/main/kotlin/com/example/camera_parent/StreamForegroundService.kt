@@ -63,6 +63,11 @@ class StreamForegroundService : Service() {
 
         val notification = buildNotification()
 
+        // ✅ الإصلاح: إظهار النافذة الطافية قبل تشغيل الخدمة لكي يتجاوز قيود أندرويد 14
+        if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
+            CameraWakeOverlay.show(applicationContext)
+        }
+
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val type = when (mode) {
@@ -83,13 +88,6 @@ class StreamForegroundService : Service() {
             return START_NOT_STICKY
         }
         foregroundStarted = true
-
-        // يرفع أهمية العملية إلى IMPORTANCE_VISIBLE بدون الحاجة لـ Activity ظاهر،
-        // وهذا يتجاوز قيد أندرويد الذي يمنع الكاميرا من إنتاج إطارات فعلية
-        // عندما تُفتح من خدمة خلفية بحتة (راجع CameraWakeOverlay.kt للتفاصيل).
-        if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
-            CameraWakeOverlay.show(applicationContext)
-        }
 
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
