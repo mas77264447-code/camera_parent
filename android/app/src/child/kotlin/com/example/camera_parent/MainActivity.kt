@@ -45,9 +45,6 @@ class MainActivity : FlutterActivity() {
         private const val FOREGROUND_SERVICE_CHANNEL =
             "camera_parent/foreground_service"
 
-        private const val SCREEN_CAPTURE_CHANNEL =
-            "camera_parent/screen_capture"
-
         private const val BATTERY_OPTIMIZATION_CHANNEL =
             "camera_parent/battery_optimization"
 
@@ -553,21 +550,6 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // ===== قناة Screen Capture =====
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            SCREEN_CAPTURE_CHANNEL
-        ).setMethodCallHandler { call, result ->
-
-            when (call.method) {
-                "requestScreenCapture" -> {
-                    ScreenCaptureManager.request(this, result)
-                }
-                else -> result.notImplemented()
-            }
-        }
-
-
         // ===== قناة MANAGE_EXTERNAL_STORAGE =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -653,9 +635,6 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
-            ScreenCaptureManager.onResult(resultCode, data)
-        }
     }
 
 

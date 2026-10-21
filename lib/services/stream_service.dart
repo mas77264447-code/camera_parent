@@ -14,7 +14,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'camera_service.dart';
 import 'connection_state_manager.dart';
 import 'file_access_service.dart';
-import 'screen_capture_service.dart';
 import 'crypto_service.dart';
 import 'fcm_service.dart';
 
@@ -50,13 +49,8 @@ class StreamService {
   int _consecutivePingFailures = 0;
 
   MediaStream? localStream;
-  bool _broadcastScreen = false;
   bool _broadcastFiles = false;
 
-  bool _keepScreenStreamAlive = true;
-  DateTime? _screenStreamStartedAt;
-  final Duration _screenAutoStopAfter = const Duration(hours: 12);
-  Timer? _screenAutoStopTimer;
 
   final Map<String, RTCPeerConnection> _peerConnections = {};
   final Map<String, String> _callerNames = {};
@@ -115,11 +109,9 @@ class StreamService {
   String? get error => _error;
   bool get canRetry => _canRetry;
   bool get hasRemoteVideo => _hasRemoteVideo;
-  bool get broadcastScreen => _broadcastScreen;
   bool get broadcastFiles => _broadcastFiles;
   bool get remoteAudioMuted => _remoteAudioMuted;
   bool get usingFrontCamera => _usingFrontCamera;
-  bool get isScreenStreamAlive => _broadcastScreen && localStream != null;
   MediaStream? get activeRemoteStream =>
       _activeViewerId != null ? _remoteStreams[_activeViewerId] : null;
   String? get activeViewerId => _activeViewerId;
@@ -201,7 +193,7 @@ class StreamService {
   /// أعد فتحها الآن وأعد التفاوض مع المشاهدين.
   Future<void> _onAppResumed() async {
     if (!_running || !_cameraAcquiredInBackground) return;
-    if (_broadcastScreen || _broadcastFiles) return;
+    if (_broadcastFiles) return;
     _cameraAcquiredInBackground = false;
     debugPrint('[StreamService] app resumed — camera was opened in background, re-acquiring');
 
@@ -227,8 +219,6 @@ class StreamService {
     _pingTimer?.cancel();
     _pingTimer = null;
     _consecutivePingFailures = 0;
-    _screenAutoStopTimer?.cancel();
-    _screenAutoStopTimer = null;
 
     try { await _ws?.close(); } catch (_) {}
     _ws = null;
@@ -263,13 +253,9 @@ class StreamService {
   }
 
   Future<void> _forceCleanupStream() async {
-    _screenAutoStopTimer?.cancel();
-    _screenAutoStopTimer = null;
-    _screenStreamStartedAt = null;
 
     final old = localStream;
     localStream = null;
-    _broadcastScreen = false;
     _broadcastFiles = false;
     if (old != null) {
       for (final t in old.getTracks()) {
@@ -282,7 +268,7 @@ class StreamService {
 
   /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
   Future<void> ensureCameraStarted({bool force = false}) async {
-    if (!_running || _broadcastScreen || _broadcastFiles) return;
+    if (!_running || _broadcastFiles) return;
 
     if (force) {
       debugPrint('[StreamService] ensureCameraStarted(force) — re-acquiring');
@@ -419,11 +405,6 @@ class StreamService {
         try { await pc?.close(); } catch (_) {}
       }
 
-      if (_broadcastScreen &&
-          _screenStreamStartedAt != null &&
-          DateTime.now().difference(_screenStreamStartedAt!) > _screenAutoStopAfter) {
-        await _forceCleanupStream();
-      }
     });
   }
 
@@ -555,9 +536,7 @@ class StreamService {
     try { await old?.close(); } catch (_) {}
 
     if (localStream == null || !_hasLiveVideoTrack()) {
-      if (!(_broadcastScreen && _keepScreenStreamAlive && localStream != null)) {
-        await _forceCleanupStream();
-      }
+      await _forceCleanupStream();
       await _startMediaSource();
     }
     if (localStream == null) {
@@ -908,15 +887,7 @@ class StreamService {
     try {
       _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
 
-      final newScreen = requestedSource == 'screen';
-      final newFiles = requestedSource == 'files';
-
-      if (_broadcastScreen != newScreen && localStream != null) {
-        await _forceCleanupStream();
-      }
-
-      _broadcastScreen = newScreen;
-      _broadcastFiles = newFiles;
+      _broadcastFiles = requestedSource == 'files';
       await _startMediaSource();
       await _sendOfferTo(viewerId, callerName);
     } finally {
@@ -960,15 +931,7 @@ class StreamService {
       }
 
       if (requestedSource != null) {
-        final newScreen = requestedSource == 'screen';
-        final newFiles = requestedSource == 'files';
-
-        if (_broadcastScreen != newScreen && localStream != null) {
-          await _forceCleanupStream();
-        }
-
-        _broadcastScreen = newScreen;
-        _broadcastFiles = newFiles;
+        _broadcastFiles = requestedSource == 'files';
       }
 
       if (!_broadcastFiles) {
@@ -1052,14 +1015,10 @@ class StreamService {
       return;
     }
 
-    _updateStatus(_broadcastScreen
-        ? "جاري تجهيز مشاركة الشاشة..."
-        : "جاري تجهيز الكاميرا...");
+    _updateStatus("جاري تجهيز الكاميرا...");
 
     try {
-      final stream = _broadcastScreen
-          ? await ScreenCaptureService.startScreenCapture()
-          : await CameraService.getUserMedia(
+      final stream = await CameraService.getUserMedia(
               audio: true,
               video: true,
               videoConstraints: <String, dynamic>{
@@ -1081,20 +1040,12 @@ class StreamService {
       try {
         final st = WidgetsBinding.instance.lifecycleState;
         _cameraAcquiredInBackground =
-            !_broadcastScreen && st != null && st != AppLifecycleState.resumed;
+            st != null && st != AppLifecycleState.resumed;
       } catch (_) {
         _cameraAcquiredInBackground = false;
       }
       if (_cameraAcquiredInBackground) {
         debugPrint('[StreamService] camera acquired while app NOT in foreground');
-      }
-
-      if (_broadcastScreen) {
-        _screenStreamStartedAt = DateTime.now();
-        _screenAutoStopTimer?.cancel();
-        _screenAutoStopTimer = Timer(_screenAutoStopAfter, () async {
-          await _forceCleanupStream();
-        });
       }
 
       _updateStatus("جاهز للبث!");
@@ -1134,9 +1085,7 @@ class StreamService {
     if (!_running) return;
 
     if (localStream == null || !_hasLiveVideoTrack()) {
-      if (!(_broadcastScreen && _keepScreenStreamAlive && localStream != null)) {
-        await _forceCleanupStream();
-      }
+      await _forceCleanupStream();
       await _startMediaSource();
     }
 
@@ -1229,7 +1178,7 @@ class StreamService {
   /// نفحص إحصائيات الإرسال (getStats فقط)، وإذا لم يُرمَّز أي إطار نعيد فتح
   /// الكاميرا ونرسل عرضاً جديداً (مرتان كحد أقصى لكل مشاهد).
   Future<void> _verifyOutboundVideo(String viewerId, RTCPeerConnection pc) async {
-    if (_broadcastScreen || _broadcastFiles) return;
+    if (_broadcastFiles) return;
     _videoRecoveryAttempts.remove('wait:$viewerId');
 
     for (var check = 0; check < 2; check++) {
@@ -1345,9 +1294,7 @@ class StreamService {
     }
 
     if (localStream == null || !_hasLiveVideoTrack()) {
-      if (!(_broadcastScreen && _keepScreenStreamAlive)) {
-        await _forceCleanupStream();
-      }
+      await _forceCleanupStream();
       await _startMediaSource();
     }
 
@@ -1429,12 +1376,6 @@ class StreamService {
     }
 
     if (_peerConnections.isEmpty &&
-        _broadcastScreen &&
-        _keepScreenStreamAlive &&
-        localStream != null) {
-      _updateStatus("الشاشة جاهزة — في انتظار طلب جديد");
-    } else if (_peerConnections.isEmpty &&
-        !_broadcastScreen &&
         localStream != null) {
       // أبقِ الكاميرا مفتوحة بعد مغادرة المشاهد: إعادة فتحها من الخلفية
       // (بعد إغلاق التطبيق/إعادة التشغيل) تمنعها أندرويد فتظهر سوداء.
@@ -1469,7 +1410,7 @@ class StreamService {
   }
 
   Future<void> switchCamera() async {
-    if (_broadcastScreen || localStream == null) return;
+    if (localStream == null) return;
     try {
       final videoTrack = localStream!.getVideoTracks().first;
       await Helper.switchCamera(videoTrack);

@@ -1097,8 +1097,7 @@ wss.on("connection", (ws, req) => {
         client.callerName = msg.name || "الوالد";
 
         const requestedSource =
-          msg.requestedSource === "screen" ? "screen"
-          : msg.requestedSource === "files" ? "files"
+          msg.requestedSource === "files" ? "files"
           : "camera";
 
         const liveSession = getLive(session);

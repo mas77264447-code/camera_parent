@@ -48,31 +48,6 @@ class DeviceConnectionScreen extends StatelessWidget {
             const SizedBox(height: 12),
             Card(
               child: ListTile(
-                leading: const Icon(Icons.screen_share,
-                    size: 40, color: Colors.deepPurple),
-                title: const Text("مشاهدة الشاشة",
-                    style: TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.bold)),
-                subtitle: const Text("شاهد شاشة جهاز الطفل في الوقت الفعلي"),
-                trailing: const Icon(Icons.arrow_forward_ios),
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => CameraViewerScreen(
-                        sessionId: sessionId,
-                        name: name,
-                        adminToken: adminToken,
-                        initialSource: "screen",
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: ListTile(
                 leading: const Icon(Icons.folder, size: 40),
                 title: const Text("ملفات الجهاز",
                     style: TextStyle(fontSize: 20)),

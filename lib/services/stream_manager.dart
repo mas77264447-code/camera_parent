@@ -7,7 +7,6 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'camera_service.dart';
-import 'screen_capture_service.dart';
 import 'webrtc_session_manager.dart';
 
 
@@ -164,19 +163,6 @@ class StreamManager {
 
 
 
-  Future<void> startScreen() async {
-
-    await stopMedia();
-
-
-    localStream =
-        await ScreenCaptureService
-            .startScreenCapture();
-
-
-    running = true;
-
-  }
 
 
 

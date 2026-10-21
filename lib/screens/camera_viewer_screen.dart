@@ -239,29 +239,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   Future<void> _chooseRequestedSource() async {
-    if (widget.initialSource != null) {
-      _requestedSource = widget.initialSource!;
-      return;
-    }
-    final result = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text("اختر مصدر البث"),
-        content: const Text("هل تريد بث الكاميرا أم مشاركة شاشة الجهاز؟"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, "camera"),
-            child: const Text("📷 الكاميرا"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, "screen"),
-            child: const Text("🖥️ الشاشة"),
-          ),
-        ],
-      ),
-    );
-    _requestedSource = result ?? "camera";
+    // مشاهدة الكاميرا فقط: ميزة مشاركة الشاشة أُلغيت.
+    _requestedSource = "camera";
   }
 
   Future<void> _init() async {
@@ -777,7 +756,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   @override
   Widget build(BuildContext context) {
-    final isScreenShare = _requestedSource == "screen";
     return WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
@@ -792,7 +770,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
             },
           ),
           title: Text(
-            isScreenShare ? '${widget.name} - الشاشة' : widget.name,
+            widget.name,
           ),
           centerTitle: true,
           actions: [
@@ -804,8 +782,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
                 tooltip:
                     _remoteAudioMuted ? "تشغيل صوت الطفل" : "كتم صوت الطفل",
               ),
-            if (!isScreenShare)
-              IconButton(
+            IconButton(
                 icon: const Icon(Icons.cameraswitch),
                 onPressed:
                     _remoteStream != null ? _switchRemoteCamera : null,
@@ -835,34 +812,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
                       ),
                     ),
                   ),
-                  if (isScreenShare && _remoteStream != null)
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade700,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.screen_share,
-                                color: Colors.white, size: 16),
-                            SizedBox(width: 6),
-                            Text(
-                              'بث الشاشة',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
                   if (_rejected)
                     const Positioned.fill(
                       child: Center(

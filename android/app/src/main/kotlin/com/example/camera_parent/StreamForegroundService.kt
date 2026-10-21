@@ -25,7 +25,6 @@ class StreamForegroundService : Service() {
         const val EXTRA_MODE = "mode"
         const val MODE_CAMERA = "camera"
         const val MODE_MICROPHONE = "microphone"
-        const val MODE_SCREEN = "screen"
         const val MODE_FILES = "files"
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
@@ -67,7 +66,6 @@ class StreamForegroundService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val type = when (mode) {
-                    MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                     MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                     MODE_FILES -> 0
                     else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
