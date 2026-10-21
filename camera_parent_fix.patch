@@ -1,0 +1,45 @@
+diff -ru -x build -x .git orig/lib/screens/camera_viewer_screen.dart cp/lib/screens/camera_viewer_screen.dart
+--- orig/lib/screens/camera_viewer_screen.dart	2026-10-20 23:53:21.000000000 +0000
++++ cp/lib/screens/camera_viewer_screen.dart	2026-10-21 00:20:43.127319805 +0000
+@@ -55,6 +55,8 @@
+   bool _rejected = false;
+ 
+   bool _iceRestartInProgress = false;
++  DateTime? _lastIceRestartAt;
++  static const Duration ICE_RESTART_COOLDOWN = Duration(seconds: 15);
+ 
+   final List<RTCIceCandidate> _pendingRemoteIce = [];
+   bool _remoteDescSet = false;
+@@ -316,6 +318,12 @@
+ 
+   Future<void> _tryIceRestart() async {
+     if (_iceRestartInProgress || _disposed) return;
++    final nowRestart = DateTime.now();
++    if (_lastIceRestartAt != null &&
++        nowRestart.difference(_lastIceRestartAt!) < ICE_RESTART_COOLDOWN) {
++      return; // طلب سابق ما زال قيد الانتظار: لا نضاعف الضغط على الطفل
++    }
++    _lastIceRestartAt = nowRestart;
+     _iceRestartInProgress = true;
+ 
+     try {
+diff -ru -x build -x .git orig/lib/services/stream_service.dart cp/lib/services/stream_service.dart
+--- orig/lib/services/stream_service.dart	2026-10-20 23:53:21.000000000 +0000
++++ cp/lib/services/stream_service.dart	2026-10-21 00:20:49.194988477 +0000
+@@ -1293,9 +1293,13 @@
+     _pendingRemoteIceByViewer.remove(viewerId);
+     try { await old?.close(); } catch (_) {}
+ 
+-    await _forceCleanupStream();
+-    await Future.delayed(const Duration(milliseconds: 500));
+-    await _startMediaSource();
++    // المسار المحلي مشترك بين كل المشاهدين: لا نُتلفه إذا بقي مشاهد آخر متصلاً،
++    // وإلا كان هدمه يقطع الفيديو عنهم جميعاً ويدخل الطرفان في حلقة إعادة اتصال.
++    if (_peerConnections.isEmpty) {
++      await _forceCleanupStream();
++      await Future.delayed(const Duration(milliseconds: 500));
++      await _startMediaSource();
++    }
+     if (!_running || localStream == null) return;
+     await _sendOfferTo(viewerId, callerName);
+   }

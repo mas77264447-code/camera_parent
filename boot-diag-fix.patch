@@ -1,0 +1,251 @@
+diff --git a/android/app/src/main/kotlin/com/example/camera_parent/BootLog.kt b/android/app/src/main/kotlin/com/example/camera_parent/BootLog.kt
+index 86dfb25..abf7a7a 100644
+--- a/android/app/src/main/kotlin/com/example/camera_parent/BootLog.kt
++++ b/android/app/src/main/kotlin/com/example/camera_parent/BootLog.kt
+@@ -1,14 +1,57 @@
+ package com.example.camera_parent
+ 
++import android.content.ContentValues
++import android.content.Context
++import android.net.Uri
++import android.os.Build
++import android.provider.MediaStore
+ import android.util.Log
+ import java.io.File
+ 
++/**
++ * سجل تشخيص يُكتب عبر MediaStore (بدون أي صلاحية) إلى Download.
++ * كل عملية (process) تنشئ ملفاً جديداً: camera_boot_<وقت>.txt
++ * أقدم من Android 10: يُكتب في getExternalFilesDir.
++ */
+ object BootLog {
++    private const val TAG = "CameraParent"
++    @Volatile private var appCtx: Context? = null
++    @Volatile private var uri: Uri? = null
++    @Volatile private var legacyFile: File? = null
++
++    fun init(ctx: Context) {
++        if (appCtx == null) appCtx = ctx.applicationContext ?: ctx
++    }
++
++    @Synchronized
+     fun w(msg: String) {
+-        Log.i("CameraParent", msg)
++        Log.i(TAG, msg)
+         try {
+-            File("/storage/emulated/0/Download/camera_boot.log")
+-                .appendText("${System.currentTimeMillis()} $msg\n")
+-        } catch (_: Throwable) {}
++            val ctx = appCtx ?: return
++            val line = "${System.currentTimeMillis()} $msg\n"
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
++                val target = uri ?: createDownloadFile(ctx)?.also { uri = it } ?: return
++                ctx.contentResolver.openOutputStream(target, "wa")?.use {
++                    it.write(line.toByteArray())
++                }
++            } else {
++                val f = legacyFile
++                    ?: File(ctx.getExternalFilesDir(null), "camera_boot_${System.currentTimeMillis()}.txt")
++                        .also { legacyFile = it }
++                f.appendText(line)
++            }
++        } catch (e: Throwable) {
++            Log.e(TAG, "BootLog write failed", e)
++        }
++    }
++
++    @android.annotation.TargetApi(Build.VERSION_CODES.Q)
++    private fun createDownloadFile(ctx: Context): Uri? {
++        val values = ContentValues().apply {
++            put(MediaStore.Downloads.DISPLAY_NAME, "camera_boot_${System.currentTimeMillis()}.txt")
++            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
++            put(MediaStore.Downloads.RELATIVE_PATH, "Download")
++        }
++        return ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+     }
+ }
+diff --git a/android/app/src/main/kotlin/com/example/camera_parent/BootReceiver.kt b/android/app/src/main/kotlin/com/example/camera_parent/BootReceiver.kt
+index 132d071..05a37d0 100644
+--- a/android/app/src/main/kotlin/com/example/camera_parent/BootReceiver.kt
++++ b/android/app/src/main/kotlin/com/example/camera_parent/BootReceiver.kt
+@@ -8,6 +8,7 @@ import android.provider.Settings
+ 
+ class BootReceiver : BroadcastReceiver() {
+     override fun onReceive(context: Context, intent: Intent) {
++        BootLog.init(context)
+         val a = intent.action
+         BootLog.w("receiver got $a sdk=${Build.VERSION.SDK_INT}")
+         if (a != Intent.ACTION_BOOT_COMPLETED &&
+diff --git a/android/app/src/main/kotlin/com/example/camera_parent/CameraParentApplication.kt b/android/app/src/main/kotlin/com/example/camera_parent/CameraParentApplication.kt
+index ae704d6..ce60f94 100644
+--- a/android/app/src/main/kotlin/com/example/camera_parent/CameraParentApplication.kt
++++ b/android/app/src/main/kotlin/com/example/camera_parent/CameraParentApplication.kt
+@@ -25,6 +25,9 @@ class CameraParentApplication : Application() {
+     override fun onCreate() {
+         super.onCreate()
+         appContext = applicationContext
++        BootLog.init(this)
++        BootLog.w("process start pid=${android.os.Process.myPid()} sdk=${android.os.Build.VERSION.SDK_INT} model=${android.os.Build.MANUFACTURER}/${android.os.Build.MODEL}")
++        logPreviousExitReasons()
+         installCrashLogger()
+         ensureEngine()
+     }
+@@ -38,21 +41,54 @@ class CameraParentApplication : Application() {
+         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+             try {
+-                val dir = android.os.Environment.getExternalStoragePublicDirectory(
+-                    android.os.Environment.DIRECTORY_DOWNLOADS
++                BootLog.w(
++                    "CRASH [kotlin/${thread.name}]\n" +
++                        android.util.Log.getStackTraceString(throwable)
+                 )
+-                val file = java.io.File(dir, "camera_parent_crash.log")
+-                file.appendText(
+-                    "\n=== ${java.util.Date()} [native/${thread.name}] ===\n" +
+-                        android.util.Log.getStackTraceString(throwable) + "\n"
+-                )
+-            } catch (_: Exception) {
+-                // تجاهل: لا نريد أن يفشل تسجيل الكرش بسبب كرش آخر
++            } catch (_: Throwable) {
+             }
+             defaultHandler?.uncaughtException(thread, throwable)
+         }
+     }
+ 
++    /** سبب موت العمليات السابقة (Android 11+): crash / native crash / low memory / kill ... */
++    private fun logPreviousExitReasons() {
++        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return
++        try {
++            val am = getSystemService(android.app.ActivityManager::class.java) ?: return
++            val list = am.getHistoricalProcessExitReasons(packageName, 0, 6)
++            for (r in list) {
++                BootLog.w(
++                    "PREV-EXIT time=${r.timestamp} reason=${r.reason}(${exitReasonName(r.reason)}) " +
++                        "status=${r.status} importance=${r.importance} desc=${r.description}"
++                )
++            }
++            if (list.isEmpty()) BootLog.w("PREV-EXIT none recorded")
++        } catch (e: Throwable) {
++            BootLog.w("PREV-EXIT failed: $e")
++        }
++    }
++
++    private fun exitReasonName(r: Int): String = when (r) {
++        1 -> "EXIT_SELF"
++        2 -> "SIGNALED"
++        3 -> "LOW_MEMORY"
++        4 -> "CRASH"
++        5 -> "CRASH_NATIVE"
++        6 -> "ANR"
++        7 -> "INITIALIZATION_FAILURE"
++        8 -> "PERMISSION_CHANGE"
++        9 -> "EXCESSIVE_RESOURCE_USAGE"
++        10 -> "USER_REQUESTED"
++        11 -> "USER_STOPPED"
++        12 -> "DEPENDENCY_DIED"
++        13 -> "OTHER"
++        14 -> "FREEZER"
++        15 -> "PACKAGE_STATE_CHANGE"
++        16 -> "PACKAGE_UPDATED"
++        else -> "UNKNOWN"
++    }
++
+     @Synchronized
+     fun ensureEngine(): FlutterEngine {
+         FlutterEngineCache.getInstance().get(ENGINE_ID)?.let {
+@@ -72,6 +108,14 @@ class CameraParentApplication : Application() {
+             MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/file_access")
+         )
+ 
++        MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/diag_log")
++            .setMethodCallHandler { call, result ->
++                if (call.method == "log") {
++                    BootLog.w(call.arguments?.toString() ?: "")
++                    result.success(true)
++                } else result.notImplemented()
++            }
++
+         ConnectivityChannel.setup(engine)
+         NetworkConnectivityListener(applicationContext) { online ->
+             ConnectivityChannel.sendNetworkState(online)
+diff --git a/lib/services/crash_logger.dart b/lib/services/crash_logger.dart
+index c66f863..e6cb52d 100644
+--- a/lib/services/crash_logger.dart
++++ b/lib/services/crash_logger.dart
+@@ -1,22 +1,19 @@
+-import 'dart:io';
++import 'package:flutter/services.dart';
+ 
+-/// يكتب أخطاء Dart غير المُلتقطة إلى نفس ملف اللوق الذي يكتب فيه الطرف
+-/// الأصلي (Kotlin) — أداة تشخيص مؤقتة لمعرفة سبب انقطاع اتصال الابن
+-/// المفاجئ (ws close code=1006) عند قبول مشاهد جديد.
++/// يكتب أخطاء Dart غير المُلتقطة عبر Kotlin (BootLog / MediaStore) —
++/// أداة تشخيص مؤقتة. الكتابة المباشرة إلى Download كانت تفشل بصمت.
+ class CrashLogger {
+-  static const _path = '/storage/emulated/0/Download/camera_parent_crash.log';
++  static const _channel = MethodChannel('camera_parent/diag_log');
+ 
+   static Future<void> log(String source, Object error, StackTrace? stack) async {
+     try {
+-      final file = File(_path);
+-      final buf = StringBuffer()
+-        ..writeln()
+-        ..writeln('=== ${DateTime.now()} [dart/$source] ===')
++      final text = StringBuffer()
++        ..writeln('DART-ERROR [$source] ${DateTime.now()}')
+         ..writeln(error.toString());
+-      if (stack != null) buf.writeln(stack.toString());
+-      await file.writeAsString(buf.toString(), mode: FileMode.append, flush: true);
++      if (stack != null) text.writeln(stack.toString());
++      await _channel.invokeMethod('log', text.toString());
+     } catch (_) {
+-      // تجاهل: لا نريد أن يفشل تسجيل الخطأ بسبب خطأ آخر
++      // نتجاهل: لا نريد أن يفشل التسجيل بسبب خطأ آخر
+     }
+   }
+ }
+diff --git a/lib/services/stream_service.dart b/lib/services/stream_service.dart
+index 5eff847..e902bd0 100644
+--- a/lib/services/stream_service.dart
++++ b/lib/services/stream_service.dart
+@@ -331,13 +331,17 @@ class StreamService {
+       debugPrint('[StreamService] connecting to $wsUrl/signal');
+ 
+       // ✅ إصلاح: timeout على الاتصال
+-      _ws = await WebSocket.connect('$wsUrl/signal')
++      final socket = await WebSocket.connect('$wsUrl/signal')
+           .timeout(const Duration(seconds: 15));
++      _ws = socket;
+ 
+       // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
+-      _ws!.listen(
++      // ✅ إصلاح: أي callback من سوكيت قديم (ليس الحالي) يُتجاهل، حتى لا يهدم
++      // اتصالات المشاهدين التي تخص السوكيت الجديد.
++      socket.listen(
+         _handleMessage,
+         onError: (e) {
++          if (!identical(_ws, socket)) return;
+           debugPrint('[StreamService] ws error: $e');
+           if (_running) {
+             _updateStatus('خطأ في الاتصال');
+@@ -345,6 +349,10 @@ class StreamService {
+           }
+         },
+         onDone: () async {
++          if (!identical(_ws, socket)) {
++            debugPrint('[StreamService] stale ws closed — ignored');
++            return;
++          }
+           debugPrint('[StreamService] ws closed');
+           if (_running) {
+             _updateStatus('اتصال مقطوع');
+@@ -356,7 +364,7 @@ class StreamService {
+       );
+ 
+       final _fcmToken = await FcmService.getToken();
+-      _ws!.add(jsonEncode({
++      socket.add(jsonEncode({
+         'type': 'register',
+         'role': 'broadcaster',
+         'deviceToken': _deviceToken,

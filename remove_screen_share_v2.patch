@@ -1,0 +1,639 @@
+diff -ruN tarsrc/android/app/src/child/AndroidManifest.xml final/android/app/src/child/AndroidManifest.xml
+--- tarsrc/android/app/src/child/AndroidManifest.xml	2026-10-21 01:04:36.000000000 +0000
++++ final/android/app/src/child/AndroidManifest.xml	2026-10-21 01:07:31.223016310 +0000
+@@ -11,7 +11,6 @@
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+     <uses-permission android:name="android.permission.CAMERA" />
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+diff -ruN tarsrc/android/app/src/child/kotlin/com/example/camera_parent/MainActivity.kt final/android/app/src/child/kotlin/com/example/camera_parent/MainActivity.kt
+--- tarsrc/android/app/src/child/kotlin/com/example/camera_parent/MainActivity.kt	2026-10-21 01:05:32.000000000 +0000
++++ final/android/app/src/child/kotlin/com/example/camera_parent/MainActivity.kt	2026-10-21 01:07:31.230541280 +0000
+@@ -45,9 +45,6 @@
+         private const val FOREGROUND_SERVICE_CHANNEL =
+             "camera_parent/foreground_service"
+ 
+-        private const val SCREEN_CAPTURE_CHANNEL =
+-            "camera_parent/screen_capture"
+-
+         private const val BATTERY_OPTIMIZATION_CHANNEL =
+             "camera_parent/battery_optimization"
+ 
+@@ -553,21 +550,6 @@
+         }
+ 
+ 
+-        // ===== قناة Screen Capture =====
+-        MethodChannel(
+-            flutterEngine.dartExecutor.binaryMessenger,
+-            SCREEN_CAPTURE_CHANNEL
+-        ).setMethodCallHandler { call, result ->
+-
+-            when (call.method) {
+-                "requestScreenCapture" -> {
+-                    ScreenCaptureManager.request(this, result)
+-                }
+-                else -> result.notImplemented()
+-            }
+-        }
+-
+-
+         // ===== قناة MANAGE_EXTERNAL_STORAGE =====
+         MethodChannel(
+             flutterEngine.dartExecutor.binaryMessenger,
+@@ -653,9 +635,6 @@
+     ) {
+         super.onActivityResult(requestCode, resultCode, data)
+ 
+-        if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
+-            ScreenCaptureManager.onResult(resultCode, data)
+-        }
+     }
+ 
+ 
+diff -ruN tarsrc/android/app/src/main/AndroidManifest.xml final/android/app/src/main/AndroidManifest.xml
+--- tarsrc/android/app/src/main/AndroidManifest.xml	2026-10-21 01:05:32.000000000 +0000
++++ final/android/app/src/main/AndroidManifest.xml	2026-10-21 01:07:31.231146796 +0000
+@@ -8,7 +8,6 @@
+     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
+-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+@@ -63,7 +62,7 @@
+             android:name=".StreamForegroundService"
+             android:exported="false"
+             android:stopWithTask="false"
+-            android:foregroundServiceType="camera|microphone|mediaProjection"/>
++            android:foregroundServiceType="camera|microphone"/>
+ 
+         <meta-data android:name="flutterEmbedding" android:value="2"/>
+ 
+diff -ruN tarsrc/android/app/src/main/kotlin/com/example/camera_parent/ScreenCaptureManager.kt final/android/app/src/main/kotlin/com/example/camera_parent/ScreenCaptureManager.kt
+--- tarsrc/android/app/src/main/kotlin/com/example/camera_parent/ScreenCaptureManager.kt	2026-10-21 01:04:36.000000000 +0000
++++ final/android/app/src/main/kotlin/com/example/camera_parent/ScreenCaptureManager.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,45 +0,0 @@
+-package com.example.camera_parent
+-
+-import android.app.Activity
+-import android.content.Context
+-import android.content.Intent
+-import android.media.projection.MediaProjectionManager
+-import io.flutter.plugin.common.MethodChannel
+-
+-/**
+- * يدير طلب إذن MediaProjection من أندرويد.
+- * ملاحظة: flutter_webrtc يُدير التقاط الشاشة فعلياً عبر getDisplayMedia،
+- * هذا الملف فقط يعرض حوار الإذن ويرجع النتيجة للـ Flutter.
+- */
+-object ScreenCaptureManager {
+-
+-    const val REQUEST_CODE = 7531
+-
+-    private var pendingResult: MethodChannel.Result? = null
+-
+-    fun request(activity: Activity, result: MethodChannel.Result) {
+-        try {
+-            val pm = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+-                    as MediaProjectionManager
+-            val intent = pm.createScreenCaptureIntent()
+-
+-            pendingResult = result
+-            activity.startActivityForResult(intent, REQUEST_CODE)
+-        } catch (e: Exception) {
+-            result.error("SCREEN_CAPTURE_ERROR", e.message ?: "unknown", null)
+-        }
+-    }
+-
+-    fun onResult(resultCode: Int, data: Intent?) {
+-        val r = pendingResult
+-        pendingResult = null
+-
+-        if (r == null) return
+-
+-        if (resultCode == Activity.RESULT_OK && data != null) {
+-            r.success("granted")
+-        } else {
+-            r.success("denied")
+-        }
+-    }
+-}
+\ No newline at end of file
+diff -ruN tarsrc/android/app/src/main/kotlin/com/example/camera_parent/ScreenWebRTCCapturer.kt final/android/app/src/main/kotlin/com/example/camera_parent/ScreenWebRTCCapturer.kt
+--- tarsrc/android/app/src/main/kotlin/com/example/camera_parent/ScreenWebRTCCapturer.kt	2026-10-21 01:04:36.000000000 +0000
++++ final/android/app/src/main/kotlin/com/example/camera_parent/ScreenWebRTCCapturer.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,19 +0,0 @@
+-package com.example.camera_parent
+-
+-/**
+- * نقطة ربط التقاط الشاشة مع WebRTC.
+- * MediaProjection يعطي الإذن، وهذه الطبقة مكان إنشاء VideoSource/VideoTrack.
+- */
+-class ScreenWebRTCCapturer {
+-    private var running = false
+-
+-    fun start() {
+-        running = true
+-    }
+-
+-    fun stop() {
+-        running = false
+-    }
+-
+-    fun isRunning(): Boolean = running
+-}
+diff -ruN tarsrc/android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt final/android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt
+--- tarsrc/android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt	2026-10-21 01:05:32.000000000 +0000
++++ final/android/app/src/main/kotlin/com/example/camera_parent/StreamForegroundService.kt	2026-10-21 01:07:31.230958361 +0000
+@@ -25,7 +25,6 @@
+         const val EXTRA_MODE = "mode"
+         const val MODE_CAMERA = "camera"
+         const val MODE_MICROPHONE = "microphone"
+-        const val MODE_SCREEN = "screen"
+         const val MODE_FILES = "files"
+         private const val PREFS = "camera_parent_service"
+         private const val KEY_ENABLED = "enabled"
+@@ -67,7 +66,6 @@
+         try {
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                 val type = when (mode) {
+-                    MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                     MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                     MODE_FILES -> 0
+                     else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+diff -ruN tarsrc/android/app/src/parent/kotlin/com/example/camera_parent/MainActivity.kt final/android/app/src/parent/kotlin/com/example/camera_parent/MainActivity.kt
+--- tarsrc/android/app/src/parent/kotlin/com/example/camera_parent/MainActivity.kt	2026-10-21 01:05:32.000000000 +0000
++++ final/android/app/src/parent/kotlin/com/example/camera_parent/MainActivity.kt	2026-10-21 01:07:31.230152614 +0000
+@@ -21,9 +21,6 @@
+             "camera_parent/device_admin"
+ 
+ 
+-        private const val SCREEN_CAPTURE_CHANNEL =
+-            "camera_parent/screen_capture"
+-
+         private const val BATTERY_OPTIMIZATION_CHANNEL =
+             "camera_parent/battery_optimization"
+ 
+@@ -295,21 +292,6 @@
+         }
+ 
+ 
+-        // ===== قناة Screen Capture =====
+-        MethodChannel(
+-            flutterEngine.dartExecutor.binaryMessenger,
+-            SCREEN_CAPTURE_CHANNEL
+-        ).setMethodCallHandler { call, result ->
+-
+-            when (call.method) {
+-                "requestScreenCapture" -> {
+-                    ScreenCaptureManager.request(this, result)
+-                }
+-                else -> result.notImplemented()
+-            }
+-        }
+-
+-
+         // ===== قناة MANAGE_EXTERNAL_STORAGE (الوصول لجميع الملفات) =====
+         MethodChannel(
+             flutterEngine.dartExecutor.binaryMessenger,
+@@ -374,9 +356,6 @@
+             data
+         )
+ 
+-        if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
+-            ScreenCaptureManager.onResult(resultCode, data)
+-        }
+     }
+ 
+ 
+diff -ruN tarsrc/lib/screens/camera_viewer_screen.dart final/lib/screens/camera_viewer_screen.dart
+--- tarsrc/lib/screens/camera_viewer_screen.dart	2026-10-21 01:05:32.000000000 +0000
++++ final/lib/screens/camera_viewer_screen.dart	2026-10-21 01:07:31.228876828 +0000
+@@ -239,29 +239,8 @@
+   }
+ 
+   Future<void> _chooseRequestedSource() async {
+-    if (widget.initialSource != null) {
+-      _requestedSource = widget.initialSource!;
+-      return;
+-    }
+-    final result = await showDialog<String>(
+-      context: context,
+-      barrierDismissible: false,
+-      builder: (context) => AlertDialog(
+-        title: const Text("اختر مصدر البث"),
+-        content: const Text("هل تريد بث الكاميرا أم مشاركة شاشة الجهاز؟"),
+-        actions: [
+-          TextButton(
+-            onPressed: () => Navigator.pop(context, "camera"),
+-            child: const Text("📷 الكاميرا"),
+-          ),
+-          TextButton(
+-            onPressed: () => Navigator.pop(context, "screen"),
+-            child: const Text("🖥️ الشاشة"),
+-          ),
+-        ],
+-      ),
+-    );
+-    _requestedSource = result ?? "camera";
++    // مشاهدة الكاميرا فقط: ميزة مشاركة الشاشة أُلغيت.
++    _requestedSource = "camera";
+   }
+ 
+   Future<void> _init() async {
+@@ -777,7 +756,6 @@
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final isScreenShare = _requestedSource == "screen";
+     return WillPopScope(
+       onWillPop: _handleBack,
+       child: Scaffold(
+@@ -792,7 +770,7 @@
+             },
+           ),
+           title: Text(
+-            isScreenShare ? '${widget.name} - الشاشة' : widget.name,
++            widget.name,
+           ),
+           centerTitle: true,
+           actions: [
+@@ -804,8 +782,7 @@
+                 tooltip:
+                     _remoteAudioMuted ? "تشغيل صوت الطفل" : "كتم صوت الطفل",
+               ),
+-            if (!isScreenShare)
+-              IconButton(
++            IconButton(
+                 icon: const Icon(Icons.cameraswitch),
+                 onPressed:
+                     _remoteStream != null ? _switchRemoteCamera : null,
+@@ -835,34 +812,6 @@
+                       ),
+                     ),
+                   ),
+-                  if (isScreenShare && _remoteStream != null)
+-                    Positioned(
+-                      top: 12,
+-                      right: 12,
+-                      child: Container(
+-                        padding: const EdgeInsets.symmetric(
+-                            horizontal: 12, vertical: 6),
+-                        decoration: BoxDecoration(
+-                          color: Colors.red.shade700,
+-                          borderRadius: BorderRadius.circular(20),
+-                        ),
+-                        child: const Row(
+-                          mainAxisSize: MainAxisSize.min,
+-                          children: [
+-                            Icon(Icons.screen_share,
+-                                color: Colors.white, size: 16),
+-                            SizedBox(width: 6),
+-                            Text(
+-                              'بث الشاشة',
+-                              style: TextStyle(
+-                                  color: Colors.white,
+-                                  fontSize: 12,
+-                                  fontWeight: FontWeight.bold),
+-                            ),
+-                          ],
+-                        ),
+-                      ),
+-                    ),
+                   if (_rejected)
+                     const Positioned.fill(
+                       child: Center(
+diff -ruN tarsrc/lib/screens/device_connection_screen.dart final/lib/screens/device_connection_screen.dart
+--- tarsrc/lib/screens/device_connection_screen.dart	2026-10-21 01:04:36.000000000 +0000
++++ final/lib/screens/device_connection_screen.dart	2026-10-21 01:07:31.229272579 +0000
+@@ -48,31 +48,6 @@
+             const SizedBox(height: 12),
+             Card(
+               child: ListTile(
+-                leading: const Icon(Icons.screen_share,
+-                    size: 40, color: Colors.deepPurple),
+-                title: const Text("مشاهدة الشاشة",
+-                    style: TextStyle(
+-                        fontSize: 20, fontWeight: FontWeight.bold)),
+-                subtitle: const Text("شاهد شاشة جهاز الطفل في الوقت الفعلي"),
+-                trailing: const Icon(Icons.arrow_forward_ios),
+-                onTap: () {
+-                  Navigator.push(
+-                    context,
+-                    MaterialPageRoute(
+-                      builder: (_) => CameraViewerScreen(
+-                        sessionId: sessionId,
+-                        name: name,
+-                        adminToken: adminToken,
+-                        initialSource: "screen",
+-                      ),
+-                    ),
+-                  );
+-                },
+-              ),
+-            ),
+-            const SizedBox(height: 12),
+-            Card(
+-              child: ListTile(
+                 leading: const Icon(Icons.folder, size: 40),
+                 title: const Text("ملفات الجهاز",
+                     style: TextStyle(fontSize: 20)),
+diff -ruN tarsrc/lib/services/screen_capture_service.dart final/lib/services/screen_capture_service.dart
+--- tarsrc/lib/services/screen_capture_service.dart	2026-10-21 01:04:36.000000000 +0000
++++ final/lib/services/screen_capture_service.dart	1970-01-01 00:00:00.000000000 +0000
+@@ -1,16 +0,0 @@
+-import 'package:flutter_webrtc/flutter_webrtc.dart';
+-
+-class ScreenCaptureService {
+-  /// يطلب التقاط الشاشة عبر flutter_webrtc مباشرة.
+-  /// أندرويد 10+ يعرض حوار الإذن تلقائياً.
+-  static Future<MediaStream> startScreenCapture() async {
+-    return await navigator.mediaDevices.getDisplayMedia({
+-      "video": {
+-        "width": 720,
+-        "height": 1280,
+-        "frameRate": 24,
+-      },
+-      "audio": false,
+-    });
+-  }
+-}
+\ No newline at end of file
+diff -ruN tarsrc/lib/services/stream_manager.dart final/lib/services/stream_manager.dart
+--- tarsrc/lib/services/stream_manager.dart	2026-10-21 01:04:36.000000000 +0000
++++ final/lib/services/stream_manager.dart	2026-10-21 01:07:31.229592834 +0000
+@@ -7,7 +7,6 @@
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
+ import 'camera_service.dart';
+-import 'screen_capture_service.dart';
+ import 'webrtc_session_manager.dart';
+ 
+ 
+@@ -164,19 +163,6 @@
+ 
+ 
+ 
+-  Future<void> startScreen() async {
+-
+-    await stopMedia();
+-
+-
+-    localStream =
+-        await ScreenCaptureService
+-            .startScreenCapture();
+-
+-
+-    running = true;
+-
+-  }
+ 
+ 
+ 
+diff -ruN tarsrc/lib/services/stream_service.dart final/lib/services/stream_service.dart
+--- tarsrc/lib/services/stream_service.dart	2026-10-21 01:05:32.000000000 +0000
++++ final/lib/services/stream_service.dart	2026-10-21 01:07:31.222674834 +0000
+@@ -14,7 +14,6 @@
+ import 'camera_service.dart';
+ import 'connection_state_manager.dart';
+ import 'file_access_service.dart';
+-import 'screen_capture_service.dart';
+ import 'crypto_service.dart';
+ import 'fcm_service.dart';
+ 
+@@ -50,13 +49,8 @@
+   int _consecutivePingFailures = 0;
+ 
+   MediaStream? localStream;
+-  bool _broadcastScreen = false;
+   bool _broadcastFiles = false;
+ 
+-  bool _keepScreenStreamAlive = true;
+-  DateTime? _screenStreamStartedAt;
+-  final Duration _screenAutoStopAfter = const Duration(hours: 12);
+-  Timer? _screenAutoStopTimer;
+ 
+   final Map<String, RTCPeerConnection> _peerConnections = {};
+   final Map<String, String> _callerNames = {};
+@@ -115,11 +109,9 @@
+   String? get error => _error;
+   bool get canRetry => _canRetry;
+   bool get hasRemoteVideo => _hasRemoteVideo;
+-  bool get broadcastScreen => _broadcastScreen;
+   bool get broadcastFiles => _broadcastFiles;
+   bool get remoteAudioMuted => _remoteAudioMuted;
+   bool get usingFrontCamera => _usingFrontCamera;
+-  bool get isScreenStreamAlive => _broadcastScreen && localStream != null;
+   MediaStream? get activeRemoteStream =>
+       _activeViewerId != null ? _remoteStreams[_activeViewerId] : null;
+   String? get activeViewerId => _activeViewerId;
+@@ -201,7 +193,7 @@
+   /// أعد فتحها الآن وأعد التفاوض مع المشاهدين.
+   Future<void> _onAppResumed() async {
+     if (!_running || !_cameraAcquiredInBackground) return;
+-    if (_broadcastScreen || _broadcastFiles) return;
++    if (_broadcastFiles) return;
+     _cameraAcquiredInBackground = false;
+     debugPrint('[StreamService] app resumed — camera was opened in background, re-acquiring');
+ 
+@@ -227,8 +219,6 @@
+     _pingTimer?.cancel();
+     _pingTimer = null;
+     _consecutivePingFailures = 0;
+-    _screenAutoStopTimer?.cancel();
+-    _screenAutoStopTimer = null;
+ 
+     try { await _ws?.close(); } catch (_) {}
+     _ws = null;
+@@ -263,13 +253,9 @@
+   }
+ 
+   Future<void> _forceCleanupStream() async {
+-    _screenAutoStopTimer?.cancel();
+-    _screenAutoStopTimer = null;
+-    _screenStreamStartedAt = null;
+ 
+     final old = localStream;
+     localStream = null;
+-    _broadcastScreen = false;
+     _broadcastFiles = false;
+     if (old != null) {
+       for (final t in old.getTracks()) {
+@@ -282,7 +268,7 @@
+ 
+   /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
+   Future<void> ensureCameraStarted({bool force = false}) async {
+-    if (!_running || _broadcastScreen || _broadcastFiles) return;
++    if (!_running || _broadcastFiles) return;
+ 
+     if (force) {
+       debugPrint('[StreamService] ensureCameraStarted(force) — re-acquiring');
+@@ -419,11 +405,6 @@
+         try { await pc?.close(); } catch (_) {}
+       }
+ 
+-      if (_broadcastScreen &&
+-          _screenStreamStartedAt != null &&
+-          DateTime.now().difference(_screenStreamStartedAt!) > _screenAutoStopAfter) {
+-        await _forceCleanupStream();
+-      }
+     });
+   }
+ 
+@@ -555,9 +536,7 @@
+     try { await old?.close(); } catch (_) {}
+ 
+     if (localStream == null || !_hasLiveVideoTrack()) {
+-      if (!(_broadcastScreen && _keepScreenStreamAlive && localStream != null)) {
+-        await _forceCleanupStream();
+-      }
++      await _forceCleanupStream();
+       await _startMediaSource();
+     }
+     if (localStream == null) {
+@@ -908,15 +887,7 @@
+     try {
+       _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
+ 
+-      final newScreen = requestedSource == 'screen';
+-      final newFiles = requestedSource == 'files';
+-
+-      if (_broadcastScreen != newScreen && localStream != null) {
+-        await _forceCleanupStream();
+-      }
+-
+-      _broadcastScreen = newScreen;
+-      _broadcastFiles = newFiles;
++      _broadcastFiles = requestedSource == 'files';
+       await _startMediaSource();
+       await _sendOfferTo(viewerId, callerName);
+     } finally {
+@@ -960,15 +931,7 @@
+       }
+ 
+       if (requestedSource != null) {
+-        final newScreen = requestedSource == 'screen';
+-        final newFiles = requestedSource == 'files';
+-
+-        if (_broadcastScreen != newScreen && localStream != null) {
+-          await _forceCleanupStream();
+-        }
+-
+-        _broadcastScreen = newScreen;
+-        _broadcastFiles = newFiles;
++        _broadcastFiles = requestedSource == 'files';
+       }
+ 
+       if (!_broadcastFiles) {
+@@ -1052,14 +1015,10 @@
+       return;
+     }
+ 
+-    _updateStatus(_broadcastScreen
+-        ? "جاري تجهيز مشاركة الشاشة..."
+-        : "جاري تجهيز الكاميرا...");
++    _updateStatus("جاري تجهيز الكاميرا...");
+ 
+     try {
+-      final stream = _broadcastScreen
+-          ? await ScreenCaptureService.startScreenCapture()
+-          : await CameraService.getUserMedia(
++      final stream = await CameraService.getUserMedia(
+               audio: true,
+               video: true,
+               videoConstraints: <String, dynamic>{
+@@ -1081,7 +1040,7 @@
+       try {
+         final st = WidgetsBinding.instance.lifecycleState;
+         _cameraAcquiredInBackground =
+-            !_broadcastScreen && st != null && st != AppLifecycleState.resumed;
++            st != null && st != AppLifecycleState.resumed;
+       } catch (_) {
+         _cameraAcquiredInBackground = false;
+       }
+@@ -1089,14 +1048,6 @@
+         debugPrint('[StreamService] camera acquired while app NOT in foreground');
+       }
+ 
+-      if (_broadcastScreen) {
+-        _screenStreamStartedAt = DateTime.now();
+-        _screenAutoStopTimer?.cancel();
+-        _screenAutoStopTimer = Timer(_screenAutoStopAfter, () async {
+-          await _forceCleanupStream();
+-        });
+-      }
+-
+       _updateStatus("جاهز للبث!");
+       _error = null;
+       _canRetry = false;
+@@ -1134,9 +1085,7 @@
+     if (!_running) return;
+ 
+     if (localStream == null || !_hasLiveVideoTrack()) {
+-      if (!(_broadcastScreen && _keepScreenStreamAlive && localStream != null)) {
+-        await _forceCleanupStream();
+-      }
++      await _forceCleanupStream();
+       await _startMediaSource();
+     }
+ 
+@@ -1229,7 +1178,7 @@
+   /// نفحص إحصائيات الإرسال (getStats فقط)، وإذا لم يُرمَّز أي إطار نعيد فتح
+   /// الكاميرا ونرسل عرضاً جديداً (مرتان كحد أقصى لكل مشاهد).
+   Future<void> _verifyOutboundVideo(String viewerId, RTCPeerConnection pc) async {
+-    if (_broadcastScreen || _broadcastFiles) return;
++    if (_broadcastFiles) return;
+     _videoRecoveryAttempts.remove('wait:$viewerId');
+ 
+     for (var check = 0; check < 2; check++) {
+@@ -1345,9 +1294,7 @@
+     }
+ 
+     if (localStream == null || !_hasLiveVideoTrack()) {
+-      if (!(_broadcastScreen && _keepScreenStreamAlive)) {
+-        await _forceCleanupStream();
+-      }
++      await _forceCleanupStream();
+       await _startMediaSource();
+     }
+ 
+@@ -1429,12 +1376,6 @@
+     }
+ 
+     if (_peerConnections.isEmpty &&
+-        _broadcastScreen &&
+-        _keepScreenStreamAlive &&
+-        localStream != null) {
+-      _updateStatus("الشاشة جاهزة — في انتظار طلب جديد");
+-    } else if (_peerConnections.isEmpty &&
+-        !_broadcastScreen &&
+         localStream != null) {
+       // أبقِ الكاميرا مفتوحة بعد مغادرة المشاهد: إعادة فتحها من الخلفية
+       // (بعد إغلاق التطبيق/إعادة التشغيل) تمنعها أندرويد فتظهر سوداء.
+@@ -1469,7 +1410,7 @@
+   }
+ 
+   Future<void> switchCamera() async {
+-    if (_broadcastScreen || localStream == null) return;
++    if (localStream == null) return;
+     try {
+       final videoTrack = localStream!.getVideoTracks().first;
+       await Helper.switchCamera(videoTrack);
+diff -ruN tarsrc/server/index.js final/server/index.js
+--- tarsrc/server/index.js	2026-10-21 01:05:32.000000000 +0000
++++ final/server/index.js	2026-10-21 01:07:31.231513988 +0000
+@@ -1097,8 +1097,7 @@
+         client.callerName = msg.name || "الوالد";
+ 
+         const requestedSource =
+-          msg.requestedSource === "screen" ? "screen"
+-          : msg.requestedSource === "files" ? "files"
++          msg.requestedSource === "files" ? "files"
+           : "camera";
+ 
+         const liveSession = getLive(session);

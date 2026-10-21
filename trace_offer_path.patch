@@ -1,0 +1,56 @@
+--- a/lib/services/stream_service.dart
++++ b/lib/services/stream_service.dart
+@@ -1068,6 +1068,7 @@
+       return;
+     }
+     _offerInFlight.add(viewerId);
++    _trace('offer:enter $viewerId');
+     try {
+       await _sendOfferToImpl(viewerId, callerName);
+     } finally {
+@@ -1075,6 +1076,18 @@
+     }
+   }
+ 
++  /// نقاط تتبع: تُكتب بشكل متزامن ومُفرَّغ (flush) قبل كل خطوة أصلية،
++  /// فإذا انهارت العملية بشكل أصلي يبقى آخر سطر دليلاً على الخطوة القاتلة.
++  static void _trace(String step) {
++    try {
++      File('/storage/emulated/0/Download/cp_trace.log').writeAsStringSync(
++        '${DateTime.now().toIso8601String()} $step\n',
++        mode: FileMode.append,
++        flush: true,
++      );
++    } catch (_) {}
++  }
++
+   Future<void> _sendOfferToImpl(String viewerId, String callerName) async {
+     if (_broadcastFiles) {
+       _callerNames[viewerId] = callerName;
+@@ -1099,7 +1112,9 @@
+     }
+     _pendingRemoteIceByViewer.remove(viewerId);
+ 
++    _trace('pc:creating');
+     final pc = await createPeerConnection({'iceServers': _iceServers});
++    _trace('pc:created');
+     _peerConnections[viewerId] = pc;
+ 
+     pc.onTrack = (RTCTrackEvent event) {
+@@ -1147,11 +1162,16 @@
+ 
+     try {
+       for (final track in localStream!.getTracks()) {
++        _trace('addTrack:start ${track.kind} ${track.id}');
+         await pc.addTrack(track, localStream!);
++        _trace('addTrack:done ${track.kind}');
+       }
+ 
++      _trace('createOffer:start');
+       final offer = await pc.createOffer();
++      _trace('createOffer:done');
+       await pc.setLocalDescription(offer);
++      _trace('setLocalDescription:done');
+ 
+       if (_ws == null || _ws!.readyState != WebSocket.open) return;
+ 
