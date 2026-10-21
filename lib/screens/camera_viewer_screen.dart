@@ -184,10 +184,20 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
             } catch (_) {}
           });
         } catch (_) {}
-      } else if (_videoStallChecks >= 5 && !_stallIceRestartTried) {
+      } else if (_videoStallChecks == 5 && !_stallIceRestartTried) {
         _stallIceRestartTried = true;
         debugPrint('[Watchdog] no video frames after ~10s — ICE restart');
         _tryIceRestart();
+      } else if (_videoStallChecks >= 15) {
+        // ✅ إصلاح: إعادة تشغيل ICE وحدها لا تجبر الابن على إعادة فتح
+        // الكاميرا — هي فقط تعيد تأسيس الاتصال الشبكي. إذا بقي الفيديو
+        // 0x0 بعد ~30 ثانية رغم محاولة ICE، فالسبب الأرجح أن الكاميرا نفسها
+        // لا تُنتج إطارات عند الابن (encoded=0)، وهذا يحتاج اتصالاً كاملاً
+        // جديداً يجبر الابن على المرور بمسار قبول مشاهد جديد من الصفر
+        // (إعادة اكتساب الكاميرا)، وليس مجرد ICE restart.
+        timer.cancel();
+        debugPrint('[Watchdog] still no video after ~30s despite ICE restart — full reconnect');
+        _reconnectFull();
       }
     });
   }
