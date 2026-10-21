@@ -1285,9 +1285,13 @@ class StreamService {
     _pendingRemoteIceByViewer.remove(viewerId);
     try { await old?.close(); } catch (_) {}
 
-    await _forceCleanupStream();
-    await Future.delayed(const Duration(milliseconds: 500));
-    await _startMediaSource();
+    // المسار المحلي مشترك بين كل المشاهدين: لا نُتلفه إذا بقي مشاهد آخر متصلاً،
+    // وإلا كان هدمه يقطع الفيديو عنهم جميعاً ويدخل الطرفان في حلقة إعادة اتصال.
+    if (_peerConnections.isEmpty) {
+      await _forceCleanupStream();
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _startMediaSource();
+    }
     if (!_running || localStream == null) return;
     await _sendOfferTo(viewerId, callerName);
   }

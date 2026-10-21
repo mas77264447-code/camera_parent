@@ -55,6 +55,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   bool _rejected = false;
 
   bool _iceRestartInProgress = false;
+  DateTime? _lastIceRestartAt;
+  static const Duration ICE_RESTART_COOLDOWN = Duration(seconds: 15);
 
   final List<RTCIceCandidate> _pendingRemoteIce = [];
   bool _remoteDescSet = false;
@@ -316,6 +318,12 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   Future<void> _tryIceRestart() async {
     if (_iceRestartInProgress || _disposed) return;
+    final nowRestart = DateTime.now();
+    if (_lastIceRestartAt != null &&
+        nowRestart.difference(_lastIceRestartAt!) < ICE_RESTART_COOLDOWN) {
+      return; // طلب سابق ما زال قيد الانتظار: لا نضاعف الضغط على الطفل
+    }
+    _lastIceRestartAt = nowRestart;
     _iceRestartInProgress = true;
 
     try {
