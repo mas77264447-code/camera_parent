@@ -879,6 +879,7 @@ class StreamService {
       return;
     }
     _approvalInFlight.add(viewerId);
+    _videoRecoveryAttempts.remove(viewerId);
 
     if (requestedSource == 'files') {
       _approvedFileViewers.add(viewerId);
@@ -915,6 +916,7 @@ class StreamService {
       return;
     }
     _approvalInFlight.add(viewerId);
+    _videoRecoveryAttempts.remove(viewerId);
 
     try {
       final existingPc = _peerConnections[viewerId];
@@ -1039,8 +1041,8 @@ class StreamService {
 
       try {
         final st = WidgetsBinding.instance.lifecycleState;
-        _cameraAcquiredInBackground =
-            st != null && st != AppLifecycleState.resumed;
+        // null يعني أن الواجهة لم تبدأ بعد (إيقاظ FCM): نعتبره خلفية.
+        _cameraAcquiredInBackground = st != AppLifecycleState.resumed;
       } catch (_) {
         _cameraAcquiredInBackground = false;
       }
