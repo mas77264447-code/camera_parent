@@ -44,9 +44,9 @@ class WakeFcmService : FirebaseMessagingService() {
             // ويشغّل الكاميرا فعلياً بدون أي حاجة لإظهار الواجهة.
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(intent)
+                    // startForegroundService(intent) // Disabled for Android 14
                 } else {
-                    startService(intent)
+                    // startService(intent) // Disabled for Android 14
                 }
                 Log.i(TAG, "StreamForegroundService started directly from FCM wake")
             } catch (e: Exception) {
