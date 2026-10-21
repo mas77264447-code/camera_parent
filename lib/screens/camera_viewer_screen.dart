@@ -239,7 +239,6 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   Future<void> _chooseRequestedSource() async {
-    // مشاهدة الكاميرا فقط: ميزة مشاركة الشاشة أُلغيت.
     _requestedSource = "camera";
   }
 
