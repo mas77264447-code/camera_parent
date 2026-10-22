@@ -1,209 +1,937 @@
 import 'dart:async';
-
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/camera_service.dart';
+import '../services/screen_capture_service.dart';
+import '../services/device_admin_service.dart';
+import 'pairing_screen.dart';
 
-import '../services/stream_service.dart';
-
+const MethodChannel _foregroundServiceChannel = MethodChannel('camera_parent/foreground_service');
+const MethodChannel _batteryOptimizationChannel = MethodChannel('camera_parent/battery_optimization');
 
 class CameraStreamScreen extends StatefulWidget {
   final String sessionId;
-  final String deviceToken;
   final String cameraName;
+  final String deviceToken;
 
   const CameraStreamScreen({
     super.key,
     required this.sessionId,
-    required this.deviceToken,
     required this.cameraName,
+    required this.deviceToken,
   });
 
   @override
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-
-class _CameraStreamScreenState extends State<CameraStreamScreen> {
-  final _service = StreamService.instance;
-
+class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBindingObserver {
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
-
-  StreamSubscription<String>? _statusSub;
-  StreamSubscription<MediaStream?>? _localSub;
-  StreamSubscription<Map<String, MediaStream>>? _remoteSub;
-  StreamSubscription<Map<String, String>>? _pendingSub;
-
-  String _status = 'جاري التجهيز...';
-  Map<String, String> _pending = {};
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   MediaStream? _localStream;
+  WebSocket? _ws;
+  final Map<String, RTCPeerConnection> _peerConnections = {};
+
+  final Map<String, String> _callerNames = {};
+  final Map<String, MediaStream> _remoteStreams = {};
+  String? _activeViewerId;
+  final Map<String, String> _pendingViewers = {};
+
+  bool _ready = false;
+  String? _error;
+  String _status = "جاري التجهيز...";
+  bool _usingFrontCamera = false;
+  bool _hasRemoteVideo = false;
+
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+  bool _disposed = false;
+
+  bool _showLocalPreview = false;
+  bool _broadcastScreen = true;
+
+  bool _remoteAudioMuted = false;
+  bool _localMicMuted = false;
+
+  List<Map<String, dynamic>> _iceServers = const [
+    {"urls": "stun:stun.l.google.com:19302"},
+  ];
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WakelockPlus.enable();
+    _init();
+  }
 
-    _localRenderer.initialize();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshRemoteVideoTexture();
+      _refreshLocalVideoTexture();
+    }
+  }
 
-    _statusSub = _service.onStatus.listen((s) {
-      if (mounted) setState(() => _status = s);
+  void _refreshRemoteVideoTexture() {
+    if (_activeViewerId != null) {
+      final stream = _remoteStreams[_activeViewerId];
+      if (stream != null) {
+        _remoteRenderer.srcObject = null;
+        Future.microtask(() {
+          if (mounted) {
+            setState(() {
+              _remoteRenderer.srcObject = stream;
+            });
+          }
+        });
+      }
+    }
+  }
+
+  void _refreshLocalVideoTexture() {
+    final stream = _localStream;
+    if (stream != null) {
+      _localRenderer.srcObject = null;
+      Future.microtask(() {
+        if (mounted) {
+          setState(() {
+            _localRenderer.srcObject = stream;
+          });
+        }
+      });
+    }
+  }
+
+  Future<void> _loadIceServers() async {
+    final servers = await CameraService.fetchIceServers();
+    if (!_disposed) {
+      _iceServers = servers;
+    }
+  }
+
+  Future<void> _chooseSource() async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("اختر مصدر البث"),
+        content: const Text("هل تريد بث الكاميرا أم مشاركة شاشة الجهاز؟"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("📷 الكاميرا"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("🖥️ الشاشة"),
+          ),
+        ],
+      ),
+    );
+    _broadcastScreen = result ?? true;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'last_stream_source',
+      _broadcastScreen ? 'screen' : 'camera',
+    );
+  }
+
+  bool _canRetry = false;
+  bool _renderersReady = false;
+  bool _foregroundServiceStarted = false;
+  Timer? _retryTimer;
+  int _retryAttempts = 0;
+  static const int _maxAutoRetries = 5;
+
+  Future<void> _init() async {
+    final adminActive = await DeviceAdminService.isAdminActive();
+    if (!adminActive) {
+      await DeviceAdminService.requestAdmin();
+    } else {
+      final isOwner = await DeviceAdminService.isDeviceOwner();
+      if (isOwner) {
+        await DeviceAdminService.disableFactoryReset();
+        await DeviceAdminService.disableInstallApps();
+      }
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final lastSource = prefs.getString('last_stream_source');
+    final cameraPermsReady = await Permission.camera.isGranted &&
+        await Permission.microphone.isGranted;
+
+    if (lastSource == 'camera' && cameraPermsReady) {
+      _broadcastScreen = false;
+    } else {
+      await _chooseSource();
+    }
+
+    await _loadIceServers();
+
+    final camStatus = await Permission.camera.request();
+    final micStatus = await Permission.microphone.request();
+    await Permission.notification.request();
+
+    if (!camStatus.isGranted || !micStatus.isGranted) {
+      setState(() {
+        _error = "لازم تسمح بصلاحية الكاميرا والميكروفون من إعدادات الموبايل";
+        _canRetry = false;
+      });
+      return;
+    }
+
+    await _startMediaSource();
+  }
+
+  Future<void> _cleanupCurrentStream() async {
+    try {
+      _localRenderer.srcObject = null;
+    } catch (_) {}
+
+    final oldStream = _localStream;
+    _localStream = null;
+
+    if (oldStream != null) {
+      for (final track in oldStream.getTracks()) {
+        try {
+          await track.stop();
+        } catch (_) {}
+      }
+      try {
+        await oldStream.dispose();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _startMediaSource() async {
+    await _cleanupCurrentStream();
+
+    setState(() {
+      _error = null;
+      _status = "جاري التجهيز...";
     });
 
-    _localSub = _service.onLocalStream.listen((s) {
-      if (!mounted) return;
-      setState(() => _localStream = s);
-      _localRenderer.srcObject = s;
+    try {
+      if (!_renderersReady) {
+        await _localRenderer.initialize();
+        await _remoteRenderer.initialize();
+        _renderersReady = true;
+      }
+
+      final stream = _broadcastScreen
+          ? await ScreenCaptureService.startScreenCapture()
+          : await CameraService.getUserMedia(
+              audio: true,
+              video: true,
+              videoConstraints: <String, dynamic>{
+                'mandatory': <String, dynamic>{
+                  'minWidth': 640,
+                  'minHeight': 480,
+                  'minFrameRate': 30,
+                },
+                'optional': <dynamic>[],
+              },
+            );
+
+      if (_disposed) return;
+
+      await _startForegroundServiceFor(screen: _broadcastScreen);
+
+      setState(() {
+        _localStream = stream;
+        _localRenderer.srcObject = stream;
+        _ready = true;
+        _error = null;
+        _status = "جاهز للبث!";
+      });
+
+      _connectToWebSocket();
+    } catch (e) {
+      if (_disposed) return;
+
+      setState(() {
+        _error = "فشل تهيئة البث: $e";
+        _status = "خطأ";
+        _canRetry = true;
+      });
+
+      if (_retryAttempts < _maxAutoRetries) {
+        _retryAttempts++;
+        _retryTimer = Timer(Duration(seconds: 3 + _retryAttempts), _startMediaSource);
+      }
+    }
+  }
+
+  Future<void> _startForegroundServiceFor({required bool screen}) async {
+    try {
+      await _foregroundServiceChannel.invokeMethod('start', {
+        'camera': !screen,
+        'mic': true,
+        'screen': screen,
+      });
+      _foregroundServiceStarted = true;
+    } catch (_) {}
+
+    final prefs = await SharedPreferences.getInstance();
+    if (!(prefs.getBool('battery_exemption_asked') ?? false)) {
+      try {
+        await _batteryOptimizationChannel.invokeMethod('requestBatteryOptimizationExemption');
+        await prefs.setBool('battery_exemption_asked', true);
+      } catch (_) {}
+    }
+  }
+
+  void _closeSocket() {
+    final old = _ws;
+    _ws = null;
+    try {
+      old?.close();
+    } catch (_) {}
+  }
+
+  Future<void> _connectToWebSocket() async {
+    if (_disposed) return;
+
+    final serverUrl = CameraService.server;
+
+    if (serverUrl.isEmpty) {
+      setState(() {
+        _error = 'عنوان السيرفر غير مسجل';
+        _canRetry = false;
+      });
+      return;
+    }
+
+    _closeSocket();
+
+    final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
+
+    try {
+      final socket = await WebSocket.connect('$wsUrl/signal');
+
+      if (_disposed) {
+        await socket.close();
+        return;
+      }
+
+      _ws = socket;
+      _reconnectAttempts = 0;
+
+      socket.add(jsonEncode({
+        'type': 'register',
+        'role': 'broadcaster',
+        'deviceToken': widget.deviceToken,
+      }));
+
+      socket.listen(
+        (message) {
+          if (!identical(socket, _ws)) return;
+          _handleWebSocketMessage(message);
+        },
+        onError: (_) {
+          if (!identical(socket, _ws)) return;
+          _ws = null;
+          if (!_disposed) {
+            setState(() => _status = 'خطأ في الاتصال');
+            _scheduleReconnect();
+          }
+        },
+        onDone: () {
+          if (!identical(socket, _ws)) return;
+          _ws = null;
+          if (!_disposed) {
+            setState(() => _status = 'اتصال مقطوع');
+            _scheduleReconnect();
+          }
+        },
+      );
+
+      if (mounted) setState(() => _status = 'متصل بالسيرفر');
+    } catch (e) {
+      if (!_disposed) {
+        setState(() => _status = 'فشل الاتصال بالسيرفر');
+        _scheduleReconnect();
+      }
+    }
+  }
+
+  void _scheduleReconnect() {
+    if (_disposed) return;
+    _reconnectTimer?.cancel();
+    _reconnectAttempts++;
+    final delay = Duration(seconds: math.min(30, 3 * _reconnectAttempts));
+    _reconnectTimer = Timer(delay, _connectToWebSocket);
+  }
+
+  void _handleWebSocketMessage(dynamic message) {
+    if (_disposed) return;
+
+    try {
+      final data = jsonDecode(message as String);
+      final type = data['type'] as String?;
+
+      switch (type) {
+        case 'join-request':
+          _handleViewerRequest(data);
+          break;
+        case 'viewer-joined':
+          _handleApprovedViewer(data);
+          break;
+        case 'answer':
+          _handleAnswer(data);
+          break;
+        case 'ice':
+          _handleIceCandidate(data);
+          break;
+        case 'viewer-left':
+          _handleViewerDisconnect(data);
+          break;
+        case 'switch-camera':
+          _switchCamera();
+          break;
+        case 'toggle-mic':
+          setState(() => _localMicMuted = !_localMicMuted);
+          break;
+        case 'kicked':
+          setState(() => _status = 'تم إنهاء الاتصال من طرف السيرفر');
+          break;
+        case 'auth-failed':
+          _reconnectTimer?.cancel();
+          setState(() {
+            _status = 'فشل التحقق من الجهاز';
+            _error = 'الجهاز غير مقترن على السيرفر. أعد الاقتران من جديد.';
+            _canRetry = false;
+          });
+          break;
+      }
+    } catch (e) {
+      debugPrint('خطأ في معالجة رسالة WebSocket: $e');
+    }
+  }
+
+  Future<void> _handleViewerRequest(Map<String, dynamic> data) async {
+    final viewerId = data['viewerId']?.toString();
+    final callerName = data['name'] as String? ?? 'Unknown';
+
+    if (viewerId == null) return;
+
+    setState(() {
+      _pendingViewers[viewerId] = callerName;
     });
 
-    _pendingSub = _service.onPendingRequests.listen((p) {
-      if (mounted) setState(() => _pending = p);
-    });
+    final approved = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("طلب اتصال"),
+            content: Text("هل تسمح ل$callerName بمشاهدة الكاميرا؟"),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("رفض"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text("موافقة"),
+              ),
+            ],
+          ),
+        ) ??
+        false;
 
-    _remoteSub = _service.onRemoteStreams.listen((_) {
-      if (mounted) setState(() {});
-    });
+    setState(() => _pendingViewers.remove(viewerId));
 
-    // ابدأ الخدمة (idempotent — لا ضرر إن كانت تعمل)
-    unawaited(_service.start(
-      sessionId: widget.sessionId,
-      deviceToken: widget.deviceToken,
-      cameraName: widget.cameraName,
-    ));
+    if (!approved) {
+      _ws?.add(jsonEncode({'type': 'reject-viewer', 'target': viewerId}));
+      return;
+    }
+
+    _ws?.add(jsonEncode({'type': 'approve-viewer', 'target': viewerId}));
+    await _sendOfferTo(viewerId, callerName);
+  }
+
+  Future<void> _handleApprovedViewer(Map<String, dynamic> data) async {
+    final viewerId = data['viewerId']?.toString();
+    final callerName = data['name'] as String? ?? 'Unknown';
+    if (viewerId == null) return;
+
+    await _sendOfferTo(viewerId, callerName);
+  }
+
+  Future<void> _sendOfferTo(String viewerId, String callerName) async {
+    if (_localStream == null) return;
+
+    await _peerConnections[viewerId]?.close();
+    final pc = await _createPeerConnection(viewerId);
+    _peerConnections[viewerId] = pc;
+
+    for (final track in _localStream!.getTracks()) {
+      await pc.addTrack(track, _localStream!);
+    }
+
+    final offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    _ws?.add(jsonEncode({
+      'type': 'offer',
+      'viewerId': viewerId,
+      'sdp': offer.sdp,
+    }));
+
+    setState(() {
+      _callerNames[viewerId] = callerName;
+      _activeViewerId = viewerId;
+    });
+  }
+
+  Future<void> _handleAnswer(Map<String, dynamic> data) async {
+    final viewerId = data['viewerId']?.toString();
+    final sdp = data['sdp'] as String?;
+
+    if (viewerId == null || sdp == null) return;
+
+    final pc = _peerConnections[viewerId];
+    if (pc == null) return;
+
+    final answer = RTCSessionDescription(sdp, 'answer');
+    await pc.setRemoteDescription(answer);
+  }
+
+  Future<void> _handleIceCandidate(Map<String, dynamic> data) async {
+    final viewerId = data['from']?.toString();
+    final candidateData = data['candidate'];
+
+    if (viewerId == null || candidateData is! Map) return;
+
+    final pc = _peerConnections[viewerId];
+    if (pc == null) return;
+
+    try {
+      await pc.addCandidate(
+        RTCIceCandidate(
+          candidateData['candidate'] as String?,
+          candidateData['sdpMid'] as String?,
+          candidateData['sdpMLineIndex'] as int?,
+        ),
+      );
+    } catch (_) {}
+  }
+
+  void _handleViewerDisconnect(Map<String, dynamic> data) {
+    final viewerId = data['viewerId']?.toString();
+    if (viewerId == null) return;
+
+    _peerConnections[viewerId]?.close();
+    _peerConnections.remove(viewerId);
+    _remoteStreams.remove(viewerId);
+    _callerNames.remove(viewerId);
+
+    if (_activeViewerId == viewerId) {
+      _remoteRenderer.srcObject = null;
+      setState(() {
+        _activeViewerId = null;
+        _hasRemoteVideo = false;
+      });
+    }
+  }
+
+  Future<RTCPeerConnection> _createPeerConnection(String viewerId) async {
+    final pc = await createPeerConnection(
+      {
+        'iceServers': _iceServers,
+      },
+    );
+
+    pc.onTrack = (RTCTrackEvent event) {
+      if (_disposed) return;
+
+      if (event.track.kind == 'video') {
+        _remoteStreams[viewerId] = event.streams[0];
+
+        setState(() {
+          if (_activeViewerId == viewerId) {
+            _remoteRenderer.srcObject = _remoteStreams[viewerId];
+          }
+          _hasRemoteVideo = true;
+        });
+      }
+    };
+
+    pc.onIceCandidate = (RTCIceCandidate candidate) {
+      if (_disposed) return;
+
+      _ws?.add(jsonEncode({
+        'type': 'ice',
+        'target': viewerId,
+        'candidate': {
+          'candidate': candidate.candidate,
+          'sdpMid': candidate.sdpMid,
+          'sdpMLineIndex': candidate.sdpMLineIndex,
+        },
+      }));
+    };
+
+    return pc;
+  }
+
+  void _toggleRemoteAudio() {
+    setState(() => _remoteAudioMuted = !_remoteAudioMuted);
+
+    final stream = _remoteStreams[_activeViewerId];
+    if (stream != null) {
+      for (final track in stream.getAudioTracks()) {
+        track.enabled = !_remoteAudioMuted;
+      }
+    }
+  }
+
+  void _toggleLocalPreview() {
+    setState(() => _showLocalPreview = !_showLocalPreview);
+  }
+
+  Widget _monitoringBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      color: Colors.deepOrange,
+      child: Row(
+        children: [
+          const Icon(Icons.info, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _broadcastScreen
+                  ? "شاشة جهازك قيد البث الحالي. أي شيء تفتحه سيكون مرئيًا!"
+                  : "كاميرا جهازك قيد البث الحالي.",
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _unpairDevice() async {
+    final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("إلغاء الاقتران"),
+            content: const Text(
+              "هل أنت متأكد من إلغاء الاقتران مع هذا الجهاز؟ لن يتمكن أحد من الاتصال بعد ذلك حتى يتم الاقتران من جديد.",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("إلغاء"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text("تأكيد", style: TextStyle(color: Colors.red)),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed || !mounted) return;
+
+    for (final pc in _peerConnections.values) {
+      pc.close();
+    }
+    _peerConnections.clear();
+    _ws?.close();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('device_token');
+    await prefs.remove('session_id');
+    await prefs.remove('device_name');
+    await prefs.remove('is_paired');
+
+    if (!mounted) return;
+
+    Navigator.of(context).pop();
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const PairingScreen()),
+      (route) => false,
+    );
+  }
+
+  void _showCallersSheet() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => ListView(
+        shrinkWrap: true,
+        children: [
+          if (_callerNames.isEmpty)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(20),
+                child: Text("لا توجد أجهزة متصلة"),
+              ),
+            )
+          else
+            ..._callerNames.entries.map((entry) {
+              final viewerId = entry.key;
+              final callerName = entry.value;
+              final isActive = viewerId == _activeViewerId;
+
+              return ListTile(
+                leading: isActive
+                    ? const Icon(Icons.videocam, color: Colors.green)
+                    : null,
+                title: Text(callerName),
+                subtitle: isActive ? const Text("البث الحالي") : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  if (!isActive) {
+                    setState(() {
+                      if (_activeViewerId != null) {
+                        _peerConnections[_activeViewerId]?.close();
+                      }
+                      _activeViewerId = viewerId;
+                      _remoteRenderer.srcObject = _remoteStreams[viewerId];
+                    });
+                  }
+                },
+              );
+            }),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: TextButton(
+              style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0)),
+              onPressed: _unpairDevice,
+              child: const Text("إلغاء الاقتران", style: TextStyle(color: Colors.white, fontSize: 11, decoration: TextDecoration.underline)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _switchCamera() async {
+    if (_hasRemoteVideo && _activeViewerId != null) {
+      _ws?.add(jsonEncode({
+        "type": "switch-camera",
+        "target": _activeViewerId,
+      }));
+      return;
+    }
+
+    if (_broadcastScreen || _localStream == null) return;
+
+    try {
+      final videoTrack = _localStream!.getVideoTracks().first;
+      await Helper.switchCamera(videoTrack);
+
+      setState(() {
+        _usingFrontCamera = !_usingFrontCamera;
+      });
+    } catch (_) {}
   }
 
   @override
   void dispose() {
-    // ⚠️ لا تستدعِ _service.stop() هنا — الخدمة يجب أن تستمر في الخلفية.
-    _statusSub?.cancel();
-    _localSub?.cancel();
-    _remoteSub?.cancel();
-    _pendingSub?.cancel();
+    _disposed = true;
+
+    WidgetsBinding.instance.removeObserver(this);
+
+    _reconnectTimer?.cancel();
+    _retryTimer?.cancel();
+
+    WakelockPlus.disable();
+
+    try {
+      _remoteRenderer.srcObject = null;
+      _localRenderer.srcObject = null;
+    } catch (_) {}
+
     _localRenderer.dispose();
+    _remoteRenderer.dispose();
+
     super.dispose();
-  }
-
-  Future<void> _approve(String viewerId) async {
-    await _service.approvePendingViewer(viewerId, 'camera');
-  }
-
-  void _reject(String viewerId) {
-    _service.rejectPendingViewer(viewerId);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: Text(widget.cameraName),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.cameraswitch),
-            tooltip: 'تبديل الكاميرا',
-            onPressed: _service.running ? _service.switchCamera : null,
+    return WillPopScope(
+      onWillPop: () async => true,
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: "رجوع",
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // معاينة محلية للكاميرا
-          Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: _localStream != null
-                      ? RTCVideoView(
-                          _localRenderer,
-                          mirror: false,
-                          objectFit:
-                              RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                        )
-                      : const Center(
-                          child: Icon(
-                            Icons.videocam_off,
-                            size: 80,
-                            color: Colors.white24,
-                          ),
-                        ),
-                ),
-                // شريط الحالة
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    color: Colors.black54,
-                    padding: const EdgeInsets.all(8),
-                    child: Text(
-                      _status,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ),
-              ],
+          title: Text(widget.cameraName),
+          centerTitle: true,
+          actions: [
+            if (_hasRemoteVideo)
+              IconButton(
+                icon: Icon(_remoteAudioMuted ? Icons.volume_off : Icons.volume_up),
+                onPressed: _toggleRemoteAudio,
+                tooltip: _remoteAudioMuted ? "تشغيل الصوت" : "كتم الصوت",
+              ),
+            IconButton(
+              icon: Badge(
+                label: Text("${_callerNames.length}"),
+                isLabelVisible: _callerNames.isNotEmpty,
+                child: const Icon(Icons.people),
+              ),
+              onPressed: _showCallersSheet,
+              tooltip: "الأجهزة المتصلة",
             ),
-          ),
-
-          // طلبات المشاهدة المعلّقة
-          if (_pending.isNotEmpty)
-            Container(
-              color: Colors.orange.shade900,
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'طلبات مشاهدة جديدة',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ..._pending.entries.map(
-                    (e) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              e.value,
-                              style: const TextStyle(color: Colors.white),
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () => _approve(e.key),
-                            style: TextButton.styleFrom(
-                              backgroundColor: Colors.green,
-                            ),
-                            child: const Text(
-                              'موافقة',
-                              style: TextStyle(color: Colors.white),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          TextButton(
-                            onPressed: () => _reject(e.key),
-                            style: TextButton.styleFrom(
-                              backgroundColor: Colors.red,
-                            ),
-                            child: const Text(
-                              'رفض',
-                              style: TextStyle(color: Colors.white),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+            TextButton(
+              onPressed: () async {
+                await _cleanupCurrentStream();
+                await _chooseSource();
+                if (mounted) {
+                  await _startMediaSource();
+                }
+              },
+              child: const Text(
+                "تغيير مصدر البث",
+                style: TextStyle(color: Colors.white),
               ),
             ),
-        ],
+            IconButton(
+              icon: const Icon(Icons.cameraswitch),
+              onPressed: (_ready && !_broadcastScreen) ? _switchCamera : null,
+              tooltip: _broadcastScreen ? "غير متاح أثناء بث الشاشة" : "تبديل الكاميرا",
+            ),
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: "إعدادات التشغيل التلقائي",
+              onPressed: () {
+                _batteryOptimizationChannel.invokeMethod('openAutoStartSettings');
+              },
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            _monitoringBanner(),
+            Expanded(
+              child: _error != null
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _error!,
+                              style: const TextStyle(color: Colors.red, fontSize: 16),
+                              textAlign: TextAlign.center,
+                            ),
+                            if (_canRetry) ...[ const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                onPressed: _startMediaSource,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text("إعادة المحاولة"),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    )
+                  : !_ready
+                      ? const Center(child: CircularProgressIndicator())
+                      : _hasRemoteVideo
+                          ? Stack(
+                              children: [
+                                Positioned.fill(
+                                  child: RTCVideoView(_remoteRenderer),
+                                ),
+                                Positioned(
+                                  top: 8,
+                                  right: 12,
+                                  child: _pill(
+                                    _activeViewerId != null
+                                        ? (_callerNames[_activeViewerId] ?? "متصل")
+                                        : "متصل",
+                                  ),
+                                ),
+                              ],
+                            )
+                          : _idleBody(),
+            ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              color: Colors.black,
+              child: Text(
+                _status,
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _idleBody() {
+    if (_showLocalPreview && !_broadcastScreen) {
+      return Stack(
+        children: [
+          Positioned.fill(
+            child: RTCVideoView(_localRenderer, mirror: _usingFrontCamera),
+          ),
+        ],
+      );
+    }
+
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.videocam, color: Colors.white38, size: 56),
+            const SizedBox(height: 12),
+            Text(
+              _broadcastScreen ? "الشاشة تُبث الآن في الخلفية" : "الكاميرا شغالة في الخلفية",
+              style: const TextStyle(color: Colors.white70, fontSize: 15),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _broadcastScreen
+                  ? "المعاينة الذاتية غير متاحة لبث الشاشة (بتعمل مرآة لا نهائية)"
+                  : "المعاينة مقفولة من على الشاشة دي فقط",
+              style: const TextStyle(color: Colors.white38, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+            if (!_broadcastScreen) ...[ const SizedBox(height: 16),
+              TextButton.icon(
+                onPressed: _toggleLocalPreview,
+                icon: const Icon(Icons.visibility, size: 18),
+                label: const Text("إظهار المعاينة"),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pill(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 12)),
     );
   }
 }
