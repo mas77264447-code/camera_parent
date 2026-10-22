@@ -20,6 +20,9 @@ import androidx.core.app.NotificationCompat
 class StreamForegroundService : Service() {
 
     companion object {
+        const val EXTRA_CAMERA = "extra_camera"
+        const val EXTRA_MIC = "extra_mic"
+        const val EXTRA_SCREEN = "extra_screen"
         const val CHANNEL_ID = "camera_parent_stream_channel"
         const val NOTIFICATION_ID = 4821
         const val ACTION_START = "com.example.camera_parent.action.START_STREAM_SERVICE"
