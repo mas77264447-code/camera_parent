@@ -12,6 +12,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.net.wifi.WifiManager
+import android.content.Context
 import androidx.core.app.NotificationCompat
 
 class StreamForegroundService : Service() {
@@ -32,6 +34,7 @@ class StreamForegroundService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -46,6 +49,8 @@ class StreamForegroundService : Service() {
                 .apply()
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
             ServiceWatchdog.cancel(this)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelfResult(startId)
@@ -77,6 +82,11 @@ class StreamForegroundService : Service() {
         }
 
         acquireWakeLock()
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "CameraParent::WifiLock")
+            wifiLock?.acquire()
+        } catch (_: Exception) {}
 
         ServiceWatchdog.scheduleNext(this)
 
@@ -138,6 +148,8 @@ class StreamForegroundService : Service() {
 
     override fun onDestroy() {
         releaseWakeLock()
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
         super.onDestroy()
     }
 

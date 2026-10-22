@@ -244,6 +244,13 @@ class StreamService {
     }
   }
 
+  Future<void> forceReconnect() async {
+    if (!_running) return;
+    try { await _ws?.close(); } catch (_) {}
+    _ws = null;
+    _scheduleReconnect();
+  }
+
   Future<void> _connectWebSocket() async {
     if (!_running || _wsConnecting) return;
     _wsConnecting = true;
@@ -260,7 +267,7 @@ class StreamService {
 
       // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
       _ws!.listen(
-        _handleMessage,
+        (dynamic msg) => _handleMessage(msg),
         onError: (e) {
           debugPrint('[StreamService] ws error: $e');
           if (_running) {
@@ -364,7 +371,7 @@ class StreamService {
     });
   }
 
-  void _handleMessage(dynamic message) {
+  Future<void> _handleMessage(dynamic message) async {
     if (!_running) return;
     try {
       final data = jsonDecode(message as String);
@@ -395,6 +402,26 @@ class StreamService {
           break;
         case 'viewer-left':
           _handleViewerDisconnect(data);
+          break;
+        case 'restart-ice':
+          final viewerId = data['viewerId'] as String? ?? data['from'] as String?;
+          if (viewerId != null) {
+            final pc = _peerConnections[viewerId];
+            if (pc != null) {
+              try {
+                final offer = await pc.createOffer({'iceRestart': true});
+                await pc.setLocalDescription(offer);
+                _ws!.add(jsonEncode({
+                  'type': 'offer',
+                  'viewerId': viewerId,
+                  'sdp': offer.sdp,
+                }));
+                debugPrint('[StreamService] ICE restart offer sent to $viewerId');
+              } catch (e) {
+                debugPrint('[StreamService] ICE restart failed: $e');
+              }
+            }
+          }
           break;
         case 'switch-camera':
           switchCamera();
