@@ -256,6 +256,12 @@ class StreamService {
     _wsConnecting = true;
 
     try {
+      // 🛑 إصلاح جذري: إغلاق أي اتصال قديم قبل فتح اتصال جديد
+      if (_ws != null) {
+        try { await _ws!.close(); } catch (_) {}
+        _ws = null;
+      }
+      
       final serverUrl = CameraService.server;
       final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
 

@@ -298,7 +298,7 @@ class _HomeScreenState extends State<HomeScreen> {
           bg = Colors.green;
         } else {
           text =
-              '❌ الجهاز غير متصل بالسيرفر — يلزم فتح التطبيق على جهاز الطفل';
+              '⏳ جاري محاولة الاتصال بالجهاز... (تأكد من فتح تطبيق الطفل)';
           bg = Colors.red;
         }
 
