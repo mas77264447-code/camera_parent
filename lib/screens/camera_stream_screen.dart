@@ -25,7 +25,7 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-class _CameraStreamScreenState extends State<CameraStreamScreen> {
+class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBindingObserver {
   final _svc = StreamService.instance;
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
@@ -53,6 +53,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _init();
   }
@@ -162,7 +163,17 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      print("التطبيق في الخلفية، البث مستمر");
+    } else if (state == AppLifecycleState.resumed) {
+      _svc.ensureCameraStarted();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();

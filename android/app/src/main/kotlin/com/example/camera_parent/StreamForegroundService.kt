@@ -112,7 +112,7 @@ class StreamForegroundService : Service() {
         wakeLock = null
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
+        override fun onTaskRemoved(rootIntent: Intent?) {
         val enabled = getSharedPreferences(PREFS, MODE_PRIVATE)
             .getBoolean(KEY_ENABLED, false)
 
@@ -128,21 +128,10 @@ class StreamForegroundService : Service() {
                 }
             } catch (_: Exception) {}
 
-            // 2) جدول watchdog بعد 10 ثوانٍ فقط (إعادة سريعة)
+            // 2) جدول watchdog
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
-
-            // 3) حاول إعادة فتح التطبيق
-            try {
-                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                if (launchIntent != null) {
-                    launchIntent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    )
-                    startActivity(launchIntent)
-                }
-            } catch (_: Exception) {}
+            
+            // 3) تم إزالة startActivity لتفادي قيود أندرويد 10+ (Background Activity Start Restrictions)
         }
         super.onTaskRemoved(rootIntent)
     }
