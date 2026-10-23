@@ -785,7 +785,7 @@ app.get("/camera/sessions", requireAdminToken, async (req, res) => {
       list.push({
         session_id: sessionId,
         name: s.name,
-        online: !!(liveSession && liveSession.broadcaster),
+        online: !!(liveSession && liveSession.broadcaster && clients[liveSession.broadcaster]),
         viewers: liveSession ? liveSession.viewers.size : 0,
         created_at: s.createdAt,
         source: s.source || "pairing",  // ✅ إصلاح: fallback للجلسات القديمة
