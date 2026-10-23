@@ -560,7 +560,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                   title: Text(d['name'] ?? ''),
                                   subtitle: Text(
-                                      online ? 'متصل الآن' : 'غير متصل'),
+                                      online ? 'متصل الآن' : 'اضغط للاتصال'),
                                   trailing: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
@@ -587,7 +587,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       const Icon(Icons.chevron_left),
                                     ],
                                   ),
-                                  onTap: online ? () => _openDevice(d) : null,
+                                  onTap: () => _openDevice(d), // ✅ السماح بالضغط دائماً لتجربة الاتصال
                                   onLongPress: () => _confirmForget(d),
                                 ),
                               );
