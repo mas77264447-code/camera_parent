@@ -1405,3 +1405,34 @@ setInterval(() => {
   for (const [k, v] of wsAttempts)
     if (v.startedAt < cutoff) wsAttempts.delete(k);
 }, RATE_WINDOW_MS).unref();
+
+// ✅ إضافة مسار لتوليد بيانات TURN من Cloudflare
+app.get('/api/turn-credentials', async (req, res) => {
+  try {
+    const TURN_KEY_ID = process.env.TURN_KEY_ID;
+    const TURN_API_TOKEN = process.env.TURN_API_TOKEN;
+
+    if (!TURN_KEY_ID || !TURN_API_TOKEN) {
+      return res.status(500).json({ error: "TURN credentials not configured on server" });
+    }
+
+    const response = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${TURN_KEY_ID}/credentials/generate-ice-servers`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${TURN_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ttl: 86400 }),
+      }
+    );
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching TURN credentials:', error);
+    res.status(500).json({ error: 'Failed to get TURN credentials' });
+  }
+});
+

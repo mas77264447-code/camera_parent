@@ -5,7 +5,6 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-import '../services/device_admin_service.dart';
 import '../services/stream_service.dart';
 import 'pairing_screen.dart';
 
@@ -189,34 +188,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     super.dispose();
   }
 
-  Future<void> _showKioskSettings() async {
-    final status = await DeviceAdminService.getKioskStatus();
-    final supported = status['supported'] == true;
-    if (!supported) return;
-    if (!mounted) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Kiosk Mode'),
-        content: const Text(
-            'هذا الخيار يقفل التطبيق على الشاشة (بدون X).\n'
-            'إذا أردت أن يعمل بالخلفية فقط، تجاهل هذا.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('إلغاء'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('تفعيل'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      await DeviceAdminService.enableKioskMode();
-    }
-  }
+  
 
   Future<void> _unpair() async {
     final ok = await showDialog<bool>(
@@ -277,10 +249,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
               icon: const Icon(Icons.cameraswitch),
               onPressed: () => setState(() => _svc.switchCamera()),
             ),
-            IconButton(
-              icon: const Icon(Icons.lock_outline),
-              onPressed: _showKioskSettings,
-            ),
+            
           ],
         ),
         body: Column(

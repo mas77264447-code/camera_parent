@@ -28,6 +28,7 @@ class StreamService {
 
   WebSocket? _ws;
   bool _wsConnecting = false;
+  bool _manualClose = false;
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
   Timer? _pingTimer;
@@ -256,62 +257,37 @@ class StreamService {
     _wsConnecting = true;
 
     try {
-      // 🛑 إصلاح جذري: إغلاق أي اتصال قديم قبل فتح اتصال جديد
       if (_ws != null) {
+        _manualClose = true;
         try { await _ws!.close(); } catch (_) {}
         _ws = null;
+        _manualClose = false;
       }
-      
+
       final serverUrl = CameraService.server;
       final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
-
+      
       debugPrint('[StreamService] connecting to $wsUrl/signal');
+      
+      _ws = await WebSocket.connect('$wsUrl/signal').timeout(const Duration(seconds: 15));
 
-      // ✅ إصلاح: timeout على الاتصال
-      _ws = await WebSocket.connect('$wsUrl/signal')
-          .timeout(const Duration(seconds: 15));
-
-      // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
       _ws!.listen(
         (dynamic msg) => _handleMessage(msg),
         onError: (e) {
-          debugPrint('[StreamService] ws error: $e');
-          if (_running) {
-            _updateStatus('خطأ في الاتصال');
-            _scheduleReconnect();
-          }
+          _wsConnecting = false;
+          if (!_manualClose && _running) { _ws = null; _scheduleReconnect(); }
         },
         onDone: () async {
-          debugPrint('[StreamService] ws closed');
-          if (_running) {
-            _updateStatus('اتصال مقطوع');
-            await _closeAllPeerConnections();
-            _scheduleReconnect();
-          }
+          _wsConnecting = false;
+          if (!_manualClose && _running) { _ws = null; await _closeAllPeerConnections(); _scheduleReconnect(); }
         },
         cancelOnError: true,
       );
-
-      _ws!.add(jsonEncode({
-        'type': 'register',
-        'role': 'broadcaster',
-        'deviceToken': _deviceToken,
-      }));
-
-      _reconnectAttempts = 0;
-      _consecutivePingFailures = 0;
-      _updateStatus('متصل - في انتظار طلب مشاهدة');
-      ConnectionStateManager.instance.update(ConnectionStatus.connected);
-      _startPing();
+      
+      _ws!.add(jsonEncode({'type': 'register', 'role': 'broadcaster', 'deviceToken': _deviceToken}));
     } catch (e) {
-      debugPrint('[StreamService] connect failed: $e');
-      if (_running) {
-        _updateStatus('فشل الاتصال بالسيرفر');
-        ConnectionStateManager.instance.update(ConnectionStatus.failed);
-        _scheduleReconnect();
-      }
-    } finally {
       _wsConnecting = false;
+      if (!_manualClose && _running) { _scheduleReconnect(); }
     }
   }
 
@@ -388,6 +364,8 @@ class StreamService {
 
       switch (type) {
         case 'auth-ok':
+          _reconnectAttempts = 0;
+          _wsConnecting = false;
           final ownerToken = data['ownerToken']?.toString();
           if (ownerToken != null && ownerToken.isNotEmpty) {
             CryptoService.instance.initialize(ownerToken);
