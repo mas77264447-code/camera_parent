@@ -1,27 +1,28 @@
-name: Build APK with WebRTC Fixes
+name: Build APK
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, production-merge]
-    paths:
-      - 'lib/**'
-      - 'android/**'
-      - 'pubspec.yaml'
-      - '.github/workflows/build-apk.yml'
-
-permissions:
-  contents: write
 
 jobs:
-  build-and-release:
+  build-parent:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
+      - name: Write google-services.json
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "google-services.json written"
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON secret is missing; FCM wake disabled"
+          fi
+
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.44.0'
           channel: stable
           cache: true
 
@@ -29,55 +30,60 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: 'gradle'
 
-      - name: Verify google-services.json
+      - run: flutter pub get
+
+      - name: Reduce Gradle heap for GitHub runner
         run: |
-          test -f android/app/google-services.json || (echo "❌ google-services.json missing!" && exit 1)
-          echo "✅ google-services.json present"
+          sed -i 's/-Xmx8G/-Xmx3G/; s/MaxMetaspaceSize=4G/MaxMetaspaceSize=1G/' android/gradle.properties
 
-      # ✅ الترتيب الصحيح: clean ثم pub get
-      - name: Clean and get dependencies
-        run: |
-          flutter clean
-          flutter pub get
+      - run: flutter clean
 
-      # ✅ حفظ الـ APK خارج build/ حتى لا يُحذف
-      - name: Create release output dir
-        run: mkdir -p release-artifacts
+      - run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
 
-      - name: Build parent APK
-        run: flutter build apk --release --flavor parent --dart-define=IS_CHILD_BUILD=false
-
-      - name: Save parent APK
-        run: cp build/app/outputs/flutter-apk/app-parent-release.apk release-artifacts/camera-parent.apk
-
-      - name: Build child APK
-        run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
-
-      - name: Save child APK
-        run: cp build/app/outputs/flutter-apk/app-child-release.apk release-artifacts/camera-child.apk
-
-      - name: Verify artifacts
-        run: ls -lah release-artifacts/
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            release-artifacts/camera-parent.apk
-            release-artifacts/camera-child.apk
-          tag_name: build-${{ github.run_number }}
-          name: Release Build ${{ github.run_number }} - WebRTC Fixes Applied
-          draft: false
-          prerelease: false
-          body: |
-            # Build ${{ github.run_number }}
+          name: camera-parent-app-apk
+          path: build/app/outputs/flutter-apk/app-parent-release.apk
 
-            ✅ **Fixes Applied:**
-            - StreamForegroundService: 1500ms → 2500ms
-            - WebRTC initialization improved
+  build-child:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-            **Download & Install:**
-            - camera-parent.apk
-            - camera-child.apk
+      - name: Write google-services.json
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "google-services.json written"
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON secret is missing; FCM wake disabled"
+          fi
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: flutter pub get
+
+      - name: Reduce Gradle heap for GitHub runner
+        run: |
+          sed -i 's/-Xmx8G/-Xmx3G/; s/MaxMetaspaceSize=4G/MaxMetaspaceSize=1G/' android/gradle.properties
+
+      - run: flutter clean
+
+      - run: flutter build apk --release --flavor child --dart-define=IS_CHILD_BUILD=true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camera-child-app-apk
+          path: build/app/outputs/flutter-apk/app-child-release.apk
