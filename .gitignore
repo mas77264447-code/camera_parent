@@ -26,3 +26,7 @@ android/.gradle/
 storage/
 android/0
 android/ServiceInfo.*
+
+node_modules/
+server/node_modules/
+android/app/google-services.json
