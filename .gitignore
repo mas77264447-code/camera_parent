@@ -14,3 +14,4 @@ macos/
 
 # Local Gradle state
 android/.gradle/
+server/node_modules/
