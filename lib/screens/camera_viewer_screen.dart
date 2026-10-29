@@ -258,6 +258,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         return;
       }
 
+      socket.pingInterval = const Duration(seconds: 15);
       _ws = socket;
       _consecutiveFailures = 0;
       _reconnectAttempts = 0;
@@ -278,8 +279,12 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       _startPingServer();
 
       socket.listen(
-        _onSignalMessage,
+        (raw) {
+          if (identical(socket, _ws)) _onSignalMessage(raw);
+        },
         onDone: () async {
+          // سوكت قديم/يتيم (مثلاً بعد _reconnectFull): لا يحق له هدم الجلسة الجديدة.
+          if (!identical(socket, _ws)) return;
           if (_rejected) return;
           try { await _pc?.close(); } catch (_) {}
           _pc = null;
@@ -297,6 +302,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           _scheduleReconnect();
         },
         onError: (e) {
+          if (!identical(socket, _ws)) return;
           if (mounted) setState(() => _status = "خطأ: $e");
           _scheduleReconnect();
         },
@@ -326,11 +332,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
     _reconnectAttempts++;
 
-    if (_reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-      if (mounted) {
-        setState(() => _status = "فشل الاتصال - تم تجاوز الحد الأقصى");
-      }
-      return;
+    // لا نتوقف نهائياً: نستمر بأقصى فاصل (30ث) إلى أن يعود الاتصال.
+    if (_reconnectAttempts > MAX_RECONNECT_ATTEMPTS && mounted) {
+      setState(() => _status = "لا يوجد اتصال - ما زالت المحاولة مستمرة...");
     }
 
     debugPrint("[Viewer] reconnect in ${delayMs}ms (attempt $_reconnectAttempts)");
@@ -353,10 +357,13 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _noMediaWatchdog = null;
 
     try { await _pc?.close(); } catch (_) {}
-    try { await _ws?.close(); } catch (_) {}
+    final oldWs = _ws;
+    _ws = null; // يصبح السوكت القديم يتيماً قبل إغلاقه
+    if (oldWs != null) {
+      try { unawaited(oldWs.close().catchError((_) {})); } catch (_) {}
+    }
 
     _pc = null;
-    _ws = null;
     _remoteStream = null;
     _broadcasterId = null;
     _textureRefreshedForThisTrack = false;
@@ -410,6 +417,22 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           break;
         case "broadcaster-left":
           await _handleBroadcasterLeft();
+          break;
+        case "server-busy":
+          // عطل مؤقت في السيرفر: أعد التسجيل بعد قليل.
+          if (mounted) setState(() => _status = "السيرفر مشغول - إعادة المحاولة...");
+          final busy = _ws;
+          _ws = null;
+          if (busy != null) unawaited(busy.close().catchError((_) {}));
+          _scheduleReconnect();
+          break;
+        case "auth-failed":
+          _rejected = true; // لا فائدة من إعادة المحاولة بنفس بيانات الاعتماد
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
+          if (mounted) {
+            setState(() => _status = "فشل التحقق - سجّل الدخول من جديد");
+          }
           break;
         case "ice":
           await _handleIceCandidate(msg);
@@ -578,6 +601,12 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     if (mounted) {
       setState(() => _status = "انقطع جهاز الطفل - في انتظار عودة البث...");
     }
+    // السيرفر يحتفظ بجلستنا ويعيد الإرسال عند عودة الطفل. وكحماية إضافية،
+    // إن لم يصل عرض خلال 45ث نعيد التسجيل بالكامل.
+    _noMediaWatchdog = Timer(const Duration(seconds: 45), () {
+      if (_disposed || _remoteStream != null) return;
+      _reconnectFull();
+    });
   }
 
   Future<void> _handleIceCandidate(Map<String, dynamic> msg) async {

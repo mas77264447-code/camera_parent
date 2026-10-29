@@ -18,19 +18,15 @@ void main() {
 
   NativeBridge.initialize();
 
-  // إصلاح: ConnectivityMethodChannel وNetworkMonitor كانا معرَّفين لكن غير
-  // موصولين بأي مكان. الآن أي تغيير في الشبكة قادم من الجهة الأصلية (Kotlin)
-  // يحدّث NetworkMonitor، وفي بناء الطفل (حيث تعمل StreamService كمذيع)
-  // يُستخدم أيضاً لمحاولة استعادة الاتصال فور عودة الشبكة بدل انتظار
-  // مؤقّت البينغ التالي.
+  // أي (عودة/تبدّل) للشبكة الافتراضية يستبدل سوكت الإشارة فوراً.
+  // السوكت القديم قد يبدو مفتوحاً بعد الانتقال بين Wi‑Fi والبيانات وهو ميت.
   ConnectivityMethodChannel.initialize(
     onNetworkChanged: (online) async {
-      final wasOffline = !NetworkMonitor.instance.isOnline;
       NetworkMonitor.instance.update(
         online ? NetworkStatus.available : NetworkStatus.lost,
       );
-      if (isChildBuild && online && wasOffline) {
-        await StreamService.instance.ensureHealthy();
+      if (isChildBuild && online) {
+        await StreamService.instance.onNetworkRestored();
       }
     },
   );

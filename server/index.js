@@ -12,11 +12,28 @@ if (!UPSTASH_URL || !UPSTASH_TOKEN) {
   process.exit(1);
 }
 
+const REDIS_TIMEOUT_MS = 5000;
+const redisHeaders = { Authorization: `Bearer ${UPSTASH_TOKEN}` };
+const redisSignal = () => AbortSignal.timeout(REDIS_TIMEOUT_MS);
+const rk = (k) => encodeURIComponent(k);
+
 const redis = {
+  // يرمي خطأ عند فشل Redis (بدل إرجاع null) كي لا يُفسَّر العطل المؤقت
+  // على أنه "الجهاز غير مقترن". يُستخدم في مسار التسجيل عبر WebSocket.
+  async getStrict(k) {
+    const res = await fetch(`${UPSTASH_URL}/get/${rk(k)}`, {
+      headers: redisHeaders,
+      signal: redisSignal(),
+    });
+    if (!res.ok) throw new Error(`Redis get HTTP ${res.status}`);
+    const data = await res.json();
+    return data.result ?? null;
+  },
   async get(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/get/${k}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      const res = await fetch(`${UPSTASH_URL}/get/${rk(k)}`, {
+        headers: redisHeaders,
+        signal: redisSignal(),
       });
       const data = await res.json();
       return data.result || null;
@@ -27,10 +44,11 @@ const redis = {
   async set(k, v, opts) {
     try {
       const value = typeof v === "string" ? v : JSON.stringify(v);
-      let url = `${UPSTASH_URL}/set/${k}/${encodeURIComponent(value)}`;
+      let url = `${UPSTASH_URL}/set/${rk(k)}/${encodeURIComponent(value)}`;
       if (opts?.ex) url += `/EX/${opts.ex}`;
       const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+        headers: redisHeaders,
+        signal: redisSignal(),
       });
       const data = await res.json();
       return data.result ? "OK" : null;
@@ -40,8 +58,9 @@ const redis = {
   },
   async del(k) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/del/${k}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      const res = await fetch(`${UPSTASH_URL}/del/${rk(k)}`, {
+        headers: redisHeaders,
+        signal: redisSignal(),
       });
       const data = await res.json();
       return data.result ? 1 : 0;
@@ -52,8 +71,8 @@ const redis = {
   async sadd(key, member) {
     try {
       const res = await fetch(
-        `${UPSTASH_URL}/sadd/${key}/${encodeURIComponent(member)}`,
-        { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
+        `${UPSTASH_URL}/sadd/${rk(key)}/${encodeURIComponent(member)}`,
+        { headers: redisHeaders, signal: redisSignal() }
       );
       const data = await res.json();
       return data.result ? 1 : 0;
@@ -64,8 +83,8 @@ const redis = {
   async srem(key, member) {
     try {
       const res = await fetch(
-        `${UPSTASH_URL}/srem/${key}/${encodeURIComponent(member)}`,
-        { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
+        `${UPSTASH_URL}/srem/${rk(key)}/${encodeURIComponent(member)}`,
+        { headers: redisHeaders, signal: redisSignal() }
       );
       const data = await res.json();
       return data.result ? 1 : 0;
@@ -75,8 +94,9 @@ const redis = {
   },
   async smembers(key) {
     try {
-      const res = await fetch(`${UPSTASH_URL}/smembers/${key}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      const res = await fetch(`${UPSTASH_URL}/smembers/${rk(key)}`, {
+        headers: redisHeaders,
+        signal: redisSignal(),
       });
       if (!res.ok) {
         throw new Error(`Redis smembers HTTP ${res.status}`);
@@ -92,7 +112,7 @@ const redis = {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/signal" });
+const wss = new WebSocketServer({ server, path: "/signal", maxPayload: 1024 * 1024 });
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
@@ -852,6 +872,8 @@ wss.on("connection", (ws, req) => {
   };
 
   ws.isAlive = true;
+  // بدون هذا المعالج أي خطأ في السوكت يسقط عملية Node بالكامل.
+  ws.on("error", (e) => console.warn(`[ws] socket error: ${e.message}`));
   ws.on("pong", () => {
     ws.isAlive = true;
     const c = clients[clientId];
@@ -908,15 +930,26 @@ wss.on("connection", (ws, req) => {
 
       if (role === "broadcaster") {
         const deviceToken = safeText(msg.deviceToken, 128);
-        const rawDevice = await redis.get(`device:${deviceToken}`);
-        if (!rawDevice) {
-          send(clientId, { type: "auth-failed", reason: "device_not_paired" });
+        let rawDevice, rawSession, deviceInfo, sessionData;
+        try {
+          // getStrict: فشل Redis => server-busy (قابل لإعادة المحاولة)،
+          // وليس device_not_paired (نهائي).
+          rawDevice = await redis.getStrict(`device:${deviceToken}`);
+          if (rawDevice) {
+            deviceInfo =
+              typeof rawDevice === "string" ? JSON.parse(rawDevice) : rawDevice;
+            rawSession = await redis.getStrict(`session:${deviceInfo.sessionId}`);
+            if (rawSession) {
+              sessionData =
+                typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession;
+            }
+          }
+        } catch (e) {
+          console.warn(`[ws] register backend error: ${e.message}`);
+          send(clientId, { type: "server-busy", retryAfterMs: 3000 });
           return;
         }
-        const deviceInfo =
-          typeof rawDevice === "string" ? JSON.parse(rawDevice) : rawDevice;
-        const rawSession = await redis.get(`session:${deviceInfo.sessionId}`);
-        if (!rawSession) {
+        if (!rawDevice || !sessionData) {
           send(clientId, { type: "auth-failed", reason: "device_not_paired" });
           return;
         }
@@ -925,38 +958,37 @@ wss.on("connection", (ws, req) => {
         client.sessionId = boundSession;
         client.role = role;
         const liveSession = getLive(boundSession);
+
+        // سوكت broadcaster قديم (نصف ميت بعد تبدّل الشبكة): نستبدله بصمت.
+        // معالج close الخاص به لا يلمس الحالة لأنه لم يعد المالك الحالي.
+        const prev = liveSession.broadcaster;
         liveSession.broadcaster = clientId;
-
-        console.log(
-          `[ws] broadcaster: client=${clientId} session=${boundSession.slice(0, 8)}...`
-        );
-
-        // ✅ إرسال ownerToken للطفل لاشتقاق مفتاح E2E
-        const sessionData =
-          typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession;
-        if (sessionData.ownerToken) {
-          send(clientId, {
-            type: "auth-ok",
-            ownerToken: sessionData.ownerToken,
-          });
-          console.log(
-            `[ws] sent auth-ok to broadcaster ${clientId.slice(0, 8)}...`
-          );
+        if (prev && prev !== clientId && clients[prev]) {
+          try { clients[prev].ws.terminate(); } catch (_) {}
         }
 
+        console.log(
+          `[ws] broadcaster: client=${clientId} session=${boundSession.slice(0, 8)}... replaced=${!!prev}`
+        );
+
+        // دائماً نرسل auth-ok (حتى لو غاب ownerToken) كي لا يعلق الطفل.
+        send(clientId, {
+          type: "auth-ok",
+          ownerToken: sessionData.ownerToken || undefined,
+        });
+
+        // أعد ربط المشاهدين المتصلين فعلاً. المشاهدون لا يُمسحون عند انقطاع
+        // الطفل، لذا يعود البث تلقائياً دون تدخل من الوالد.
         liveSession.viewers.forEach((info, viewerKey) => {
+          if (!info.currentClientId || !clients[info.currentClientId]) return;
           send(clientId, {
             type: info.approved ? "viewer-joined" : "join-request",
             viewerId: viewerKey,
             name: info.name,
             source: info.source,
           });
-          // ✅ إصلاح: إذا كان المشاهد معتمداً مسبقاً، أخبره أن المُذيع وصل
-          if (info.approved && info.currentClientId) {
+          if (info.approved) {
             send(info.currentClientId, { type: "viewer-approved" });
-            console.log(
-              `[ws] notified viewer ${viewerKey.slice(0, 8)}... broadcaster is online`
-            );
           }
         });
         return;
@@ -964,7 +996,14 @@ wss.on("connection", (ws, req) => {
 
       if (role === "viewer") {
         const adminToken = safeText(msg.adminToken, 256);
-        const rawSession = await redis.get(`session:${session}`);
+        let rawSession;
+        try {
+          rawSession = await redis.getStrict(`session:${session}`);
+        } catch (e) {
+          console.warn(`[ws] viewer register backend error: ${e.message}`);
+          send(clientId, { type: "server-busy", retryAfterMs: 3000 });
+          return;
+        }
         const targetSession = rawSession
           ? (typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession)
           : null;
@@ -1044,7 +1083,7 @@ wss.on("connection", (ws, req) => {
           for (const [viewerKey] of liveSession.viewers) {
             sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
           }
-          liveSession.viewers.clear();
+          // لا نمسح viewers: نحتفظ بهم ليُعاد ربطهم عند عودة الطفل.
         }
         if (!liveSession.broadcaster && liveSession.viewers.size === 0) {
           delete live[sessionId];
@@ -1276,7 +1315,7 @@ wss.on("connection", (ws, req) => {
         for (const [viewerKey] of liveSession.viewers) {
           sendToViewer(liveSession, viewerKey, { type: "broadcaster-left" });
         }
-        liveSession.viewers.clear();
+        // لا نمسح viewers: الوالد ما زال متصلاً وينتظر عودة الطفل.
       }
       if (client.role === "viewer" && client.viewerKey) {
         const v = liveSession.viewers.get(client.viewerKey);

@@ -1,4 +1,3 @@
-
 import 'package:flutter/services.dart';
 
 class ConnectivityMethodChannel {
@@ -14,5 +13,11 @@ class ConnectivityMethodChannel {
         await onNetworkChanged(online);
       }
     });
+
+    // الحدث الأول من Kotlin قد يصل قبل تسجيل المعالج هنا فيضيع؛
+    // لذلك نسأل عن الحالة الحالية صراحةً.
+    _channel.invokeMethod<bool>('getState').then((online) async {
+      if (online != null) await onNetworkChanged(online);
+    }).catchError((_) {});
   }
 }

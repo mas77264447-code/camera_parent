@@ -28,7 +28,14 @@ class StreamService {
 
   WebSocket? _ws;
   bool _wsConnecting = false;
-  bool _manualClose = false;
+  bool _wsAuthenticated = false;
+  bool _recoveryInProgress = false;
+  bool _mediaStarting = false;
+  // هوية السوكت الحالي: أي callback قادم من سوكت أقدم يُتجاهل بالكامل.
+  int _wsGen = 0;
+  DateTime? _wsOpenedAt;
+  Timer? _authTimer;
+  static const Duration _authTimeout = Duration(seconds: 10);
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
   Timer? _pingTimer;
@@ -155,6 +162,12 @@ class StreamService {
   Future<void> stop() async {
     CryptoService.instance.clear();
     _running = false;
+    _wsGen++;
+    _wsConnecting = false;
+    _authTimer?.cancel();
+    _authTimer = null;
+    _wsAuthenticated = false;
+    _recoveryInProgress = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _reconnectAttempts = 0;
@@ -164,8 +177,9 @@ class StreamService {
     _screenAutoStopTimer?.cancel();
     _screenAutoStopTimer = null;
 
-    try { await _ws?.close(); } catch (_) {}
+    final closing = _ws;
     _ws = null;
+    if (closing != null) unawaited(closing.close().catchError((_) {}));
 
     await _closeAllPeerConnections();
     await _forceCleanupStream();
@@ -219,11 +233,106 @@ class StreamService {
     await _startMediaSource();
   }
 
-  Future<void> ensureHealthy() async {
-    if (!_running) return;
-    if (_ws == null || _ws!.readyState != WebSocket.open) {
+  /// One recovery entry point for app resume, network changes and watchdogs.
+  /// WebSocket authentication is required before media/session recovery.
+  Future<void> recoverConnection({String reason = 'health-check'}) async {
+    if (!_running || _recoveryInProgress) return;
+    _recoveryInProgress = true;
+    try {
+      debugPrint('[Recovery] begin reason=$reason');
+      if (_ws == null || _ws!.readyState != WebSocket.open) {
+        _scheduleReconnect();
+        return;
+      }
+      if (!_wsAuthenticated) {
+        _updateStatus('متصل بالخادم — جارٍ التحقق من الجهاز...');
+        return;
+      }
+
+      // Repair local media only for camera mode. Screen capture requires a
+      // fresh user-approved MediaProjection after process death/reboot.
+      if (!_broadcastFiles && !_broadcastScreen &&
+          (localStream == null || !_hasLiveVideoTrack())) {
+        await _forceCleanupStream();
+        await _startMediaSource();
+      }
+
+      final stale = <MapEntry<String, String>>[];
+      for (final entry in _peerConnections.entries.toList()) {
+        try {
+          final state = await entry.value.getConnectionState();
+          if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
+              state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+            stale.add(MapEntry(entry.key, _callerNames[entry.key] ?? 'المشاهد'));
+          }
+        } catch (_) {
+          stale.add(MapEntry(entry.key, _callerNames[entry.key] ?? 'المشاهد'));
+        }
+      }
+      for (final entry in stale) {
+        await _recoverViewer(entry.key, entry.value);
+      }
+      _startPing();
+      _updateStatus(localStream != null || _broadcastFiles
+          ? 'اتصال الخادم سليم — فحص البث مكتمل'
+          : 'اتصال الخادم سليم — الكاميرا تحتاج إلى إعادة تهيئة');
+      debugPrint('[Recovery] complete reason=$reason');
+    } catch (e, st) {
+      debugPrint('[Recovery] failed: $e\n$st');
+      _updateStatus('تعذرت استعادة الاتصال؛ ستتم إعادة المحاولة');
       _scheduleReconnect();
+    } finally {
+      _recoveryInProgress = false;
     }
+  }
+
+  Future<void> ensureHealthy() async {
+    if (!_running) {
+      // بعد إعادة التشغيل أو قتل الواجهة لا توجد شاشة تستدعي start():
+      // نبدأ الإشارة من بيانات الاقتران المخزّنة.
+      await startFromStored();
+      return;
+    }
+    await recoverConnection(reason: 'ensureHealthy');
+  }
+
+  /// يبدأ الاتصال بالسيرفر من بيانات الاقتران المحفوظة، دون الحاجة لشاشة.
+  Future<void> startFromStored() async {
+    if (_running) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!(prefs.getBool('is_paired') ?? false)) return;
+      final sid = prefs.getString('session_id');
+      final tok = prefs.getString('device_token');
+      if (sid == null || tok == null) return;
+      await start(
+        sessionId: sid,
+        deviceToken: tok,
+        cameraName: prefs.getString('device_name') ?? 'جهاز الطفل',
+      );
+    } catch (e) {
+      debugPrint('[StreamService] startFromStored failed: $e');
+    }
+  }
+
+  /// يُستدعى عند عودة الشبكة أو تبدّل الشبكة الافتراضية (Wi‑Fi <-> بيانات).
+  /// السوكت القديم قد يبدو مفتوحاً وهو ميت، لذا نستبدله فوراً.
+  Future<void> onNetworkRestored() async {
+    if (!_running) {
+      await startFromStored();
+      return;
+    }
+    if (_wsConnecting) return;
+    final opened = _wsOpenedAt;
+    if (_wsAuthenticated &&
+        opened != null &&
+        DateTime.now().difference(opened) < const Duration(seconds: 5)) {
+      return; // اتصال جديد للتو (مثل الحدث الأولي عند التشغيل)
+    }
+    _reconnectAttempts = 0;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    await _connectWebSocket(force: true);
   }
 
   /// ✅ إصلاح: تُنفَّذ في كل مرة يُفتح فيها المشروع (وليس مرة واحدة)
@@ -247,48 +356,99 @@ class StreamService {
 
   Future<void> forceReconnect() async {
     if (!_running) return;
-    try { await _ws?.close(); } catch (_) {}
+    _reconnectAttempts = 0;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    await _connectWebSocket(force: true);
+  }
+
+  Future<void> _connectWebSocket({bool force = false}) async {
+    if (!_running) return;
+    if (_wsConnecting && !force) return;
+    _wsConnecting = true;
+
+    // كل محاولة لها رقم؛ أي سوكت أقدم يصبح "يتيماً" وتُتجاهل أحداثه.
+    final gen = ++_wsGen;
+    _authTimer?.cancel();
+    _wsAuthenticated = false;
+
+    final old = _ws;
     _ws = null;
+    if (old != null) unawaited(old.close().catchError((_) {}));
+
+    try {
+      final wsUrl = CameraService.server.replaceFirst(RegExp(r'^http'), 'ws');
+      debugPrint('[StreamService] connecting to $wsUrl/signal (gen=$gen)');
+
+      final sock = await WebSocket.connect('$wsUrl/signal')
+          .timeout(const Duration(seconds: 15));
+
+      if (gen != _wsGen || !_running) {
+        unawaited(sock.close().catchError((_) {}));
+        return;
+      }
+
+      // ping على مستوى البروتوكول: يكتشف الاتصال الميت بعد تبدّل الشبكة
+      // خلال ثوانٍ بدل انتظار مهلة TCP الطويلة.
+      sock.pingInterval = const Duration(seconds: 15);
+
+      _ws = sock;
+      _wsOpenedAt = DateTime.now();
+      _wsConnecting = false;
+
+      sock.listen(
+        (dynamic msg) {
+          if (gen == _wsGen) _handleMessage(msg);
+        },
+        onError: (_) => _onSocketLost(gen),
+        onDone: () => _onSocketLost(gen),
+        cancelOnError: true,
+      );
+
+      sock.add(jsonEncode({
+        'type': 'register',
+        'role': 'broadcaster',
+        'deviceToken': _deviceToken,
+      }));
+
+      // لو لم يصل auth-ok خلال المهلة نعتبر الاتصال فاشلاً ونعيد المحاولة،
+      // بدل البقاء إلى الأبد في حالة "متصل وغير موثّق".
+      _authTimer = Timer(_authTimeout, () {
+        if (gen != _wsGen || _wsAuthenticated || !_running) return;
+        debugPrint('[StreamService] auth timeout → reconnect');
+        _dropSocket(gen);
+      });
+    } catch (e) {
+      if (gen == _wsGen && _running) {
+        _wsConnecting = false;
+        _scheduleReconnect();
+      }
+    } finally {
+      if (gen == _wsGen) _wsConnecting = false;
+    }
+  }
+
+  /// فُقد السوكت (أغلقه السيرفر/انقطعت الشبكة/فشل ping). يُهمل إن كان يتيماً.
+  void _onSocketLost(int gen) {
+    if (gen != _wsGen) return;
+    _authTimer?.cancel();
+    _authTimer = null;
+    _wsAuthenticated = false;
+    _wsConnecting = false;
+    _ws = null;
+    if (!_running) return;
+    // لا نغلق PeerConnections هنا: قد ينجو ICE، وإن فشل يعالجه _recoverViewer.
+    // السيرفر يحتفظ بالمشاهدين وسيعيد إرسال viewer-joined بعد إعادة التسجيل.
     _scheduleReconnect();
   }
 
-  Future<void> _connectWebSocket() async {
-    if (!_running || _wsConnecting) return;
-    _wsConnecting = true;
-
-    try {
-      if (_ws != null) {
-        _manualClose = true;
-        try { await _ws!.close(); } catch (_) {}
-        _ws = null;
-        _manualClose = false;
-      }
-
-      final serverUrl = CameraService.server;
-      final wsUrl = serverUrl.replaceFirst(RegExp(r'^http'), 'ws');
-      
-      debugPrint('[StreamService] connecting to $wsUrl/signal');
-      
-      _ws = await WebSocket.connect('$wsUrl/signal').timeout(const Duration(seconds: 15));
-
-      _ws!.listen(
-        (dynamic msg) => _handleMessage(msg),
-        onError: (e) {
-          _wsConnecting = false;
-          if (!_manualClose && _running) { _ws = null; _scheduleReconnect(); }
-        },
-        onDone: () async {
-          _wsConnecting = false;
-          if (!_manualClose && _running) { _ws = null; await _closeAllPeerConnections(); _scheduleReconnect(); }
-        },
-        cancelOnError: true,
-      );
-      
-      _ws!.add(jsonEncode({'type': 'register', 'role': 'broadcaster', 'deviceToken': _deviceToken}));
-    } catch (e) {
-      _wsConnecting = false;
-      if (!_manualClose && _running) { _scheduleReconnect(); }
-    }
+  /// إسقاط السوكت الحالي عمداً ثم إعادة المحاولة.
+  void _dropSocket(int gen) {
+    if (gen != _wsGen) return;
+    final s = _ws;
+    _onSocketLost(gen);
+    _wsGen++; // أي حدث متأخر من هذا السوكت يُتجاهل
+    if (s != null) unawaited(s.close().catchError((_) {}));
   }
 
   void _startPing() {
@@ -306,7 +466,6 @@ class StreamService {
           'type': 'ping',
           'timestamp': DateTime.now().millisecondsSinceEpoch,
         }));
-        _consecutivePingFailures = 0;
       } catch (e) {
         _consecutivePingFailures++;
         if (_consecutivePingFailures >= 2) _scheduleReconnect();
@@ -345,7 +504,11 @@ class StreamService {
     ConnectionStateManager.instance.update(ConnectionStatus.reconnecting);
     _reconnectTimer?.cancel();
     _reconnectAttempts++;
-    final delay = Duration(seconds: math.min(15, 2 * _reconnectAttempts));
+    // 1s, 2s, 4s, 8s, 15s ... مع jitter صغير كي لا تتزاحم الأجهزة بعد إعادة تشغيل السيرفر.
+    final delay = Duration(
+      milliseconds: math.min(15, 1 << math.min(_reconnectAttempts - 1, 4)) * 1000 +
+          math.Random().nextInt(700),
+    );
 
     _reconnectTimer = Timer(delay, () {
       _reconnectTimer = null;
@@ -363,14 +526,26 @@ class StreamService {
       debugPrint('[StreamService] ← $type');
 
       switch (type) {
+        case 'server-busy':
+          // السيرفر لا يستطيع التحقق الآن (Redis). عطل مؤقت: أعد المحاولة.
+          _authTimer?.cancel();
+          _updateStatus('السيرفر مشغول — إعادة المحاولة...');
+          _dropSocket(_wsGen);
+          break;
         case 'auth-ok':
+          _authTimer?.cancel();
+          _authTimer = null;
           _reconnectAttempts = 0;
           _wsConnecting = false;
+          _wsAuthenticated = true;
+          ConnectionStateManager.instance.update(ConnectionStatus.connected);
+          _startPing();
           final ownerToken = data['ownerToken']?.toString();
           if (ownerToken != null && ownerToken.isNotEmpty) {
             CryptoService.instance.initialize(ownerToken);
             debugPrint('[StreamService] E2E initialized');
           }
+          unawaited(recoverConnection(reason: 'registration-confirmed'));
           break;
         case 'join-request':
           _handleViewerRequest(data);
@@ -417,6 +592,10 @@ class StreamService {
           _updateStatus('تم إنهاء الاتصال من طرف السيرفر');
           break;
         case 'auth-failed':
+          _authTimer?.cancel();
+          _wsConnecting = false;
+          _wsAuthenticated = false;
+          _pingTimer?.cancel();
           _reconnectTimer?.cancel();
           _updateStatus('فشل التحقق من الجهاز');
           _error = 'الجهاز غير مقترن على السيرفر. أعد الاقتران من جديد.';
@@ -902,21 +1081,29 @@ class StreamService {
   }
 
   Future<void> _startMediaSource() async {
-    if (localStream != null) {
-      _updateStatus("جاهز للبث!");
-      return;
-    }
-
+    if (_mediaStarting) return;
     if (_broadcastFiles) {
       _updateStatus("جاهز لاستعراض الملفات");
       return;
     }
+    if (localStream != null && _hasLiveVideoTrack()) {
+      _updateStatus("جاهز للبث!");
+      return;
+    }
 
+    _mediaStarting = true;
     _updateStatus(_broadcastScreen
         ? "جاري تجهيز مشاركة الشاشة..."
         : "جاري تجهيز الكاميرا...");
 
     try {
+      // A non-null MediaStream may still contain no usable video track after
+      // Android suspends/kills the camera pipeline. Dispose it before retry.
+      if (localStream != null) {
+        final keepScreenMode = _broadcastScreen;
+        await _forceCleanupStream();
+        _broadcastScreen = keepScreenMode;
+      }
       final stream = _broadcastScreen
           ? await ScreenCaptureService.startScreenCapture()
           : await CameraService.getUserMedia(
@@ -935,6 +1122,13 @@ class StreamService {
               },
             );
 
+      if (stream.getVideoTracks().isEmpty) {
+        for (final track in stream.getTracks()) {
+          try { await track.stop(); } catch (_) {}
+        }
+        try { await stream.dispose(); } catch (_) {}
+        throw StateError('مصدر الوسائط لا يحتوي على مسار فيديو');
+      }
       localStream = stream;
       _localStreamCtrl.add(stream);
 
@@ -951,8 +1145,11 @@ class StreamService {
       _canRetry = false;
     } catch (e) {
       _error = "فشل تهيئة البث: $e";
-      _updateStatus("خطأ");
+      _updateStatus("تعذر تشغيل الكاميرا أو الوسائط");
       _canRetry = true;
+      debugPrint('[StreamService] media recovery failed: $e');
+    } finally {
+      _mediaStarting = false;
     }
   }
 

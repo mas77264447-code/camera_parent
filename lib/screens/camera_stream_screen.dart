@@ -166,7 +166,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     if (state == AppLifecycleState.paused) {
       print("التطبيق في الخلفية، البث مستمر");
     } else if (state == AppLifecycleState.resumed) {
-      _svc.ensureCameraStarted();
+      // App may have been suspended or its socket/media pipeline may have died.
+      unawaited(_svc.recoverConnection(reason: 'app-resumed'));
+      unawaited(_svc.ensureCameraStarted());
     }
   }
 
