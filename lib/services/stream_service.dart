@@ -34,6 +34,7 @@ class StreamService {
   // هوية السوكت الحالي: أي callback قادم من سوكت أقدم يُتجاهل بالكامل.
   int _wsGen = 0;
   DateTime? _wsOpenedAt;
+  DateTime? _connectStartedAt;
   Timer? _authTimer;
   static const Duration _authTimeout = Duration(seconds: 10);
   Timer? _reconnectTimer;
@@ -322,7 +323,12 @@ class StreamService {
       await startFromStored();
       return;
     }
-    if (_wsConnecting) return;
+    // محاولة بدأت منذ لحظات: دعها تكمل. أما إن علقت (شبكة ميتة) فاستبدلها.
+    if (_wsConnecting &&
+        DateTime.now().difference(_connectStartedAt ?? DateTime.now()) <
+            const Duration(seconds: 3)) {
+      return;
+    }
     final opened = _wsOpenedAt;
     if (_wsAuthenticated &&
         opened != null &&
@@ -366,6 +372,7 @@ class StreamService {
     if (!_running) return;
     if (_wsConnecting && !force) return;
     _wsConnecting = true;
+    _connectStartedAt = DateTime.now();
 
     // كل محاولة لها رقم؛ أي سوكت أقدم يصبح "يتيماً" وتُتجاهل أحداثه.
     final gen = ++_wsGen;

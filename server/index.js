@@ -949,6 +949,8 @@ wss.on("connection", (ws, req) => {
           send(clientId, { type: "server-busy", retryAfterMs: 3000 });
           return;
         }
+        // انقطع السوكت أثناء انتظار Redis: لا نسجّل broadcaster "شبحاً".
+        if (!clients[clientId]) return;
         if (!rawDevice || !sessionData) {
           send(clientId, { type: "auth-failed", reason: "device_not_paired" });
           return;
@@ -1004,6 +1006,7 @@ wss.on("connection", (ws, req) => {
           send(clientId, { type: "server-busy", retryAfterMs: 3000 });
           return;
         }
+        if (!clients[clientId]) return; // انقطع أثناء انتظار Redis
         const targetSession = rawSession
           ? (typeof rawSession === "string" ? JSON.parse(rawSession) : rawSession)
           : null;

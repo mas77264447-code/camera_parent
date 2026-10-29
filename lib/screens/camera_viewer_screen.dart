@@ -47,6 +47,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   bool _disposed = false;
   bool _rejected = false;
+  bool _authFailed = false; // فشل التحقق: لا فائدة من إعادة المحاولة
 
   bool _iceRestartInProgress = false;
 
@@ -259,7 +260,12 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       }
 
       socket.pingInterval = const Duration(seconds: 15);
+      final superseded = _ws;
       _ws = socket;
+      // أغلق السوكت السابق إن بقي مفتوحاً، وإلا يبقى مسجّلاً على السيرفر (تسريب).
+      if (superseded != null && !identical(superseded, socket)) {
+        unawaited(superseded.close().catchError((_) {}));
+      }
       _consecutiveFailures = 0;
       _reconnectAttempts = 0;
 
@@ -285,7 +291,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         onDone: () async {
           // سوكت قديم/يتيم (مثلاً بعد _reconnectFull): لا يحق له هدم الجلسة الجديدة.
           if (!identical(socket, _ws)) return;
-          if (_rejected) return;
+          if (_rejected || _authFailed) return;
           try { await _pc?.close(); } catch (_) {}
           _pc = null;
           _remoteStream = null;
@@ -321,7 +327,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   }
 
   void _scheduleReconnect() {
-    if (_disposed || _rejected) return;
+    if (_disposed || _rejected || _authFailed) return;
     if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
 
     final baseDelay = 3000;
@@ -349,6 +355,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     if (_disposed) return;
 
     _rejected = false;
+    _authFailed = false;
     _reconnectTimer?.cancel();
     _healthCheckTimer?.cancel();
     _pingTimer?.cancel();
@@ -427,7 +434,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           _scheduleReconnect();
           break;
         case "auth-failed":
-          _rejected = true; // لا فائدة من إعادة المحاولة بنفس بيانات الاعتماد
+          _authFailed = true; // شاشة "مرفوض" مخصّصة لرفض الطفل فقط
           _reconnectTimer?.cancel();
           _reconnectTimer = null;
           if (mounted) {

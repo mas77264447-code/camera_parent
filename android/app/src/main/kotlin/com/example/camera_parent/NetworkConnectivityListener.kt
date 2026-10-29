@@ -29,6 +29,7 @@ class NetworkConnectivityListener(
     // onAvailable/onLost تأتي من thread خلفي؛ MethodChannel يحتاج main thread.
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    @Volatile
     private var current: Network? = null
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
