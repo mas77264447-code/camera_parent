@@ -292,7 +292,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           // سوكت قديم/يتيم (مثلاً بعد _reconnectFull): لا يحق له هدم الجلسة الجديدة.
           if (!identical(socket, _ws)) return;
           if (_rejected || _authFailed) return;
-          try { await _pc?.close(); } catch (_) {}
+          await _closePc();
           _pc = null;
           _remoteStream = null;
           _broadcasterId = null;
@@ -363,7 +363,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _reconnectTimer = null;
     _noMediaWatchdog = null;
 
-    try { await _pc?.close(); } catch (_) {}
+    await _closePc();
     final oldWs = _ws;
     _ws = null; // يصبح السوكت القديم يتيماً قبل إغلاقه
     if (oldWs != null) {
@@ -414,7 +414,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
           _reconnectTimer = null;
           _noMediaWatchdog?.cancel();
           _noMediaWatchdog = null;
-          try { await _pc?.close(); } catch (_) {}
+          await _closePc();
           if (mounted) {
             setState(() => _status = "صاحب الكاميرا رفض طلب الاتصال");
           }
@@ -452,7 +452,24 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     }
   }
 
-  Future<void> _handleOffer(Map<String, dynamic> msg) async {
+  /// يغلق الـ PC الحالية بعد فصلها من _pc أولاً، فتُتجاهل أحداث إغلاقها
+  /// (كانت تستدعي _scheduleReconnect وتُطلق حلقة إعادة اتصال ذاتية).
+  Future<void> _closePc() async {
+    final old = _pc;
+    _pc = null;
+    try { await old?.close(); } catch (_) {}
+  }
+
+  // العروض تُعالج واحداً تلو الآخر؛ التداخل كان يجعل _pc تصبح null أثناء المعالجة.
+  Future<void> _offerChain = Future<void>.value();
+
+  Future<void> _handleOffer(Map<String, dynamic> msg) {
+    final next = _offerChain.then((_) => _handleOfferImpl(msg)).catchError((_) {});
+    _offerChain = next;
+    return next;
+  }
+
+  Future<void> _handleOfferImpl(Map<String, dynamic> msg) async {
     final sdp = msg["sdp"];
     if (sdp is! String || sdp.length > 200000) {
       debugPrint("[Offer] invalid or oversized SDP");
@@ -461,10 +478,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
     _broadcasterId = msg["from"].toString();
 
-    if (_pc != null) {
-      try { await _pc!.close(); } catch (_) {}
-      _pc = null;
-    }
+    await _closePc();
     _remoteStream = null;
     _textureRefreshedForThisTrack = false;
     _remoteDescSet = false;
@@ -472,10 +486,12 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     try { _remoteRenderer.srcObject = null; } catch (_) {}
 
     try {
-      _pc = await createPeerConnection({"iceServers": _iceServers});
+      final pc = await createPeerConnection({"iceServers": _iceServers});
+      _pc = pc;
 
       // ✅✅✅ التعديل: onTrack محسّن
-      _pc!.onTrack = (event) {
+      pc.onTrack = (event) {
+        if (!identical(pc, _pc)) return;
         debugPrint('[PC] onTrack received');
         debugPrint('[PC] kind=${event.track.kind}');
         debugPrint('[PC] streams count=${event.streams.length}');
@@ -526,7 +542,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         });
       };
 
-      _pc!.onIceCandidate = (candidate) {
+      pc.onIceCandidate = (candidate) {
+        if (!identical(pc, _pc)) return;
         try {
           _ws?.add(jsonEncode({
             "type": "ice",
@@ -542,7 +559,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
       };
 
-      _pc!.onConnectionState = (state) {
+      pc.onConnectionState = (state) {
+        if (!identical(pc, _pc)) return; // PC قديمة استبدلناها
         debugPrint("[PC] state=$state");
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           try { _remoteRenderer.srcObject = null; } catch (_) {}
@@ -559,7 +577,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
       };
 
-      _pc!.onIceConnectionState = (state) {
+      pc.onIceConnectionState = (state) {
+        if (!identical(pc, _pc)) return;
         debugPrint("[ICE] state=$state");
         if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
           debugPrint('[ICE] disconnected — attempting restart');
@@ -570,16 +589,16 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         }
       };
 
-      await _pc!.setRemoteDescription(RTCSessionDescription(sdp, "offer"));
+      await pc.setRemoteDescription(RTCSessionDescription(sdp, "offer"));
 
       _remoteDescSet = true;
       for (final c in _pendingRemoteIce) {
-        try { await _pc!.addCandidate(c); } catch (_) {}
+        try { await pc.addCandidate(c); } catch (_) {}
       }
       _pendingRemoteIce.clear();
 
-      final answer = await _pc!.createAnswer();
-      await _pc!.setLocalDescription(answer);
+      final answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
 
       _ws?.add(jsonEncode({
         "type": "answer",
@@ -596,7 +615,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   Future<void> _handleBroadcasterLeft() async {
     try { _remoteRenderer.srcObject = null; } catch (_) {}
-    try { await _pc?.close(); } catch (_) {}
+    await _closePc();
     _pc = null;
     _remoteStream = null;
     _broadcasterId = null;
@@ -672,7 +691,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     } catch (_) {}
 
     _ws = null;
-    try { await _pc?.close(); } catch (_) {}
+    await _closePc();
     _pc = null;
     try { socket?.close(); } catch (_) {}
   }

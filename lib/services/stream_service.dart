@@ -197,6 +197,8 @@ class StreamService {
     _remoteStreams.clear();
     _pendingRemoteIceByViewer.clear();
     _approvalInFlight.clear();
+    _offerStartedAt.clear();
+    _recoveringViewers.clear();
     _approvedFileViewers.clear();
     _activeViewerId = null;
     _hasRemoteVideo = false;
@@ -1052,9 +1054,9 @@ class StreamService {
           return;
         }
       } catch (_) {}
-      try { await existingPc.close(); } catch (_) {}
-      _peerConnections.remove(viewerId);
+      _peerConnections.remove(viewerId); // أولاً، كي تُتجاهل أحداث إغلاقها
       _pendingRemoteIceByViewer.remove(viewerId);
+      try { await existingPc.close(); } catch (_) {}
     }
 
     if (requestedSource != null) {
@@ -1160,7 +1162,27 @@ class StreamService {
     }
   }
 
+  // منع تداخل عدة عروض لنفس المشاهد (viewer-joined المتكرر): كل عرض جديد كان
+  // يهدم PC السابق قبل أن يكتمل، فلا يتطابق الـ answer مع الـ offer أبداً.
+  final Map<String, DateTime> _offerStartedAt = <String, DateTime>{};
+
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
+    final started = _offerStartedAt[viewerId];
+    if (started != null &&
+        DateTime.now().difference(started) < const Duration(seconds: 20)) {
+      debugPrint('[StreamService] offer already in flight for $viewerId → skip');
+      return;
+    }
+    final mine = DateTime.now();
+    _offerStartedAt[viewerId] = mine;
+    try {
+      await _sendOfferToImpl(viewerId, callerName);
+    } finally {
+      if (_offerStartedAt[viewerId] == mine) _offerStartedAt.remove(viewerId);
+    }
+  }
+
+  Future<void> _sendOfferToImpl(String viewerId, String callerName) async {
     if (_broadcastFiles) {
       _callerNames[viewerId] = callerName;
       _approvedFileViewers.add(viewerId);
@@ -1201,6 +1223,8 @@ class StreamService {
     };
 
     pc.onConnectionState = (state) {
+      // حدث من PC قديمة استبدلناها نحن: يُتجاهل (وإلا يهدم الجديدة).
+      if (!identical(_peerConnections[viewerId], pc)) return;
       debugPrint('[PC child] viewer=$viewerId state=$state');
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
           state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
@@ -1209,6 +1233,7 @@ class StreamService {
     };
 
     pc.onIceConnectionState = (state) {
+      if (!identical(_peerConnections[viewerId], pc)) return;
       debugPrint('[ICE child] viewer=$viewerId state=$state');
       if (state == RTCIceConnectionState.RTCIceConnectionStateFailed ||
           state == RTCIceConnectionState.RTCIceConnectionStateClosed) {
@@ -1217,6 +1242,7 @@ class StreamService {
     };
 
     pc.onIceCandidate = (candidate) {
+      if (!identical(_peerConnections[viewerId], pc)) return;
       _ws?.add(jsonEncode({
         'type': 'ice',
         'target': viewerId,
@@ -1257,11 +1283,33 @@ class StreamService {
     }
   }
 
+  final Set<String> _recoveringViewers = <String>{};
+
   Future<void> _recoverViewer(String viewerId, String callerName) async {
     if (!_running) return;
+    if (!_recoveringViewers.add(viewerId)) return; // استرداد جارٍ لنفس المشاهد
+    try {
+      await _recoverViewerImpl(viewerId, callerName);
+    } finally {
+      _recoveringViewers.remove(viewerId);
+    }
+  }
 
+  Future<void> _recoverViewerImpl(String viewerId, String callerName) async {
     await Future.delayed(const Duration(seconds: 2));
     if (!_running) return;
+
+    // قد يكون الاتصال تعافى (أو استُبدل) خلال الثانيتين.
+    final cur = _peerConnections[viewerId];
+    if (cur != null) {
+      try {
+        final st = await cur.getConnectionState();
+        if (st == RTCPeerConnectionState.RTCPeerConnectionStateConnected ||
+            st == RTCPeerConnectionState.RTCPeerConnectionStateConnecting) {
+          return;
+        }
+      } catch (_) {}
+    }
 
     if (!_callerNames.containsKey(viewerId) &&
         !_peerConnections.containsKey(viewerId)) {
