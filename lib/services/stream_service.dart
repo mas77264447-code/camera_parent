@@ -33,6 +33,7 @@ class StreamService {
   bool _mediaStarting = false;
   // هوية السوكت الحالي: أي callback قادم من سوكت أقدم يُتجاهل بالكامل.
   int _wsGen = 0;
+  final Map<String, int> _pcWsGen = <String, int>{};
   DateTime? _wsOpenedAt;
   DateTime? _connectStartedAt;
   Timer? _authTimer;
@@ -193,6 +194,7 @@ class StreamService {
   Future<void> _closeAllPeerConnections() async {
     final pcs = List<RTCPeerConnection>.from(_peerConnections.values);
     _peerConnections.clear();
+    _pcWsGen.clear();
     _callerNames.clear();
     _remoteStreams.clear();
     _pendingRemoteIceByViewer.clear();
@@ -264,7 +266,9 @@ class StreamService {
       for (final entry in _peerConnections.entries.toList()) {
         try {
           final state = await entry.value.getConnectionState();
-          if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
+          final sameSocket = _pcWsGen[entry.key] == _wsGen;
+          if (!sameSocket ||
+              state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
               state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
             stale.add(MapEntry(entry.key, _callerNames[entry.key] ?? 'المشاهد'));
           }
@@ -372,6 +376,13 @@ class StreamService {
 
   Future<void> _connectWebSocket({bool force = false}) async {
     if (!_running) return;
+
+    // ✅ حماية: لا تفتح اتصالاً إن كان هناك سوكت سليم مفتوح
+    if (!force && _ws != null && _ws!.readyState == WebSocket.open) {
+      debugPrint('[WS] skip — socket already OPEN (gen=$_wsGen)');
+      return;
+    }
+
     if (_wsConnecting && !force) return;
     _wsConnecting = true;
     _connectStartedAt = DateTime.now();
@@ -1048,13 +1059,19 @@ class StreamService {
 
     final existingPc = _peerConnections[viewerId];
     if (existingPc != null) {
-      try {
-        final state = await existingPc.getConnectionState();
-        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-          return;
-        }
-      } catch (_) {}
-      _peerConnections.remove(viewerId); // أولاً، كي تُتجاهل أحداث إغلاقها
+      final sameSocket = _pcWsGen[viewerId] == _wsGen;
+      if (sameSocket) {
+        try {
+          final state = await existingPc.getConnectionState();
+          if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+            return;
+          }
+        } catch (_) {}
+      } else {
+        debugPrint('[StreamService] WS gen changed (${_pcWsGen[viewerId]}->$_wsGen) -> rebuild');
+      }
+      _peerConnections.remove(viewerId);
+      _pcWsGen.remove(viewerId);
       _pendingRemoteIceByViewer.remove(viewerId);
       try { await existingPc.close(); } catch (_) {}
     }
@@ -1210,6 +1227,7 @@ class StreamService {
 
     final pc = await createPeerConnection({'iceServers': _iceServers});
     _peerConnections[viewerId] = pc;
+    _pcWsGen[viewerId] = _wsGen;
 
     pc.onTrack = (RTCTrackEvent event) {
       if (event.track.kind == 'video') {
@@ -1301,7 +1319,7 @@ class StreamService {
 
     // قد يكون الاتصال تعافى (أو استُبدل) خلال الثانيتين.
     final cur = _peerConnections[viewerId];
-    if (cur != null) {
+    if (cur != null && _pcWsGen[viewerId] == _wsGen) {
       try {
         final st = await cur.getConnectionState();
         if (st == RTCPeerConnectionState.RTCPeerConnectionStateConnected ||

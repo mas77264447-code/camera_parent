@@ -966,6 +966,11 @@ wss.on("connection", (ws, req) => {
         const prev = liveSession.broadcaster;
         liveSession.broadcaster = clientId;
         if (prev && prev !== clientId && clients[prev]) {
+          // ✅ أبلغ المشاهدين بحدث صريح قبل قتل السوكت القديم
+          liveSession.viewers.forEach((info, viewerKey) => {
+            if (!info.currentClientId || !clients[info.currentClientId]) return;
+            try { send(info.currentClientId, { type: "broadcaster-replaced" }); } catch (_) {}
+          });
           try { clients[prev].ws.terminate(); } catch (_) {}
         }
 

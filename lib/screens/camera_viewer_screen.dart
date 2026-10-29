@@ -57,6 +57,9 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   static const int MAX_CONSECUTIVE_FAILURES = 3;
   static const int MAX_RECONNECT_ATTEMPTS = 20;
   static const Duration NO_MEDIA_TIMEOUT = Duration(seconds: 60);
+  Timer? _mediaHealthTimer;
+  int _lastFramesReceived = 0;
+  int _stuckChecks = 0;
 
   List<Map<String, dynamic>> _iceServers = const [
     {"urls": "stun:stun.l.google.com:19302"},
@@ -191,6 +194,51 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       if (connected && _remoteStream == null) {
         debugPrint('[Viewer] no media after ${NO_MEDIA_TIMEOUT.inSeconds}s — restart');
         _tryIceRestart();
+      }
+    });
+  }
+
+  // ✅ مراقب حقيقي يكتشف الصورة المجمدة عبر getStats
+  void _startMediaHealthMonitor() {
+    _mediaHealthTimer?.cancel();
+    _lastFramesReceived = 0;
+    _stuckChecks = 0;
+    _mediaHealthTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (_disposed) return;
+      final pc = _pc;
+      if (pc == null ||
+          pc.connectionState !=
+              RTCPeerConnectionState.RTCPeerConnectionStateConnected) return;
+
+      int frames = 0;
+      try {
+        final raw = await pc.getStats();
+        final dynamic s = raw;
+        void take(Object? v) {
+          if (v is Map &&
+              (v['type']?.toString() ?? '').contains('inbound-rtp')) {
+            final f = v['framesReceived'];
+            if (f is num) frames = f.toInt();
+          }
+        }
+        try {
+          (s.values as Iterable).forEach(take);
+        } catch (_) {
+          try { s.forEach((k, v) => take(v)); } catch (_) {}
+        }
+      } catch (_) {}
+
+      if (frames > _lastFramesReceived) {
+        _lastFramesReceived = frames;
+        _stuckChecks = 0;
+        return;
+      }
+      _stuckChecks++;
+      debugPrint('[Viewer] frames frozen (total=$frames) — miss #$_stuckChecks');
+      if (_stuckChecks >= 3) {
+        _stuckChecks = 0;
+        debugPrint('[Viewer] frozen 15s -> full reconnect');
+        _reconnectFull();
       }
     });
   }
@@ -425,6 +473,10 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
         case "broadcaster-left":
           await _handleBroadcasterLeft();
           break;
+        case "broadcaster-replaced":
+          debugPrint('[Signal] broadcaster replaced -> full renegotiation');
+          _reconnectFull();
+          break;
         case "server-busy":
           // عطل مؤقت في السيرفر: أعد التسجيل بعد قليل.
           if (mounted) setState(() => _status = "السيرفر مشغول - إعادة المحاولة...");
@@ -455,6 +507,10 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
   /// يغلق الـ PC الحالية بعد فصلها من _pc أولاً، فتُتجاهل أحداث إغلاقها
   /// (كانت تستدعي _scheduleReconnect وتُطلق حلقة إعادة اتصال ذاتية).
   Future<void> _closePc() async {
+    _mediaHealthTimer?.cancel();
+    _mediaHealthTimer = null;
+    _lastFramesReceived = 0;
+    _stuckChecks = 0;
     final old = _pc;
     _pc = null;
     try { await old?.close(); } catch (_) {}
@@ -484,6 +540,11 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
     _remoteDescSet = false;
     _pendingRemoteIce.clear();
     try { _remoteRenderer.srcObject = null; } catch (_) {}
+
+    // ✅ أغلق PC القديم قبل إنشاء جديد
+    try { await _pc?.close(); } catch (_) {}
+    _pc = null;
+    _remoteStream = null;
 
     try {
       final pc = await createPeerConnection({"iceServers": _iceServers});
@@ -590,6 +651,7 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
       };
 
       await pc.setRemoteDescription(RTCSessionDescription(sdp, "offer"));
+      _startMediaHealthMonitor();
 
       _remoteDescSet = true;
       for (final c in _pendingRemoteIce) {
@@ -703,6 +765,8 @@ class _CameraViewerScreenState extends State<CameraViewerScreen>
 
   @override
   void dispose() {
+    _mediaHealthTimer?.cancel();
+    _mediaHealthTimer = null;
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
