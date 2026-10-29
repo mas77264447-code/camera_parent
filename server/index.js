@@ -1046,6 +1046,9 @@ wss.on("connection", (ws, req) => {
 
         if (liveSession.broadcaster) {
           const finalApproved = wasApproved || autoApprove;
+          console.log(
+            `[ws] → ${finalApproved ? "viewer-joined" : "join-request"} to broadcaster=${String(liveSession.broadcaster).slice(0, 8)} socketOpen=${!!clients[liveSession.broadcaster]}`
+          );
           send(liveSession.broadcaster, {
             type: finalApproved ? "viewer-joined" : "join-request",
             viewerId: viewerKey,
@@ -1144,9 +1147,22 @@ wss.on("connection", (ws, req) => {
         client.role !== "broadcaster" ||
         !liveSession ||
         liveSession.broadcaster !== clientId
-      ) return;
+      ) {
+        console.log(
+          `[relay] offer DROPPED sender is not current broadcaster (role=${client.role} live=${!!liveSession})`
+        );
+        return;
+      }
       const viewerInfo = liveSession.viewers.get(msg.viewerId);
-      if (!viewerInfo || !viewerInfo.approved) return;
+      if (!viewerInfo || !viewerInfo.approved) {
+        console.log(
+          `[relay] offer DROPPED viewer=${String(msg.viewerId).slice(0, 8)} known=${!!viewerInfo} approved=${!!(viewerInfo && viewerInfo.approved)}`
+        );
+        return;
+      }
+      console.log(
+        `[relay] offer → viewer=${String(msg.viewerId).slice(0, 8)} viewerSocket=${!!viewerInfo.currentClientId}`
+      );
       sendToViewer(liveSession, msg.viewerId, {
         type: "offer",
         sdp: msg.sdp,
@@ -1163,6 +1179,7 @@ wss.on("connection", (ws, req) => {
         liveSession &&
         liveSession.broadcaster
       ) {
+        console.log(`[relay] answer → broadcaster viewer=${client.viewerKey.slice(0, 8)}`);
         send(liveSession.broadcaster, {
           type: "answer",
           sdp: msg.sdp,
@@ -1177,6 +1194,10 @@ wss.on("connection", (ws, req) => {
       const liveSession = client.sessionId ? live[client.sessionId] : null;
       if (!liveSession) return;
 
+      if (!client._iceLogged) {
+        client._iceLogged = true;
+        console.log(`[relay] first ice from ${client.role} client=${clientId.slice(0, 8)}`);
+      }
       if (client.role === "viewer" && client.viewerKey) {
         if (liveSession.broadcaster) {
           send(liveSession.broadcaster, {
