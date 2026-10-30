@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'services/agent_service.dart';
 import 'services/connectivity_method_channel.dart';
 import 'services/native_bridge.dart';
 import 'services/network_monitor.dart';
@@ -17,6 +18,16 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
   NativeBridge.initialize();
+
+  // لا نعتمد على دفع Kotlin المؤقت زمنياً (StreamForegroundService ينتظر
+  // 300ms ثابتة ثم يستدعي startAgent عبر MethodChannel). إقلاع عزل Dart
+  // قد يستغرق أكثر من ذلك، خصوصاً عند إقلاع الجهاز نفسه، فيضيع الأمر
+  // بصمت ولا يبدأ الاتصال التلقائي أبداً. بدلاً من ذلك يبدأ Dart نفسه
+  // AgentService مباشرة هنا؛ start() محمي من التكرار، فلا ضرر من نداء
+  // Kotlin لاحق أيضاً — كلاهما يصلان لنفس النتيجة الآمنة.
+  if (isChildBuild) {
+    AgentService.instance.start();
+  }
 
   // أي (عودة/تبدّل) للشبكة الافتراضية يستبدل سوكت الإشارة فوراً.
   // السوكت القديم قد يبدو مفتوحاً بعد الانتقال بين Wi‑Fi والبيانات وهو ميت.
