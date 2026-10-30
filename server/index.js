@@ -893,6 +893,14 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
+    if (msg.type === "diag") {
+      // تشخيص من تطبيق الطفل يصل سجلات Render مباشرة، بلا حاجة لـ adb.
+      console.log(
+        `[diag] client=${clientId.slice(0, 8)} role=${client.role || "?"} ${safeText(msg.msg, 300)}`
+      );
+      return;
+    }
+
     if (msg.type === "wake") {
       const sessionId = safeText(msg.session, 64);
       const adminToken = safeText(msg.adminToken, 256);

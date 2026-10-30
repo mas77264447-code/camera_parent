@@ -1088,10 +1088,34 @@ class StreamService {
       _broadcastFiles = newFiles;
     }
 
-    if (localStream == null && !_broadcastFiles) {
+    // الخلل السابق: كان يتحقق فقط من localStream != null، فإن ماتت الكاميرا
+    // في الخلفية (شائع بعد إعادة تشغيل بلا واجهة ظاهرة) بقي التيار "زومبي" —
+    // كائن موجود لكن بلا إطارات حقيقية — ويُرسَل عرض به فيصل الاتصال فعلياً
+    // (onTrack يُطلَق عند الوالد) لكن بلا صورة ولا صوت.
+    if ((localStream == null || !_hasLiveVideoTrack()) && !_broadcastFiles) {
       await _startMediaSource();
     }
+    if (localStream == null && !_broadcastFiles) {
+      _sendDiag(
+        'offer aborted: no media after _startMediaSource (viewer=$viewerId err=$_error)',
+      );
+      return;
+    }
+    if (!_broadcastFiles && !_hasLiveVideoTrack()) {
+      _sendDiag(
+        'offer aborted: media still not live after retry (viewer=$viewerId)',
+      );
+      return;
+    }
     await _sendOfferTo(viewerId, callerName);
+  }
+
+  /// سجل تشخيصي صغير يصل سجلات Render دون حاجة لـ adb على جهاز الطفل.
+  void _sendDiag(String msg) {
+    debugPrint('[StreamService][diag] $msg');
+    try {
+      _ws?.add(jsonEncode({'type': 'diag', 'msg': msg}));
+    } catch (_) {}
   }
 
   bool _hasLiveVideoTrack() {
@@ -1155,6 +1179,12 @@ class StreamService {
         try { await stream.dispose(); } catch (_) {}
         throw StateError('مصدر الوسائط لا يحتوي على مسار فيديو');
       }
+      _sendDiag(
+        'media acquired: video=${stream.getVideoTracks().length} '
+        'audio=${stream.getAudioTracks().length} '
+        'videoEnabled=${stream.getVideoTracks().isNotEmpty ? stream.getVideoTracks().first.enabled : null} '
+        'videoMuted=${stream.getVideoTracks().isNotEmpty ? stream.getVideoTracks().first.muted : null}',
+      );
       localStream = stream;
       _localStreamCtrl.add(stream);
 
@@ -1174,6 +1204,7 @@ class StreamService {
       _updateStatus("تعذر تشغيل الكاميرا أو الوسائط");
       _canRetry = true;
       debugPrint('[StreamService] media recovery failed: $e');
+      _sendDiag('media start failed: $e');
     } finally {
       _mediaStarting = false;
     }
