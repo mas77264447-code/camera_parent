@@ -1554,9 +1554,6 @@ const PORT = process.env.PORT || 8080;
   console.log("[camera-parent] ✅ Upstash Redis connected");
   server.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
-    if (ALLOWED_ORIGINS.length === 0) {
-      console.warn("[security] ALLOWED_ORIGINS غير مضبوط: CORS مفتوح لكل المواقع.");
-    }
   });
 })();
 
