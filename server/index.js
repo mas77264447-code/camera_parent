@@ -191,11 +191,13 @@ const authAttempts = new Map();
 const wsAttempts = new Map();
 
 function clientIp(req) {
-  return String(
-    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown"
-  )
-    .split(",")[0]
-    .trim();
+  // الـ proxy يُضيف عنوان العميل الحقيقي في نهاية القائمة، أما القيم الأولى فيزوّرها العميل.
+  const parts = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length) return parts[parts.length - 1];
+  return String(req.socket.remoteAddress || "unknown");
 }
 
 function rateLimit(map, key, limit) {
@@ -254,6 +256,14 @@ app.post("/admin/claim", async (req, res) => {
   if (!rateLimit(authAttempts, `admin-claim:${clientIp(req)}`, 5)) {
     return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
   }
+  // لا يُعطى التوكن الإداري إلا لمن يملك سر الإعداد في متغيرات بيئة السيرفر
+  const setupSecret = process.env.SETUP_SECRET || "";
+  if (!setupSecret) {
+    return res.status(503).json({ error: "SETUP_SECRET غير مضبوط على السيرفر." });
+  }
+  if (!safeCompare(String(req.header("x-setup-secret") || ""), setupSecret)) {
+    return res.status(403).json({ error: "غير مصرح." });
+  }
   const ok = await redis.set("admin:claimed", String(Date.now()), { nx: true });
   if (!ok) {
     return res
@@ -284,7 +294,7 @@ async function isValidOwnerToken(token) {
 }
 
 async function requireAdminToken(req, res, next) {
-  const provided = req.query.token || req.header("x-admin-token");
+  const provided = req.header("x-admin-token");
   if (await isValidOwnerToken(provided)) {
     req.ownerToken = provided;
     return next();
@@ -329,6 +339,9 @@ function generatePairingCode() {
 }
 
 const PAIRING_CODE_TTL_SECONDS = 5 * 60;
+const PARENT_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+const PAIRING_GLOBAL_FAIL_LIMIT = 30;
+const PAIRING_GLOBAL_FAIL_WINDOW_SECONDS = 10 * 60;
 
 function normalizeUsername(u) {
   return String(u || "").trim().toLowerCase();
@@ -378,7 +391,7 @@ app.post("/parent/register", async (req, res) => {
     })
   );
 
-  await redis.set(`parenttoken:${parentToken}`, username);
+  await redis.set(`parenttoken:${parentToken}`, username, { ex: PARENT_TOKEN_TTL_SECONDS });
   console.log(`[parent] new account: ${username}`);
 
   return res.json({
@@ -416,7 +429,7 @@ app.post("/parent/login", async (req, res) => {
       .json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة." });
   }
 
-  await redis.set(`parenttoken:${entry.parentToken}`, username);
+  await redis.set(`parenttoken:${entry.parentToken}`, username, { ex: PARENT_TOKEN_TTL_SECONDS });
   console.log(`[parent] login: ${username}`);
   return res.json({
     data: { admin_token: entry.parentToken, username },
@@ -534,8 +547,17 @@ app.post("/pairing/claim", async (req, res) => {
     (req.body && req.body.device_name && String(req.body.device_name).trim()) ||
     "جهاز غير مسمى";
 
+  // حد عام على كل الأكواد والـ IPs: تخمين 6 أرقام يحتاج مليون محاولة
+  const globalFails = Number((await redis.get("pairing:fails")) || 0);
+  if (globalFails >= PAIRING_GLOBAL_FAIL_LIMIT) {
+    return res.status(429).json({ error: "محاولات كثيرة. حاول لاحقًا." });
+  }
   const raw = await redis.getdel(`pairing:${code}`);
   if (!raw) {
+    const fails = await redisCommand("INCR", "pairing:fails");
+    if (fails === 1) {
+      await redisCommand("EXPIRE", "pairing:fails", PAIRING_GLOBAL_FAIL_WINDOW_SECONDS);
+    }
     return res
       .status(400)
       .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
@@ -1061,11 +1083,19 @@ wss.on("connection", (ws, req) => {
         }
 
         liveSession.viewers.forEach((info, viewerKey) => {
+          const viewerOnline =
+            !!info.currentClientId && !!clients[info.currentClientId];
+          if (!viewerOnline) {
+            // مشاهد غير متصل: لا نعيد طلبه للطفل (كان يُظهر إشعار "طلب مشاهدة جديد" وهميًا بعد الإقلاع)
+            if (!info.approved) liveSession.viewers.delete(viewerKey);
+            return;
+          }
           send(clientId, {
             type: info.approved ? "viewer-joined" : "join-request",
             viewerId: viewerKey,
             name: info.name,
             source: info.source,
+            replay: true,
           });
           // ✅ إصلاح: إذا كان المشاهد معتمداً مسبقاً، أخبره أن المُذيع وصل
           if (info.approved && info.currentClientId) {
@@ -1512,6 +1542,10 @@ app.get("/", (req, res) => {
   res.send("Camera Parent server is running.");
 });
 
+process.on("unhandledRejection", (e) => {
+  console.error("[unhandledRejection]", e && e.message ? e.message : e);
+});
+
 const PORT = process.env.PORT || 8080;
 
 (async () => {
@@ -1520,6 +1554,9 @@ const PORT = process.env.PORT || 8080;
   console.log("[camera-parent] ✅ Upstash Redis connected");
   server.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
+    if (ALLOWED_ORIGINS.length === 0) {
+      console.warn("[security] ALLOWED_ORIGINS غير مضبوط: CORS مفتوح لكل المواقع.");
+    }
   });
 })();
 
