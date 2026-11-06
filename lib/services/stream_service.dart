@@ -850,11 +850,7 @@ class StreamService {
 
     debugPrint('[StreamService] join-request: viewer=$viewerId source=$requestedSource autoApprove=$_autoApproveViewers');
 
-    // طلب مُعاد إرساله بعد إعادة الاتصال (replay): لا نُحضر التطبيق من الخلفية بسببه.
-    final isReplay = data['replay'] == true;
-    final isForeground =
-        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
-    if (_autoApproveViewers && (!isReplay || isForeground)) {
+    if (_autoApproveViewers) {
       await _approveViewer(viewerId, callerName, requestedSource);
       return;
     }
