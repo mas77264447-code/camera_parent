@@ -168,7 +168,20 @@ class StreamService {
     unawaited(_requestStoragePermissions());
 
     try {
-      _iceServers = await CameraService.fetchIceServers();
+      // بعد الإيقاظ من الخلفية قد لا تكون الشبكة جاهزة، فيفشل الطلب ويعود الكود إلى STUN فقط.
+      // نعيد المحاولة حتى نحصل على قائمة تتضمن TURN، لأن STUN وحده لا يكفي خلف شبكات الهاتف.
+      for (var attempt = 0; attempt < 8; attempt++) {
+        final servers = await CameraService.fetchIceServers();
+        _iceServers = servers;
+        final hasTurn = servers.any((s) {
+          final u = s['urls'];
+          if (u is String) return u.startsWith('turn');
+          if (u is List) return u.any((x) => x.toString().startsWith('turn'));
+          return false;
+        });
+        if (hasTurn) break;
+        await Future.delayed(const Duration(seconds: 3));
+      }
     } catch (_) {}
 
     await _connectWebSocket();
