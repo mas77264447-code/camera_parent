@@ -65,7 +65,8 @@ class StreamForegroundService : Service() {
 
         // ✅ الإصلاح: إظهار النافذة الطافية قبل تشغيل الخدمة لكي يتجاوز قيود أندرويد 14
         if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
-            CameraWakeOverlay.show(applicationContext)
+            // تعطيل مؤقت: النافذة العائمة تُظهر إشعار النظام وتغيّر سلوك الكاميرا في الخلفية
+            // CameraWakeOverlay.show(applicationContext)
         }
 
         try {

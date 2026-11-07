@@ -61,7 +61,8 @@ class WakeFcmService : FirebaseMessagingService() {
 
             // أفضل-جهد فقط لإظهار الواجهة للمستخدم إن أمكن (الكاميرا لم تعد
             // تعتمد على نجاح هذا الاستدعاء بعد الإصلاح أعلاه).
-            bringAppToForeground()
+            // تعطيل مؤقت: الكاميرا كانت تعمل سابقًا بإشعار المراقبة فقط
+            // bringAppToForeground()
         }
     }
 
