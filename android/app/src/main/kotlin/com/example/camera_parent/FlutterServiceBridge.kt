@@ -16,20 +16,38 @@ object FlutterServiceBridge {
     @Volatile
     private var agentRunning = false
 
-    fun startAgent() {
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    fun startAgent() = startAgentAttempt(0)
+
+    // إعادة المحاولة: عند الإيقاظ من الخلفية قد لا يكون محرك Flutter جاهزًا بعد،
+    // فالمحاولة الواحدة كانت تفشل بصمت ولا يعود الطفل للاتصال.
+    private fun startAgentAttempt(attempt: Int) {
         synchronized(lock) {
             if (agentRunning) { Log.d(TAG, "startAgent: already running"); return }
-            val engine = ensureEngine() ?: run { Log.e(TAG, "startAgent: no engine"); return }
+            val engine = ensureEngine()
+            if (engine == null) { Log.e(TAG, "startAgent: no engine (attempt $attempt)"); scheduleRetry(attempt); return }
             val channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
             currentChannel = channel
             try {
                 channel.invokeMethod("start", null, object : MethodChannel.Result {
-                    override fun success(result: Any?) { agentRunning = true; Log.i(TAG, "agent started") }
-                    override fun error(code: String, msg: String?, details: Any?) { agentRunning = false; Log.e(TAG, "err $code / $msg") }
-                    override fun notImplemented() { agentRunning = false; Log.e(TAG, "not implemented") }
+                    override fun success(result: Any?) { agentRunning = true; Log.i(TAG, "agent started (attempt $attempt)") }
+                    override fun error(code: String, msg: String?, details: Any?) {
+                        agentRunning = false; Log.e(TAG, "err $code / $msg (attempt $attempt)"); scheduleRetry(attempt)
+                    }
+                    override fun notImplemented() {
+                        agentRunning = false; Log.e(TAG, "not implemented (attempt $attempt)"); scheduleRetry(attempt)
+                    }
                 })
-            } catch (e: Exception) { agentRunning = false; Log.e(TAG, "startAgent failed", e) }
+            } catch (e: Exception) {
+                agentRunning = false; Log.e(TAG, "startAgent failed (attempt $attempt)", e); scheduleRetry(attempt)
+            }
         }
+    }
+
+    private fun scheduleRetry(attempt: Int) {
+        if (attempt >= 20) { Log.e(TAG, "startAgent gave up after ${attempt + 1} attempts"); return }
+        mainHandler.postDelayed({ startAgentAttempt(attempt + 1) }, 1000L)
     }
 
     fun stopAgent() {
