@@ -1004,6 +1004,20 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
+      // حد زمني: رسالة FCM واحدة كل 45 ثانية لكل جلسة، حتى لا تُغرق الجهاز وتُخفَّض أولويته
+      const cooldownOk = await redisCommand(
+        "SET",
+        `wake:cooldown:${sessionId}`,
+        String(Date.now()),
+        "NX",
+        "EX",
+        45
+      );
+      if (cooldownOk !== "OK") {
+        send(clientId, { type: "wake-failed", reason: "cooldown" });
+        return;
+      }
+
       try {
         await fcmAdmin.messaging().send({
           token: fcmToken,
