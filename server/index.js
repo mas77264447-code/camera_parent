@@ -554,10 +554,8 @@ app.post("/pairing/claim", async (req, res) => {
   }
   const raw = await redis.getdel(`pairing:${code}`);
   if (!raw) {
-    const fails = await redisCommand("INCR", "pairing:fails");
-    if (fails === 1) {
-      await redisCommand("EXPIRE", "pairing:fails", PAIRING_GLOBAL_FAIL_WINDOW_SECONDS);
-    }
+    const fails = Number((await redis.get("pairing:fails")) || 0) + 1;
+    await redis.set("pairing:fails", String(fails), { ex: PAIRING_GLOBAL_FAIL_WINDOW_SECONDS });
     return res
       .status(400)
       .json({ error: "الكود غير صحيح أو منتهي الصلاحية." });
@@ -1005,18 +1003,13 @@ wss.on("connection", (ws, req) => {
       }
 
       // حد زمني: رسالة FCM واحدة كل 45 ثانية لكل جلسة، حتى لا تُغرق الجهاز وتُخفَّض أولويته
-      const cooldownOk = await redisCommand(
-        "SET",
-        `wake:cooldown:${sessionId}`,
-        String(Date.now()),
-        "NX",
-        "EX",
-        45
-      );
-      if (cooldownOk !== "OK") {
-        send(clientId, { type: "wake-failed", reason: "cooldown" });
+      const cooling = await redis.get(`wake:cooldown:${sessionId}`);
+      if (cooling) {
+        // إرسال مؤخرًا: الإيقاظ قيد التنفيذ، فهذا نجاح لا فشل
+        send(clientId, { type: "wake-sent", via: "cooldown" });
         return;
       }
+      await redis.set(`wake:cooldown:${sessionId}`, String(Date.now()), { ex: 45 });
 
       try {
         await fcmAdmin.messaging().send({
