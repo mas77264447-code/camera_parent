@@ -3,8 +3,13 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
-process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
-process.on("uncaughtException", (e) => console.error("[uncaughtException]", e));
+process.on("unhandledRejection", (e) =>
+  console.error("[unhandledRejection]", e && e.stack ? e.stack : e)
+);
+// تنبيه: العملية تبقى حية بعد هذا الخطأ، وقد تعمل بحالة معطوبة — راقب هذا السطر في السجل
+process.on("uncaughtException", (e) =>
+  console.error("[uncaughtException] process kept alive:", e && e.stack ? e.stack : e)
+);
 // ═══════════════════════════════════════════════════════════
 // Firebase Admin (FCM wake)
 // ═══════════════════════════════════════════════════════════
@@ -1549,20 +1554,41 @@ app.get("/", (req, res) => {
   res.send("Camera Parent server is running.");
 });
 
-process.on("unhandledRejection", (e) => {
-  console.error("[unhandledRejection]", e && e.message ? e.message : e);
-});
-
 const PORT = process.env.PORT || 8080;
 
 (async () => {
-  ADMIN_TOKEN = await getOrCreateAdminToken();
-  console.log(`[camera-parent] ✅ ADMIN_TOKEN set (len=${ADMIN_TOKEN.length})`);
-  console.log("[camera-parent] ✅ Upstash Redis connected");
-  server.listen(PORT, () => {
-    console.log(`✅ Server running on port ${PORT}`);
-  });
+  try {
+    ADMIN_TOKEN = await getOrCreateAdminToken();
+    console.log(`[camera-parent] ✅ ADMIN_TOKEN set (len=${ADMIN_TOKEN.length})`);
+    console.log("[camera-parent] ✅ Upstash Redis connected");
+    server.listen(PORT, () => {
+      console.log(`✅ Server running on port ${PORT}`);
+    });
+  } catch (e) {
+    // بدون هذا يبتلع المعالج العام الخطأ فتبقى العملية حية بلا منفذ مفتوح (إقلاع نصف ميت)
+    console.error("[startup] FATAL — exiting so the platform restarts the service:", e && e.stack ? e.stack : e);
+    process.exit(1);
+  }
 })();
+
+// إيقاف هادئ عند إعادة النشر: نُغلق اتصالات WebSocket برمز 1001 بدل قطعها فجأة
+let shuttingDown = false;
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received — closing ${wss.clients.size} websocket clients`);
+  try { clearInterval(heartbeatInterval); } catch (_) {}
+  wss.clients.forEach((ws) => {
+    try { ws.close(1001, "server restarting"); } catch (_) {}
+  });
+  server.close(() => {
+    console.log("[shutdown] http server closed");
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(0), 8000).unref();
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 setInterval(() => {
   const cutoff = Date.now() - RATE_WINDOW_MS;

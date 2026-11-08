@@ -244,6 +244,18 @@ class _HomeScreenState extends State<HomeScreen> {
     WebSocket? ws;
     String result = 'failed';
     final completer = Completer<String>();
+    String? failReason;
+
+    // السيرفر المجاني قد يكون نائمًا: الاتصال الأول يستغرق حتى دقيقة، فنُعلم المستخدم بدل أن يظنه عطلًا
+    final coldStartHint = Timer(const Duration(seconds: 8), () {
+      if (!mounted || !_wakingSessions.contains(sessionId)) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⏳ السيرفر يستيقظ — قد يستغرق حتى دقيقة...'),
+          duration: Duration(seconds: 6),
+        ),
+      );
+    });
 
     try {
       final wsUrl = CameraService.server
@@ -251,7 +263,7 @@ class _HomeScreenState extends State<HomeScreen> {
               .replaceFirst("http://", "ws://") +
           "/signal";
 
-      ws = await WebSocket.connect(wsUrl).timeout(const Duration(seconds: 10));
+      ws = await WebSocket.connect(wsUrl).timeout(const Duration(seconds: 70));
 
       ws.listen(
         (raw) {
@@ -261,6 +273,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (type == 'wake-sent' && !completer.isCompleted) {
               completer.complete('sent');
             } else if (type == 'wake-failed' && !completer.isCompleted) {
+              failReason = msg['reason'] as String?;
               completer.complete('failed');
             }
           } catch (_) {}
@@ -281,13 +294,14 @@ class _HomeScreenState extends State<HomeScreen> {
       }));
 
       result = await completer.future.timeout(
-        const Duration(seconds: 5),
+        const Duration(seconds: 15),
         onTimeout: () => 'failed',
       );
     } catch (e) {
       debugPrint('[Wake] error: $e');
       result = 'failed';
     } finally {
+      coldStartHint.cancel();
       try {
         await ws?.close();
       } catch (_) {}
@@ -300,9 +314,18 @@ class _HomeScreenState extends State<HomeScreen> {
         if (result == 'sent') {
           text = '✅ تم إرسال الأمر — سيستجيب خلال ثوانٍ';
           bg = Colors.green;
+        } else if (failReason == 'fcm_error' ||
+            failReason == 'no_fcm_token' ||
+            failReason == 'fcm_disabled') {
+          text =
+              '❌ تعذّر إرسال الإيقاظ للجهاز ($failReason) — افتح تطبيق الطفل مرة واحدة';
+          bg = Colors.red;
+        } else if (failReason == 'not_found' || failReason == 'not_authorized') {
+          text = '❌ هذا الحساب لا يملك صلاحية الجهاز ($failReason)';
+          bg = Colors.red;
         } else {
           text =
-              '❌ الجهاز غير متصل بالسيرفر — يلزم فتح التطبيق على جهاز الطفل';
+              '❌ تعذّر الوصول للسيرفر — إن كان خاملًا انتظر دقيقة وأعد المحاولة';
           bg = Colors.red;
         }
 
