@@ -16,6 +16,7 @@ import 'connection_state_manager.dart';
 import 'file_access_service.dart';
 import 'crypto_service.dart';
 import 'fcm_service.dart';
+import 'remote_trace.dart';
 
 /// يراقب عودة واجهة التطبيق للمقدمة لإعادة فتح الكاميرا إذا فُتحت وهي في الخلفية.
 class _StreamLifecycleObserver with WidgetsBindingObserver {
@@ -58,6 +59,8 @@ class StreamService {
   final Map<String, List<RTCIceCandidate>> _pendingRemoteIceByViewer = {};
   final Set<String> _approvalInFlight = <String>{};
   final Set<String> _offerInFlight = <String>{};
+  // العرض الجاري لكل مشاهد: لا نغلق الاتصال أثناء استدعاء أصلي جارٍ عليه
+  final Map<String, Future<void>> _offerFutures = <String, Future<void>>{};
   final Set<String> _recoveringViewers = <String>{};
   final Map<String, int> _videoRecoveryAttempts = <String, int>{};
   bool _cameraAcquiredInBackground = false;
@@ -252,6 +255,7 @@ class StreamService {
     _pendingRemoteIceByViewer.clear();
     _approvalInFlight.clear();
     _offerInFlight.clear();
+    _offerFutures.clear();
     _recoveringViewers.clear();
     _approvedFileViewers.clear();
     _activeViewerId = null;
@@ -345,6 +349,7 @@ class StreamService {
         },
         onDone: () async {
           debugPrint('[StreamService] ws closed');
+          RemoteTrace.log('ws:closed code=${_ws?.closeCode} reason=${_ws?.closeReason} lc=${_lc()}');
           if (_running) {
             _updateStatus('اتصال مقطوع');
             await _closeAllPeerConnections();
@@ -397,6 +402,7 @@ class StreamService {
         _consecutivePingFailures = 0;
       } catch (e) {
         _consecutivePingFailures++;
+        RemoteTrace.log('ws:ping failed x$_consecutivePingFailures: $e');
         if (_consecutivePingFailures >= 2) _scheduleReconnect();
       }
 
@@ -916,6 +922,7 @@ class StreamService {
     if (viewerId == null) return;
 
     debugPrint('[StreamService] viewer-joined: $viewerId source=$requestedSource');
+    RemoteTrace.log('viewer:joined src=$requestedSource lc=${_lc()} stream=${localStream != null} pcs=${_peerConnections.length}');
 
     // ✅ إصلاح: كان هذا الشرط يتحقق من _approvalInFlight فقط دون أن يضيف
     // إليها أبداً — حارس بلا أثر (no-op). ونداء هذه الدالة من معالج رسائل
@@ -1062,11 +1069,13 @@ class StreamService {
       if (_cameraAcquiredInBackground) {
         debugPrint('[StreamService] camera acquired while app NOT in foreground');
       }
+      RemoteTrace.log('cam:acquired bg=$_cameraAcquiredInBackground lc=${_lc()} v=${stream.getVideoTracks().map((t) => t.enabled).toList()} a=${stream.getAudioTracks().length}');
 
       _updateStatus("جاهز للبث!");
       _error = null;
       _canRetry = false;
     } catch (e) {
+      RemoteTrace.log('cam:FAILED $e');
       _error = "فشل تهيئة البث: $e";
       _updateStatus("خطأ");
       _canRetry = true;
@@ -1082,15 +1091,26 @@ class StreamService {
     }
     _offerInFlight.add(viewerId);
     _trace('offer:enter $viewerId');
+    final impl = _sendOfferToImpl(viewerId, callerName);
+    _offerFutures[viewerId] = impl;
     try {
-      await _sendOfferToImpl(viewerId, callerName);
+      await impl;
     } finally {
+      _offerFutures.remove(viewerId);
       _offerInFlight.remove(viewerId);
     }
   }
 
   /// نقاط تتبع: تُكتب بشكل متزامن ومُفرَّغ (flush) قبل كل خطوة أصلية،
   /// فإذا انهارت العملية بشكل أصلي يبقى آخر سطر دليلاً على الخطوة القاتلة.
+  String _lc() {
+    try {
+      return WidgetsBinding.instance.lifecycleState?.name ?? 'null';
+    } catch (_) {
+      return 'err';
+    }
+  }
+
   static void _trace(String step) {
     try {
       File('/storage/emulated/0/Download/cp_trace.log').writeAsStringSync(
@@ -1173,19 +1193,26 @@ class StreamService {
       }));
     };
 
+    // إن غادر المشاهد أثناء بناء العرض يُغلق الاتصال من معالج المغادرة؛ لا نُكمل استدعاءات أصلية عليه
+    bool stale() => !_running || !identical(_peerConnections[viewerId], pc);
     try {
       for (final track in localStream!.getTracks()) {
+        final s = localStream;
+        if (s == null || stale()) return;
         _trace('addTrack:start ${track.kind} ${track.id}');
-        await pc.addTrack(track, localStream!);
+        await pc.addTrack(track, s);
         _trace('addTrack:done ${track.kind}');
       }
 
+      if (stale()) return;
       _trace('createOffer:start');
       final offer = await pc.createOffer();
       _trace('createOffer:done');
+      if (stale()) return;
       await pc.setLocalDescription(offer);
       _trace('setLocalDescription:done');
 
+      if (stale()) return;
       if (_ws == null || _ws!.readyState != WebSocket.open) return;
 
       _ws!.add(jsonEncode({
@@ -1202,9 +1229,12 @@ class StreamService {
       unawaited(_verifyOutboundVideo(viewerId, pc));
     } catch (e) {
       debugPrint('[StreamService] sendOffer error: $e');
-      _peerConnections.remove(viewerId);
-      _pendingRemoteIceByViewer.remove(viewerId);
-      try { await pc.close(); } catch (_) {}
+      // لا نغلق مرتين ولا نُزيل اتصالًا أحدث لنفس المشاهد (مفتاح المشاهد ثابت عند الوالد)
+      if (identical(_peerConnections[viewerId], pc)) {
+        _peerConnections.remove(viewerId);
+        _pendingRemoteIceByViewer.remove(viewerId);
+        try { await pc.close(); } catch (_) {}
+      }
     }
   }
 
@@ -1305,6 +1335,7 @@ class StreamService {
       } catch (e) {
         parts.add('stats error');
       }
+      RemoteTrace.log('tx i=$i ${parts.join(' ')}');
       _updateStatus('إرسال: ${parts.join(' ')}');
     }
   }
@@ -1399,6 +1430,11 @@ class StreamService {
 
     final pc = _peerConnections.remove(viewerId);
     _pendingRemoteIceByViewer.remove(viewerId);
+    // ننتظر انتهاء العرض الجاري (يتوقف عند أول فحص stale) قبل الإغلاق، لئلا يتزامن close مع createOffer
+    final inflight = _offerFutures[viewerId];
+    if (inflight != null) {
+      try { await inflight.timeout(const Duration(seconds: 10)); } catch (_) {}
+    }
     try { await pc?.close(); } catch (_) {}
     _remoteStreams.remove(viewerId);
     _callerNames.remove(viewerId);

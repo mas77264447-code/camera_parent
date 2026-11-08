@@ -1521,6 +1521,25 @@ function getIceServers() {
   ];
 }
 
+// تتبّع تشخيصي: أسطر قصيرة من جهاز الطفل تظهر في سجل Render (لا بيانات حساسة)
+const traceAttempts = new Map();
+app.post("/debug/trace", async (req, res) => {
+  try {
+    const token = String(req.header("x-device-token") || "");
+    if (!token) return res.status(401).json({ error: "no token" });
+    if (!rateLimit(traceAttempts, `trace:${token}`, 60)) {
+      return res.status(429).json({ error: "slow down" });
+    }
+    const known = await redis.get(`device:${token}`);
+    if (!known) return res.status(403).json({ error: "unknown device" });
+    const lines = Array.isArray(req.body && req.body.lines) ? req.body.lines.slice(0, 40) : [];
+    for (const l of lines) console.log(`[trace] ${String(l).slice(0, 300)}`);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: "trace failed" });
+  }
+});
+
 app.get("/ice-servers", (req, res) => {
   res.json({ data: getIceServers() });
 });

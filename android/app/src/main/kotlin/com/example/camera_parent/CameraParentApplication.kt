@@ -54,6 +54,53 @@ class CameraParentApplication : Application() {
     }
 
     @Synchronized
+    private fun readExitInfo(): List<String> {
+        val out = ArrayList<String>()
+        out.add("pid=${android.os.Process.myPid()} sdk=${android.os.Build.VERSION.SDK_INT}")
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            try {
+                out.addAll(readExitInfoApi30())
+            } catch (e: Exception) {
+                out.add("exitInfo error: ${e.message}")
+            }
+        }
+        return out
+    }
+
+    @android.annotation.TargetApi(30)
+    private fun readExitInfoApi30(): List<String> {
+        val out = ArrayList<String>()
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+        for (i in am.getHistoricalProcessExitReasons(packageName, 0, 5)) {
+            val reason = when (i.reason) {
+                0 -> "UNKNOWN"
+                1 -> "EXIT_SELF"
+                2 -> "SIGNALED"
+                3 -> "LOW_MEMORY"
+                4 -> "CRASH"
+                5 -> "CRASH_NATIVE"
+                6 -> "ANR"
+                7 -> "INITIALIZATION_FAILURE"
+                8 -> "PERMISSION_CHANGE"
+                9 -> "EXCESSIVE_RESOURCE_USAGE"
+                10 -> "USER_REQUESTED"
+                11 -> "USER_STOPPED"
+                12 -> "DEPENDENCY_DIED"
+                13 -> "OTHER"
+                14 -> "FREEZER"
+                15 -> "PACKAGE_STATE_CHANGE"
+                16 -> "PACKAGE_UPDATED"
+                else -> "REASON_${i.reason}"
+            }
+            out.add(
+                "exit t=${fmt.format(java.util.Date(i.timestamp))} proc=${i.processName} " +
+                    "reason=$reason status=${i.status} importance=${i.importance} desc=${i.description}"
+            )
+        }
+        return out
+    }
+
     fun ensureEngine(): FlutterEngine {
         FlutterEngineCache.getInstance().get(ENGINE_ID)?.let {
             flutterEngine = it
@@ -71,6 +118,16 @@ class CameraParentApplication : Application() {
             applicationContext,
             MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/file_access")
         )
+
+        // تشخيص: أسباب موت العملية السابقة (API 30+) تُرسَل من Dart إلى السيرفر
+        MethodChannel(engine.dartExecutor.binaryMessenger, "camera_parent/diag")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "exitInfo") {
+                    result.success(readExitInfo())
+                } else {
+                    result.notImplemented()
+                }
+            }
 
         ConnectivityChannel.setup(engine)
         NetworkConnectivityListener(applicationContext) { online ->

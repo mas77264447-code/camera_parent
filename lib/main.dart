@@ -9,6 +9,7 @@ import 'services/connectivity_method_channel.dart';
 import 'services/crash_logger.dart';
 import 'services/fcm_service.dart';
 import 'services/native_bridge.dart';
+import 'services/remote_trace.dart';
 import 'services/network_monitor.dart';
 import 'services/service_agent_channel.dart';
 import 'services/stream_service.dart';
@@ -56,6 +57,7 @@ Future<void> _bootstrap() async {
   // ═══ Service Agent (يستقبل wake من الخدمة) ═══
   if (isChildBuild) {
     ServiceAgentChannel.register();
+    unawaited(RemoteTrace.reportLastExit());
   }
 
   // ═══ Connectivity ═══
