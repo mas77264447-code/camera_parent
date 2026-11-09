@@ -1,0 +1,70 @@
+        }
+        wakeLock = null
+    }
+
+        override fun onTaskRemoved(rootIntent: Intent?) {
+        val enabled = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getBoolean(KEY_ENABLED, false)
+
+        if (enabled) {
+            // 1) أعد تشغيل الخدمة
+            try {
+                val restart = Intent(applicationContext, StreamForegroundService::class.java)
+                    .setAction(ACTION_START)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(restart)
+                } else {
+                    startService(restart)
+                }
+            } catch (_: Exception) {}
+
+            // 2) جدول watchdog
+            ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
+            
+            // 3) تم إزالة startActivity لتفادي قيود أندرويد 10+ (Background Activity Start Restrictions)
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() {
+        releaseWakeLock()
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "بث الكاميرا",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            channel.description = "إشعار البث المباشر شغال"
+            getSystemService(NotificationManager::class.java)
+                ?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildNotification(): Notification {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+        }
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("مراقبة نشطة")
+            .setContentText("التطبيق يعمل في الخلفية")
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
+            .setOngoing(true)
+            .build()
+    }
+}
