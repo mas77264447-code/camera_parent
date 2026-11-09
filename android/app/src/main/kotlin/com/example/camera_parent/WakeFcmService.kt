@@ -3,10 +3,12 @@ package com.example.camera_parent
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -29,6 +31,22 @@ class WakeFcmService : FirebaseMessagingService() {
             val sessionId = message.data["sessionId"]
             Log.i(TAG, "WAKE requested for session=$sessionId")
 
+            // ✅ 1. إضاءة الشاشة وإيقاظ المعالج (جديد)
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                val wakeLock = powerManager.newWakeLock(
+                    PowerManager.FULL_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                    "CameraParent::WakeFcmLock"
+                )
+                wakeLock.acquire(10000) // إضاءة الشاشة لمدة 10 ثوانٍ
+                Log.i(TAG, "WakeLock acquired: Screen should turn on")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to acquire wake lock", e)
+            }
+
+            // 2. تشغيل الخدمة الأمامية
             val intent = Intent(this, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
                 .putExtra(
@@ -47,9 +65,7 @@ class WakeFcmService : FirebaseMessagingService() {
                 Log.e(TAG, "startForegroundService failed from wake", e)
             }
 
-            // ✅ إصلاح: تفعيل فتح الشاشة وإضاءتها (كانت معلقة بالخطأ)
-            // بدون هذه الدالة، سيبقى التطبيق في الخلفية (detached)
-            // وسيمنع أندرويد الكاميرا من إنتاج أي فيديو (NO video inbound-rtp).
+            // 3. محاولة فتح واجهة التطبيق
             bringAppToForeground()
         }
     }
