@@ -17,7 +17,6 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val ADMIN_CHANNEL = "camera_parent/device_admin"
-        private const val SCREEN_CAPTURE_CHANNEL = "camera_parent/screen_capture"
         private const val BATTERY_OPTIMIZATION_CHANNEL = "camera_parent/battery_optimization"
         private const val REQUEST_ADMIN_CODE = 4210
 
@@ -49,20 +48,6 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
 
-        // ملاحظة مهمة: لا نستدعي super.configureFlutterEngine() عن قصد.
-        // الـ Engine دائم ومُسجَّل فيه البلجنز مرة واحدة في
-        // CameraParentApplication.onCreate(). استدعاء super يسبب
-        // GeneratedPluginRegistrant.registerWith() مرة ثانية، وهذا يعمل
-        // detach/attach غير ضروري لبلجنز الكاميرا/WebRTC ويقطع البث.
-
-        // ⚠️ لا نسجّل "camera_parent/foreground_service" هنا:
-        // ForegroundServiceChannel.setup() في Application مسجّلة بالفعل.
-        // إعادة التسجيل تستبدل الـ handler وتسبب مشاكل bringToForeground.
-
-
-        // ═══════════════════════════════════════════════
-        // 1) Device Admin Channel
-        // ═══════════════════════════════════════════════
         val adminChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             ADMIN_CHANNEL
@@ -202,9 +187,7 @@ class MainActivity : FlutterActivity() {
 
 
         // ═══════════════════════════════════════════════
-        // 2) Battery Optimization + Overlay Permissions
-        //    (StreamService.dart يستدعي hasOverlayPermission
-        //     و requestOverlayPermission على هذه القناة)
+        // Battery Optimization + Overlay Permissions
         // ═══════════════════════════════════════════════
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -271,28 +254,11 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-
-
-        // ═══════════════════════════════════════════════
-        // 3) Screen Capture Channel
-        // ═══════════════════════════════════════════════
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            SCREEN_CAPTURE_CHANNEL
-        ).setMethodCallHandler { call, result ->
-
-            when (call.method) {
-                "requestScreenCapture" -> {
-                    ScreenCaptureManager.request(this, result)
-                }
-                else -> result.notImplemented()
-            }
-        }
     }
 
 
     // ═══════════════════════════════════════════════
-    // onActivityResult — معالجة admin + screen capture
+    // onActivityResult — معالجة admin
     // ═══════════════════════════════════════════════
     override fun onActivityResult(
         requestCode: Int,
@@ -301,9 +267,7 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
-            ScreenCaptureManager.onResult(resultCode, data)
-        } else if (requestCode == REQUEST_ADMIN_CODE) {
+        if (requestCode == REQUEST_ADMIN_CODE) {
             val granted = resultCode == Activity.RESULT_OK
             try {
                 adminChannelRef?.invokeMethod("adminRequestResult", granted)
