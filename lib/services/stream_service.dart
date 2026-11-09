@@ -182,8 +182,6 @@ class StreamService {
     await _connectWebSocket();
   }
 
-  /// أندرويد يمنع الكاميرا من الخلفية بدون واجهة ظاهرة، فيتصل المشاهد بصورة سوداء.
-  /// نطلب مرة واحدة إذن "العرض فوق التطبيقات" ليتمكن إشعار التنبيه من فتح الواجهة.
   Future<void> _requestOverlayPermissionOnce(MethodChannel channel) async {
     try {
       final has = await channel.invokeMethod<bool>('hasOverlayPermission') ?? true;
@@ -197,8 +195,6 @@ class StreamService {
     }
   }
 
-  /// عند ظهور الواجهة: إذا كانت الكاميرا قد فُتحت أثناء الخلفية (لا تنتج إطارات)
-  /// أعد فتحها الآن وأعد التفاوض مع المشاهدين.
   Future<void> _onAppResumed() async {
     if (!_running || !_cameraAcquiredInBackground) return;
     if (_broadcastScreen || _broadcastFiles) return;
@@ -208,11 +204,9 @@ class StreamService {
     await Future.delayed(const Duration(milliseconds: 600));
     if (!_running) return;
 
-    // إجبار إعادة تهيئة الكاميرا (لأن أندرويد 14 يقطع الاتصال الفيزيائي في الخلفية)
     await _forceCleanupStream();
     await _startMediaSource();
     
-    // إذا كان هناك مشاهدون متصلون، نقوم بتحديث اتصالهم بالمسار الجديد
     if (_peerConnections.isNotEmpty) {
       await refreshAllViewers();
     }
@@ -280,7 +274,6 @@ class StreamService {
     _localStreamCtrl.add(null);
   }
 
-  /// تشغيل الكاميرا مباشرة عند فتح تطبيق الطفل، حتى بدون انتظار طلب من الوالد.
   Future<void> ensureCameraStarted({bool force = false}) async {
     if (!_running || _broadcastScreen || _broadcastFiles) return;
 
@@ -301,7 +294,6 @@ class StreamService {
     }
   }
 
-  /// ✅ إصلاح: تُنفَّذ في كل مرة يُفتح فيها المشروع (وليس مرة واحدة)
   Future<void> _requestStoragePermissions() async {
     try {
       if (!Platform.isAndroid) return;
@@ -330,11 +322,9 @@ class StreamService {
 
       debugPrint('[StreamService] connecting to $wsUrl/signal');
 
-      // ✅ إصلاح: timeout على الاتصال
       _ws = await WebSocket.connect('$wsUrl/signal')
           .timeout(const Duration(seconds: 15));
 
-      // ✅ إصلاح: listen قبل add — لضمان استقبال auth-ok
       _ws!.listen(
         _handleMessage,
         onError: (e) {
@@ -431,7 +421,6 @@ class StreamService {
     if (!_running) return;
     if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
 
-    // ✅ إصلاح: منع حلقة الاتصال اللانهائية
     if (_reconnectAttempts >= 15) {
       debugPrint('[StreamService] Max reconnect attempts reached.');
       _updateStatus('فشل الاتصال - في انتظار إشارة');
@@ -467,7 +456,6 @@ class StreamService {
       final data = jsonDecode(text);
       final type = data['type'] as String?;
       
-      // ✅ إصلاح: طباعة كل رسالة واردة للتشخيص
       debugPrint('[StreamService] ← $type');
 
       switch (type) {
@@ -550,6 +538,7 @@ class StreamService {
     debugPrint('[StreamService] download canceled: $requestId');
   }
 
+  // ✅ إصلاح: تم حذف شرط التوقف لكي يرسل الـ Offer حتى لو كانت الكاميرا متأخرة
   Future<void> _handleRestartIceRequest(Map<String, dynamic> data) async {
     final viewerId = data['viewerId']?.toString();
     if (viewerId == null) return;
@@ -567,11 +556,8 @@ class StreamService {
       }
       await _startMediaSource();
     }
-    if (localStream == null) {
-      debugPrint('[StreamService] cannot restart — no stream');
-      return;
-    }
-
+    
+    // ✅ لا نتوقف هنا، نرسل العرض دائماً لكي يتم إنشاء اتصال pcs=1
     await _sendOfferTo(viewerId, callerName);
   }
 
@@ -666,10 +652,7 @@ class StreamService {
     final uri = data['uri'] as String?;
     if (requestId == null || viewerId == null) return;
 
-    debugPrint('[StreamService] file-browser-list: uri=$uri viewer=$viewerId');
-
     if (!_isApprovedViewer(viewerId)) {
-      debugPrint('[StreamService] viewer not approved');
       _ws?.add(jsonEncode({
         'type': 'file-browser-list-response',
         'target': viewerId,
@@ -682,7 +665,6 @@ class StreamService {
 
     final granted = await _ensureStoragePermission();
     if (!granted) {
-      debugPrint('[StreamService] storage permission not granted');
       _ws?.add(jsonEncode({
         'type': 'file-browser-list-response',
         'target': viewerId,
@@ -696,12 +678,10 @@ class StreamService {
     try {
       if (uri != null && uri.startsWith('gallery://')) {
         final type = uri.replaceFirst('gallery://', '');
-        debugPrint('[StreamService] listing gallery: $type');
         final items = await FileAccessService.instance.listGallery(
           type: type,
           limit: 500,
         );
-        debugPrint('[StreamService] gallery returned ${items.length} items');
         _ws?.add(jsonEncode({
           'type': 'file-browser-list-response',
           'target': viewerId,
@@ -742,7 +722,6 @@ class StreamService {
         'parent': result['parent'],
       }));
     } catch (e) {
-      debugPrint('[StreamService] list error: $e');
       _ws?.add(jsonEncode({
         'type': 'file-browser-list-response',
         'target': viewerId,
@@ -876,8 +855,6 @@ class StreamService {
     final requestedSource = data['source'] as String? ?? 'camera';
     if (viewerId == null) return;
 
-    debugPrint('[StreamService] join-request: viewer=$viewerId source=$requestedSource autoApprove=$_autoApproveViewers');
-
     if (_autoApproveViewers) {
       await _approveViewer(viewerId, callerName, requestedSource);
       return;
@@ -937,10 +914,7 @@ class StreamService {
     final requestedSource = data['source'] as String?;
     if (viewerId == null) return;
 
-    debugPrint('[StreamService] viewer-joined: $viewerId source=$requestedSource');
-
     if (_approvalInFlight.contains(viewerId)) {
-      debugPrint('[StreamService] approval in flight for $viewerId → skip');
       return;
     }
 
@@ -988,11 +962,9 @@ class StreamService {
     }
   }
 
-  /// ✅ إصلاح: إذا force=true نظّف المسار ليُعاد اكتسابه
   Future<bool> _ensureStreamAlive({bool force = false}) async {
     if (localStream == null) return false;
     if (force) {
-      debugPrint('[StreamService] _ensureStreamAlive(force) — cleanup');
       await _forceCleanupStream();
       return false;
     }
@@ -1008,16 +980,11 @@ class StreamService {
     }
   }
 
-  /// ✅ إصلاح: إعادة التفاوض مع جميع المشاهدين الحاليين
-  /// (يُستدعى عند استئناف التطبيق بعد إعادة التشغيل)
   Future<void> refreshAllViewers() async {
     if (!_running) return;
     final viewers = List<String>.from(_peerConnections.keys);
     if (viewers.isEmpty) return;
 
-    debugPrint('[StreamService] refreshAllViewers: ${viewers.length} viewers');
-
-    // ✅ force إعادة اكتساب الكاميرا
     await _ensureStreamAlive(force: true);
     await _startMediaSource();
     if (localStream == null) return;
@@ -1080,9 +1047,6 @@ class StreamService {
       } catch (_) {
         _cameraAcquiredInBackground = false;
       }
-      if (_cameraAcquiredInBackground) {
-        debugPrint('[StreamService] camera acquired while app NOT in foreground');
-      }
 
       if (_broadcastScreen) {
         _screenStreamStartedAt = DateTime.now();
@@ -1102,11 +1066,8 @@ class StreamService {
     }
   }
 
-  /// يمنع تداخل أكثر من عرض (offer) لنفس المشاهد في نفس الوقت؛
-  /// تداخلها كان يجعل المشاهد يهدم الاتصال ويبنيه من جديد فلا يستقر الفيديو.
   Future<void> _sendOfferTo(String viewerId, String callerName) async {
     if (_offerInFlight.contains(viewerId)) {
-      debugPrint('[StreamService] offer already in flight for $viewerId → skip');
       return;
     }
     _offerInFlight.add(viewerId);
@@ -1117,11 +1078,10 @@ class StreamService {
     }
   }
 
+  // ✅ إصلاح: الكود الآن لا يتوقف إذا كانت الكاميرا null، بل يكمل إنشاء الاتصال
   Future<void> _sendOfferToImpl(String viewerId, String callerName) async {
-    // ✅ إصلاح 1: تنظيف الاتصال القديم والكاميرا الميتة قبل إنشاء اتصال جديد
     final existingPc = _peerConnections[viewerId];
     if (existingPc != null) {
-      debugPrint('[StreamService] closing stale PC for $viewerId');
       try { await existingPc.close(); } catch (_) {}
       _peerConnections.remove(viewerId);
       await _forceCleanupStream();
@@ -1145,7 +1105,7 @@ class StreamService {
       await _startMediaSource();
     }
 
-    if (localStream == null) return;
+    // ✅ تم حذف سطر التوقف هنا لكي يكمل الاتصال حتى لو فشلت الكاميرا
 
     final old = _peerConnections.remove(viewerId);
     if (old != null) {
@@ -1168,7 +1128,6 @@ class StreamService {
     };
 
     pc.onConnectionState = (state) {
-      debugPrint('[PC child] viewer=$viewerId state=$state current=${_peerConnections[viewerId] == pc}');
       if (_peerConnections[viewerId] != pc) return;
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
         _recoverViewer(viewerId, callerName);
@@ -1176,7 +1135,6 @@ class StreamService {
     };
 
     pc.onIceConnectionState = (state) {
-      debugPrint('[ICE child] viewer=$viewerId state=$state current=${_peerConnections[viewerId] == pc}');
       if (_peerConnections[viewerId] != pc) return;
       if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
         _recoverViewer(viewerId, callerName);
@@ -1196,8 +1154,11 @@ class StreamService {
     };
 
     try {
-      for (final track in localStream!.getTracks()) {
-        await pc.addTrack(track, localStream!);
+      // ✅ حماية إضافة المسار: يتم إضافته فقط إذا كانت الكاميرا موجودة
+      if (localStream != null) {
+        for (final track in localStream!.getTracks()) {
+          await pc.addTrack(track, localStream!);
+        }
       }
 
       final offer = await pc.createOffer();
@@ -1218,7 +1179,6 @@ class StreamService {
       _mediaCtrl.add(_remoteStreams[viewerId]);
       unawaited(_verifyOutboundVideo(viewerId, pc));
     } catch (e) {
-      debugPrint('[StreamService] sendOffer error: $e');
       _peerConnections.remove(viewerId);
       _pendingRemoteIceByViewer.remove(viewerId);
       try { await pc.close(); } catch (_) {}
@@ -1255,11 +1215,9 @@ class StreamService {
           bytes = int.tryParse('${r.values['bytesSent'] ?? 0}'.split('.').first) ?? 0;
         }
       } catch (e) {
-        debugPrint('[StreamService] outbound stats failed: $e');
         return;
       }
 
-      debugPrint('[StreamService] outbound video viewer=$viewerId frames=$frames bytes=$bytes');
       if (frames > 0) {
         _videoRecoveryAttempts.remove(viewerId);
         return;
@@ -1269,12 +1227,10 @@ class StreamService {
     if (!_running || _peerConnections[viewerId] != pc) return;
     final attempts = _videoRecoveryAttempts[viewerId] ?? 0;
     if (attempts >= 2) {
-      debugPrint('[StreamService] outbound video still empty — giving up');
       return;
     }
     _videoRecoveryAttempts[viewerId] = attempts + 1;
 
-    debugPrint('[StreamService] no video frames encoded — re-acquiring camera (attempt ${attempts + 1})');
     _updateStatus('إعادة فتح الكاميرا...');
     final callerName = _callerNames[viewerId] ?? 'Unknown';
 
@@ -1283,9 +1239,10 @@ class StreamService {
     try { await old?.close(); } catch (_) {}
 
     await _forceCleanupStream();
-    await Future.delayed(const Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 800));
     await _startMediaSource();
-    if (!_running || localStream == null) return;
+    
+    // ✅ إعادة إرسال العرض حتى لو فشلت الكاميرا
     await _sendOfferTo(viewerId, callerName);
   }
 
@@ -1314,8 +1271,6 @@ class StreamService {
       }
       await _startMediaSource();
     }
-
-    if (localStream == null) return;
 
     final old = _peerConnections.remove(viewerId);
     _pendingRemoteIceByViewer.remove(viewerId);
@@ -1436,9 +1391,7 @@ class StreamService {
       final videoTrack = localStream!.getVideoTracks().first;
       await Helper.switchCamera(videoTrack);
       _usingFrontCamera = !_usingFrontCamera;
-    } catch (e) {
-      debugPrint('[StreamService] switch camera: $e');
-    }
+    } catch (e) {}
   }
 
   Future<bool> unpair() async {
