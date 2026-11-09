@@ -22,10 +22,6 @@ const bool isChildBuild =
     bool.fromEnvironment('IS_CHILD_BUILD', defaultValue: false);
 
 Future<void> main() async {
-  // أداة تشخيص مؤقتة: تسجّل أي استثناء Dart غير مُلتقط (سواء داخل
-  // شجرة الواجهات أو خارجها، مثل async callbacks في stream_service.dart)
-  // إلى نفس ملف لوق الكرش الأصلي — لمعرفة سبب انقطاع اتصال الابن
-  // المفاجئ (ws close code=1006) عند قبول مشاهد جديد.
   runZonedGuarded<void>(() async {
     WidgetsFlutterBinding.ensureInitialized();
 
@@ -41,7 +37,6 @@ Future<void> main() async {
 }
 
 Future<void> _bootstrap() async {
-  // ═══ Firebase + FCM ═══
   try {
     await Firebase.initializeApp();
     if (isChildBuild) {
@@ -54,13 +49,11 @@ Future<void> _bootstrap() async {
 
   NativeBridge.initialize();
 
-  // ═══ Service Agent (يستقبل wake من الخدمة) ═══
   if (isChildBuild) {
     ServiceAgentChannel.register();
     unawaited(RemoteTrace.reportLastExit());
   }
 
-  // ═══ Connectivity ═══
   ConnectivityMethodChannel.initialize(
     onNetworkChanged: (online) async {
       final wasOffline = !NetworkMonitor.instance.isOnline;
@@ -123,6 +116,15 @@ class _ChildEntryState extends State<_ChildEntry> {
         };
         _loading = false;
       });
+
+      // ✅ إصلاح جذري: إجبار الخدمة على الاتصال فوراً بمجرد قراءة الجلسة
+      // حتى لو تم استيقاظ التطبيق في الخلفية عبر FCM ولم تُفتح الشاشة بعد
+      StreamService.instance.start(
+        sessionId: sessionId,
+        deviceToken: deviceToken,
+        cameraName: deviceName,
+      );
+      
     } else {
       setState(() => _loading = false);
     }
