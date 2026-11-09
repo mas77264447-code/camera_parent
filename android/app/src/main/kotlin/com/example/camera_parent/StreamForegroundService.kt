@@ -1,5 +1,6 @@
 package com.example.camera_parent
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -25,15 +27,25 @@ class StreamForegroundService : Service() {
         const val EXTRA_MODE = "mode"
         const val MODE_CAMERA = "camera"
         const val MODE_MICROPHONE = "microphone"
+        const val MODE_SCREEN = "screen"
         const val MODE_FILES = "files"
+
         private const val PREFS = "camera_parent_service"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_MODE = "mode"
-        private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L
+
+        private const val START_AGENT_DELAY_MS = 2500L
+        private const val RESTART_ALARM_DELAY_MS = 3000L
+        private const val RESTART_REQUEST_CODE = 4822
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var foregroundStarted = false
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val startAgentRunnable = Runnable {
+        if (!isStopped()) FlutterServiceBridge.startAgent()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -44,26 +56,27 @@ class StreamForegroundService : Service() {
         val action = intent?.action ?: ACTION_START
 
         if (action == ACTION_STOP) {
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_ENABLED, false).apply()
+            setEnabled(false)
+            handler.removeCallbacks(startAgentRunnable)
+            cancelRestartAlarm()
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
-            CameraWakeOverlay.hide()
+            CameraWakeOverlay.hide() // ✅ إخفاء النافذة عند الإيقاف
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
 
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val mode = intent?.getStringExtra(EXTRA_MODE)
-            ?: getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_MODE, MODE_CAMERA)
-            ?: MODE_CAMERA
+            ?: prefs.getString(KEY_MODE, MODE_CAMERA)!!
 
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putBoolean(KEY_ENABLED, true).putString(KEY_MODE, mode).apply()
+        prefs.edit().putBoolean(KEY_ENABLED, true).putString(KEY_MODE, mode).apply()
 
         val notification = buildNotification()
 
-        // ✅ تم التعديل: تفعيل النافذة الطافية لكي يتجاوز أندرويد قيود الكاميرا في الخلفية
+        // ✅ إصلاح: إظهار النافذة الشفافة (Overlay) لكي يسمح أندرويد للكاميرا بالعمل
         if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
             CameraWakeOverlay.show(applicationContext)
         }
@@ -71,18 +84,22 @@ class StreamForegroundService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val type = when (mode) {
+                    MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                     MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    MODE_FILES -> 0
-                    else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    MODE_FILES -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
-                if (type == 0) startForeground(NOTIFICATION_ID, notification)
-                else startForeground(NOTIFICATION_ID, notification, type)
-            } else startForeground(NOTIFICATION_ID, notification)
+                startForeground(NOTIFICATION_ID, notification, type)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
         } catch (e: Exception) {
             Log.e("CameraParent", "startForeground failed mode=$mode", e)
             if (foregroundStarted) {
                 return START_STICKY
             }
+            setEnabled(false)
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
@@ -91,11 +108,15 @@ class StreamForegroundService : Service() {
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
 
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!isStopped()) FlutterServiceBridge.startAgent()
-        }, 300L)
+        handler.removeCallbacks(startAgentRunnable)
+        handler.postDelayed(startAgentRunnable, START_AGENT_DELAY_MS)
 
         return START_STICKY
+    }
+
+    private fun setEnabled(enabled: Boolean) {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .edit().putBoolean(KEY_ENABLED, enabled).apply()
     }
 
     private fun isStopped(): Boolean =
@@ -104,9 +125,12 @@ class StreamForegroundService : Service() {
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CameraParent::StreamWakeLock").apply {
+        wakeLock = pm.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "CameraParent::StreamWakeLock"
+        ).apply {
             setReferenceCounted(false)
-            acquire(WAKELOCK_TIMEOUT_MS)
+            acquire()
         }
     }
 
@@ -115,39 +139,51 @@ class StreamForegroundService : Service() {
         wakeLock = null
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        val enabled = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
-        if (enabled) {
-            try {
-                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                if (launchIntent != null) {
-                    launchIntent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    )
-                    startActivity(launchIntent)
-                }
-            } catch (e: Exception) {
-                Log.w("CameraParent", "onTaskRemoved: unable to relaunch activity", e)
-            }
+    private fun restartPendingIntent(): PendingIntent {
+        val restart = Intent(applicationContext, StreamForegroundService::class.java)
+            .setAction(ACTION_START)
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(
+                applicationContext, RESTART_REQUEST_CODE, restart, flags
+            )
+        } else {
+            PendingIntent.getService(
+                applicationContext, RESTART_REQUEST_CODE, restart, flags
+            )
+        }
+    }
 
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    val restart = Intent(applicationContext, StreamForegroundService::class.java).setAction(ACTION_START)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(restart)
-                    else startService(restart)
-                } catch (e: Exception) {
-                    Log.w("CameraParent", "onTaskRemoved: unable to restart FGS", e)
-                }
-            }, 2000L)
+    private fun scheduleRestartAlarm() {
+        val am = getSystemService(ALARM_SERVICE) as AlarmManager
+        try {
+            am.setAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + RESTART_ALARM_DELAY_MS,
+                restartPendingIntent()
+            )
+        } catch (e: Exception) {
+            Log.w("CameraParent", "scheduleRestartAlarm failed", e)
+        }
+    }
+
+    private fun cancelRestartAlarm() {
+        val am = getSystemService(ALARM_SERVICE) as AlarmManager
+        am.cancel(restartPendingIntent())
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (!isStopped()) {
+            scheduleRestartAlarm()
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
         }
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(startAgentRunnable)
         releaseWakeLock()
+        // إخفاء النافذة الشفافة عند تدمير الخدمة
         CameraWakeOverlay.hide()
         super.onDestroy()
     }
@@ -156,24 +192,33 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "بث الكاميرا", NotificationManager.IMPORTANCE_HIGH)
-                .apply { description = "إشعار البث المباشر شغال" }
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            // ✅ إصلاح 1: تغيير الأهمية إلى HIGH لكي يسمح النظام بفتح الشاشة
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "بث الكاميرا",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply { description = "إشعار البث المباشر شغال" }
+            getSystemService(NotificationManager::class.java)
+                ?.createNotificationChannel(channel)
         }
     }
 
     private fun buildNotification(): Notification {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         val pendingIntent = launchIntent?.let {
-            PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            PendingIntent.getActivity(
+                this, 0, it,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("مراقبة نشطة")
             .setContentText("التطبيق يعمل في الخلفية")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
+            // ✅ إصلاح 2: إجبار النظام على فتح الشاشة فوق شاشة القفل
             .apply { if (pendingIntent != null) setFullScreenIntent(pendingIntent, true) }
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_HIGH) // ✅ إصلاح 3: أولوية عالية
             .setOngoing(true)
             .build()
     }
