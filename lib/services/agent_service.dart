@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'stream_service.dart';
 
-/// Heartbeat: checks StreamService every 20s and restarts it from the
-/// saved session if it is not running (e.g. after the process was killed).
+/// Heartbeat service — يتحقق كل 20 ثانية من صحة StreamService.
 class AgentService {
   AgentService._();
   static final AgentService instance = AgentService._();
@@ -33,29 +31,17 @@ class AgentService {
     _heartbeatInFlight = true;
 
     try {
-      final svc = StreamService.instance;
-      if (!svc.running) {
-        final prefs = await SharedPreferences.getInstance();
-        final paired = prefs.getBool('is_paired') ?? false;
-        final token = prefs.getString('device_token');
-        final session = prefs.getString('session_id');
-        final name = prefs.getString('device_name') ?? 'Camera';
-        if (paired && token != null && session != null) {
-          debugPrint('[AgentService] stream not running - starting from saved session');
-          await svc.start(
-            sessionId: session,
-            deviceToken: token,
-            cameraName: name,
-          );
-          try {
-            await svc.ensureCameraStarted();
-          } catch (e) {
-            debugPrint('[AgentService] camera start failed: $e');
-          }
-        }
-      } else {
-        await svc.ensureHealthy();
+      // ✅ إصلاح: فحص صحة الكاميرا أولاً (للتخلص من الكاميرا الميتة بعد الإيقاظ)
+      final tracks = StreamService.instance.localStream?.getTracks() ?? const [];
+      final cameraDead = tracks.isEmpty || tracks.any((t) => t.readyState != 'live');
+
+      if (cameraDead && !StreamService.instance.broadcastScreen && !StreamService.instance.broadcastFiles) {
+        debugPrint('[AgentService] camera track dead, restarting...');
+        await StreamService.instance.ensureCameraStarted(force: true);
       }
+
+      // فحص حالة الاتصال بالسيرفر
+      await StreamService.instance.ensureHealthy();
     } catch (e) {
       debugPrint('[AgentService] heartbeat error: $e');
     } finally {
