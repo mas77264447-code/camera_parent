@@ -25,7 +25,8 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-class _CameraStreamScreenState extends State<CameraStreamScreen> {
+// ✅ إصلاح: إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
+class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBindingObserver {
   final _svc = StreamService.instance;
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
@@ -46,13 +47,12 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   MediaStream? _activeRemote;
   MediaStream? _local;
 
-  // ✅ إصلاح حرج: منع ظهور نافذة الموافقة أكثر من مرة لنفس المشاهد
-  // (كانت السبب الرئيسي في حلقة "وافقت → رجعت ظهرت → وهكذا").
   final Set<String> _dialogsShownFor = <String>{};
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // ✅ إضافة المراقب
     WakelockPlus.enable();
     _init();
   }
@@ -102,8 +102,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       cameraName: widget.cameraName,
     );
 
-    // بعد إعادة تشغيل التطبيق تكون الخدمة جديدة ولا يوجد بث قديم؛
-    // ابدأ الكاميرا فوراً ولا تنتظر طلب مشاهدة من الوالد.
     await _svc.ensureCameraStarted();
     if (mounted) {
       final current = _svc.localStream;
@@ -114,10 +112,30 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     }
   }
 
-  /// ✅ إصلاح: تعرض النافذة لمشاهد واحد فقط في كل مرة، وتتجاهل أي مشاهد
-  /// سبق أن عرضنا له نافذة الموافقة (لمنع التكرار).
+  // ✅ إصلاح جذري: الاستجابة لاستيقاظ التطبيق
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('[CameraScreen] App Resumed — forcing camera start');
+      if (mounted) {
+        _svc.ensureCameraStarted(force: true).then((_) {
+          if (mounted) {
+            setState(() {
+              _local = _svc.localStream;
+              if (_renderersReady && _showLocalPreview) {
+                _localRenderer.srcObject = _local;
+              }
+            });
+          }
+        });
+      }
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      debugPrint('[CameraScreen] App Paused');
+    }
+  }
+
   Future<void> _maybeShowApprovalDialog() async {
-    // تنظيف المشاهدين الذين غادروا
     _dialogsShownFor.removeWhere((id) => !_pending.containsKey(id));
 
     for (final e in _pending.entries.toList()) {
@@ -151,7 +169,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     if (!mounted) return;
 
-    // احذف من السجل لأننا انتهينا من هذه النافذة
     _dialogsShownFor.remove(viewerId);
 
     if (approved == true) {
@@ -163,6 +180,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // ✅ إزالة المراقب
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
