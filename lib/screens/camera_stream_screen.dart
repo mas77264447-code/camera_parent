@@ -26,7 +26,8 @@ class CameraStreamScreen extends StatefulWidget {
 }
 
 // ✅ إصلاح: إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
-class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBindingObserver {
+class _CameraStreamScreenState extends State<CameraStreamScreen>
+    with WidgetsBindingObserver {
   final _svc = StreamService.instance;
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
@@ -58,20 +59,37 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
   }
 
   Future<void> _init() async {
+    // ✅ إصلاح: إجبار تفعيل مدير الجهاز (مثل KidsGuard)
+    try {
+      final isAdmin = await DeviceAdminService.isAdminActive();
+      if (!isAdmin) {
+        await DeviceAdminService.requestAdmin();
+      }
+    } catch (e) {
+      debugPrint('[CameraScreen] DeviceAdmin request failed: $e');
+    }
+
+    // طلب صلاحيات الكاميرا والميكروفون والإشعارات
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
     await Permission.notification.request();
     if (!cam.isGranted || !mic.isGranted) {
-      setState(() => _status = "مطلوب صلاحيات الكاميرا والميكروفون");
+      if (mounted) {
+        setState(() => _status = "مطلوب صلاحيات الكاميرا والميكروفون");
+      }
       return;
     }
 
+    // تهيئة رسامي الفيديو (Renderers)
     try {
       await _localRenderer.initialize();
       await _remoteRenderer.initialize();
       _renderersReady = true;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[CameraScreen] Renderer init failed: $e');
+    }
 
+    // ربط المستمعين (Listeners) لحالة البث
     _statusSub = _svc.onStatus.listen((s) => setState(() => _status = s));
     _callersSub = _svc.onCallers.listen((c) => setState(() => _callers = c));
     _remoteSub = _svc.onRemoteStreams.listen((r) {
@@ -96,12 +114,14 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
       }
     });
 
+    // بدء خدمة البث
     await _svc.start(
       sessionId: widget.sessionId,
       deviceToken: widget.deviceToken,
       cameraName: widget.cameraName,
     );
 
+    // التأكد من تشغيل الكاميرا فوراً
     await _svc.ensureCameraStarted();
     if (mounted) {
       final current = _svc.localStream;
@@ -112,7 +132,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     }
   }
 
-  // ✅ إصلاح جذري: الاستجابة لاستيقاظ التطبيق
+  // ✅ إصلاح جذري: الاستجابة لاستيقاظ التطبيق (إضاءة الشاشة)
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
@@ -130,7 +150,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
           }
         });
       }
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       debugPrint('[CameraScreen] App Paused');
     }
   }
@@ -145,7 +166,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
     }
   }
 
-  Future<void> _showApprovalDialogFor(String viewerId, String callerName) async {
+  Future<void> _showApprovalDialogFor(
+      String viewerId, String callerName) async {
     if (!mounted) return;
 
     final approved = await showDialog<bool>(
@@ -238,8 +260,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text("تأكيد",
-                style: TextStyle(color: Colors.red)),
+            child: const Text("تأكيد", style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -269,8 +290,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> with WidgetsBin
                 icon: Icon(_svc.remoteAudioMuted
                     ? Icons.volume_off
                     : Icons.volume_up),
-                onPressed: () =>
-                    setState(() => _svc.toggleRemoteAudio()),
+                onPressed: () => setState(() => _svc.toggleRemoteAudio()),
               ),
             IconButton(
               icon: Badge(
