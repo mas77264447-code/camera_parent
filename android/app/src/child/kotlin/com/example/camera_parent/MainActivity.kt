@@ -25,14 +25,27 @@ class MainActivity : FlutterActivity() {
         private var adminChannelRef: MethodChannel? = null
     }
 
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // ✅ إصلاح جذري: إضاءة الشاشة وتخطي شاشة القفل لكي تعمل الكاميرا في الخلفية
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+    }
 
     override fun provideFlutterEngine(context: Context): FlutterEngine {
         return (application as CameraParentApplication).flutterEngine
     }
 
-
     override fun shouldDestroyEngineWithHost(): Boolean = false
-
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
 
