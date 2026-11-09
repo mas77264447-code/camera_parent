@@ -8,5 +8,4 @@ class ScreenCaptureService {
     };
     return await navigator.mediaDevices.getDisplayMedia(mediaConstraints);
   }
-}nano lib/services/screen_capture_service.dart
-
+}
