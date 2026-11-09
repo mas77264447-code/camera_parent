@@ -31,3 +31,4 @@ android/key.properties
 *.jks
 *.keystore
 *.rej
+server/node_modules/
