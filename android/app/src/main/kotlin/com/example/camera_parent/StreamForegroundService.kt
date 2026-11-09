@@ -161,7 +161,8 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "بث الكاميرا", NotificationManager.IMPORTANCE_LOW)
+            // ✅ إصلاح: تغيير الأهمية إلى HIGH لكي يسمح النظام بفتح الشاشة
+            val channel = NotificationChannel(CHANNEL_ID, "بث الكاميرا", NotificationManager.IMPORTANCE_HIGH)
                 .apply { description = "إشعار البث المباشر شغال" }
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
@@ -177,6 +178,8 @@ class StreamForegroundService : Service() {
             .setContentText("التطبيق يعمل في الخلفية")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
+            .apply { if (pendingIntent != null) setFullScreenIntent(pendingIntent, true) } // ✅ إصلاح: فتح الشاشة تلقائياً
+            .setPriority(NotificationCompat.PRIORITY_HIGH) // ✅ إصلاح: أولوية عالية
             .setOngoing(true)
             .build()
     }
