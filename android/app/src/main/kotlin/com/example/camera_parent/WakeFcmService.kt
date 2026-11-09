@@ -36,18 +36,6 @@ class WakeFcmService : FirebaseMessagingService() {
                     StreamForegroundService.MODE_CAMERA
                 )
 
-            // ✅ إصلاح: كان هذا الـ intent يُبنى ولا يُستخدم إطلاقاً — الاستيقاظ
-            // كان يعتمد فقط على bringAppToForeground() (أي startActivity من
-            // الخلفية)، وهذا محجوب من أندرويد 10+ (BAL) إن لم يكن هناك Overlay
-            // ظاهر أصلاً. بدء خدمة أمامية من داخل onMessageReceived مسموح
-            // رسمياً (استثناء موثّق لرسائل FCM)، وهو ما يرفع CameraWakeOverlay
-            // ويشغّل الكاميرا فعلياً بدون أي حاجة لإظهار الواجهة.
-            //
-            // ⚠️ أُعيد تفعيله: تعطيله سابقاً (لظنّ أنه سبب انهيار ws
-            // code=1006) كان خطأ تشخيص — السبب الفعلي المؤكَّد بسجل السيرفر
-            // هو خلل سباق في _handleApprovedViewer (Dart)، تم إصلاحه بمعزل
-            // عن هذا الاستدعاء. تعطيل هذا السطر يُرجع مشكلة مختلفة تماماً:
-            // "إعادة التشغيل عن بُعد لا تعمل إطلاقاً" عند قتل التطبيق بالكامل.
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(intent)
@@ -59,10 +47,10 @@ class WakeFcmService : FirebaseMessagingService() {
                 Log.e(TAG, "startForegroundService failed from wake", e)
             }
 
-            // أفضل-جهد فقط لإظهار الواجهة للمستخدم إن أمكن (الكاميرا لم تعد
-            // تعتمد على نجاح هذا الاستدعاء بعد الإصلاح أعلاه).
-            // تعطيل مؤقت: الكاميرا كانت تعمل سابقًا بإشعار المراقبة فقط
-            // bringAppToForeground()
+            // ✅ إصلاح: تفعيل فتح الشاشة وإضاءتها (كانت معلقة بالخطأ)
+            // بدون هذه الدالة، سيبقى التطبيق في الخلفية (detached)
+            // وسيمنع أندرويد الكاميرا من إنتاج أي فيديو (NO video inbound-rtp).
+            bringAppToForeground()
         }
     }
 
