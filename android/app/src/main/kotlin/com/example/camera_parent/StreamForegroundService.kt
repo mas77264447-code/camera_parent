@@ -217,7 +217,7 @@ class StreamForegroundService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
             // ✅ إصلاح 2: إجبار النظام على فتح الشاشة فوق شاشة القفل
-            .apply { if (pendingIntent != null) setFullScreenIntent(pendingIntent, true) }
+            
             .setPriority(NotificationCompat.PRIORITY_HIGH) // ✅ إصلاح 3: أولوية عالية
             .setOngoing(true)
             .build()
