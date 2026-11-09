@@ -5,11 +5,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.provider.Settings
-import androidx.core.app.NotificationCompat
 import android.os.Build
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -31,7 +31,7 @@ class WakeFcmService : FirebaseMessagingService() {
             val sessionId = message.data["sessionId"]
             Log.i(TAG, "WAKE requested for session=$sessionId")
 
-            // ✅ 1. إضاءة الشاشة وإيقاظ المعالج (جديد)
+            // ✅ 1. إضاءة الشاشة وإيقاظ المعالج (ضروري جداً لأن الكاميرا لا تعمل والشاشة مطفأة)
             try {
                 val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
                 val wakeLock = powerManager.newWakeLock(
@@ -46,7 +46,7 @@ class WakeFcmService : FirebaseMessagingService() {
                 Log.e(TAG, "Failed to acquire wake lock", e)
             }
 
-            // 2. تشغيل الخدمة الأمامية
+            // ✅ 2. تشغيل الخدمة الأمامية (StreamForegroundService)
             val intent = Intent(this, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
                 .putExtra(
@@ -60,12 +60,12 @@ class WakeFcmService : FirebaseMessagingService() {
                 } else {
                     startService(intent)
                 }
-                Log.i(TAG, "StreamForegroundService started directly from FCM wake")
+                Log.i(TAG, "FGS start requested OK")
             } catch (e: Exception) {
-                Log.e(TAG, "startForegroundService failed from wake", e)
+                Log.e(TAG, "Failed to start FGS", e)
             }
 
-            // 3. محاولة فتح واجهة التطبيق
+            // ✅ 3. محاولة فتح واجهة التطبيق فوق شاشة القفل
             bringAppToForeground()
         }
     }
@@ -90,6 +90,7 @@ class WakeFcmService : FirebaseMessagingService() {
         val canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
             Settings.canDrawOverlays(this)
 
+        // المحاولة الأولى: فتح التطبيق مباشرة (إذا كانت صلاحية العرض فوق التطبيقات ممنوحة)
         if (canOverlay) {
             try {
                 startActivity(launch)
@@ -100,7 +101,7 @@ class WakeFcmService : FirebaseMessagingService() {
             }
         }
 
-        // بديل: إشعار بملء الشاشة (يفتح الواجهة عند قفل الشاشة، أو إشعار منبثق عند الضغط عليه)
+        // المحاولة الثانية (البديلة): إشعار بملء الشاشة يفتح التطبيق فوراً
         try {
             val nm = getSystemService(NotificationManager::class.java) ?: return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
