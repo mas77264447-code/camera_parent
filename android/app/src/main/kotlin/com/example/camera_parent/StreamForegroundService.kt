@@ -63,10 +63,9 @@ class StreamForegroundService : Service() {
 
         val notification = buildNotification()
 
-        // ✅ الإصلاح: إظهار النافذة الطافية قبل تشغيل الخدمة لكي يتجاوز قيود أندرويد 14
+        // ✅ تم التعديل: تفعيل النافذة الطافية لكي يتجاوز أندرويد قيود الكاميرا في الخلفية
         if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
-            // تعطيل مؤقت: النافذة العائمة تُظهر إشعار النظام وتغيّر سلوك الكاميرا في الخلفية
-            // CameraWakeOverlay.show(applicationContext)
+            CameraWakeOverlay.show(applicationContext)
         }
 
         try {
@@ -82,7 +81,6 @@ class StreamForegroundService : Service() {
         } catch (e: Exception) {
             Log.e("CameraParent", "startForeground failed mode=$mode", e)
             if (foregroundStarted) {
-                // الخدمة تعمل أصلاً كخدمة أمامية: لا توقفها بسبب فشل إعادة الترقية
                 return START_STICKY
             }
             stopSelfResult(startId)
@@ -120,8 +118,6 @@ class StreamForegroundService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         val enabled = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
         if (enabled) {
-            // 1) أعد فتح واجهة التطبيق أولاً (كانت في النسخة القديمة):
-            // بدون واجهة ظاهرة يمنع أندرويد الكاميرا في الخلفية فتظهر صورة سوداء.
             try {
                 val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
                 if (launchIntent != null) {
@@ -136,7 +132,6 @@ class StreamForegroundService : Service() {
                 Log.w("CameraParent", "onTaskRemoved: unable to relaunch activity", e)
             }
 
-            // 2) بعد ثانيتين (الواجهة صارت ظاهرة) أعد تشغيل الخدمة
             Handler(Looper.getMainLooper()).postDelayed({
                 try {
                     val restart = Intent(applicationContext, StreamForegroundService::class.java).setAction(ACTION_START)
@@ -161,7 +156,6 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // ✅ إصلاح: تغيير الأهمية إلى HIGH لكي يسمح النظام بفتح الشاشة
             val channel = NotificationChannel(CHANNEL_ID, "بث الكاميرا", NotificationManager.IMPORTANCE_HIGH)
                 .apply { description = "إشعار البث المباشر شغال" }
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
@@ -178,8 +172,8 @@ class StreamForegroundService : Service() {
             .setContentText("التطبيق يعمل في الخلفية")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
-            .apply { if (pendingIntent != null) setFullScreenIntent(pendingIntent, true) } // ✅ إصلاح: فتح الشاشة تلقائياً
-            .setPriority(NotificationCompat.PRIORITY_HIGH) // ✅ إصلاح: أولوية عالية
+            .apply { if (pendingIntent != null) setFullScreenIntent(pendingIntent, true) }
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .build()
     }
