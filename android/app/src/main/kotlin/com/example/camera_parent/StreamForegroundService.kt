@@ -62,6 +62,7 @@ class StreamForegroundService : Service() {
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
+            CameraWakeOverlay.hide() // ✅ إخفاء النافذة عند الإيقاف
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelfResult(startId)
             return START_NOT_STICKY
@@ -75,13 +76,16 @@ class StreamForegroundService : Service() {
 
         val notification = buildNotification()
 
+        // ✅ إصلاح: إظهار النافذة الشفافة (Overlay) لكي يسمح أندرويد للكاميرا بالعمل
+        if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
+            CameraWakeOverlay.show(applicationContext)
+        }
+
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val type = when (mode) {
                     MODE_SCREEN -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                     MODE_MICROPHONE -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    // ✅ إصلاح: MODE_FILES يستخدم DATA_SYNC بدل 0
-                    //    لأن type=0 يعني "استخدم كل الأنواع المُعلنة" ويفشل A14+
                     MODE_FILES -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                     else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
                             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
@@ -170,10 +174,6 @@ class StreamForegroundService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!isStopped()) {
-            // ⚠️ لا نستدعي startActivity من هنا (محظور على Android 10+).
-            // نعتمد على:
-            // 1) START_STICKY من النظام لإعادة إحياء الخدمة.
-            // 2) AlarmManager لجدولة إعادة تشغيل مؤكدة.
             scheduleRestartAlarm()
             ServiceWatchdog.scheduleNext(applicationContext, 10_000L)
         }
@@ -183,6 +183,8 @@ class StreamForegroundService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(startAgentRunnable)
         releaseWakeLock()
+        // إخفاء النافذة الشفافة عند تدمير الخدمة
+        CameraWakeOverlay.hide()
         super.onDestroy()
     }
 
@@ -190,10 +192,11 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // ✅ إصلاح 1: تغيير الأهمية إلى HIGH لكي يسمح النظام بفتح الشاشة
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "بث الكاميرا",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_HIGH
             ).apply { description = "إشعار البث المباشر شغال" }
             getSystemService(NotificationManager::class.java)
                 ?.createNotificationChannel(channel)
@@ -213,6 +216,9 @@ class StreamForegroundService : Service() {
             .setContentText("التطبيق يعمل في الخلفية")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
+            // ✅ إصلاح 2: إجبار النظام على فتح الشاشة فوق شاشة القفل
+            .apply { if (pendingIntent != null) setFullScreenIntent(pendingIntent, true) }
+            .setPriority(NotificationCompat.PRIORITY_HIGH) // ✅ إصلاح 3: أولوية عالية
             .setOngoing(true)
             .build()
     }
