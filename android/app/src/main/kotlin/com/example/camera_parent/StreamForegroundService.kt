@@ -77,7 +77,7 @@ class StreamForegroundService : Service() {
 
         val notification = buildNotification()
 
-        // إظهار النافذة الشفافة
+        // ✅ إظهار النافذة الشفافة (لكي يسمح أندرويد للكاميرا بالعمل في الخلفية)
         if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
             CameraWakeOverlay.show(applicationContext)
         }
@@ -131,7 +131,7 @@ class StreamForegroundService : Service() {
             "CameraParent::StreamWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire(WAKELOCK_TIMEOUT_MS) // ✅ إصلاح: وضع مهلة زمنية
+            acquire(WAKELOCK_TIMEOUT_MS)
         }
     }
 
@@ -192,7 +192,7 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // ✅ إصلاح: جعل الإشعار هادئاً (LOW) لكي لا يزعج المستخدم
+            // ✅ إشعار هادئ لا يفتح أي واجهة
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "بث الكاميرا",
@@ -211,6 +211,7 @@ class StreamForegroundService : Service() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
         }
+        // ✅ إشعار ثابت بدون أي FullScreenIntent (لا يفتح شاشة)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("مراقبة نشطة")
             .setContentText("التطبيق يعمل في الخلفية")
