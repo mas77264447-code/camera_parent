@@ -25,7 +25,9 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-class _CameraStreamScreenState extends State<CameraStreamScreen> {
+// ✅ إصلاح: إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
+class _CameraStreamScreenState extends State<CameraStreamScreen>
+    with WidgetsBindingObserver {
   final _svc = StreamService.instance;
   final _localRenderer = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
@@ -46,32 +48,48 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
   MediaStream? _activeRemote;
   MediaStream? _local;
 
-  // ✅ إصلاح حرج: منع ظهور نافذة الموافقة أكثر من مرة لنفس المشاهد
-  // (كانت السبب الرئيسي في حلقة "وافقت → رجعت ظهرت → وهكذا").
   final Set<String> _dialogsShownFor = <String>{};
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // ✅ إضافة المراقب
     WakelockPlus.enable();
     _init();
   }
 
   Future<void> _init() async {
+    // ✅ إصلاح: إجبار تفعيل مدير الجهاز (مثل KidsGuard)
+    try {
+      final isAdmin = await DeviceAdminService.isAdminActive();
+      if (!isAdmin) {
+        await DeviceAdminService.requestAdmin();
+      }
+    } catch (e) {
+      debugPrint('[CameraScreen] DeviceAdmin request failed: $e');
+    }
+
+    // طلب صلاحيات الكاميرا والميكروفون والإشعارات
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
     await Permission.notification.request();
     if (!cam.isGranted || !mic.isGranted) {
-      setState(() => _status = "مطلوب صلاحيات الكاميرا والميكروفون");
+      if (mounted) {
+        setState(() => _status = "مطلوب صلاحيات الكاميرا والميكروفون");
+      }
       return;
     }
 
+    // تهيئة رسامي الفيديو (Renderers)
     try {
       await _localRenderer.initialize();
       await _remoteRenderer.initialize();
       _renderersReady = true;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[CameraScreen] Renderer init failed: $e');
+    }
 
+    // ربط المستمعين (Listeners) لحالة البث
     _statusSub = _svc.onStatus.listen((s) => setState(() => _status = s));
     _callersSub = _svc.onCallers.listen((c) => setState(() => _callers = c));
     _remoteSub = _svc.onRemoteStreams.listen((r) {
@@ -96,14 +114,14 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
       }
     });
 
+    // بدء خدمة البث
     await _svc.start(
       sessionId: widget.sessionId,
       deviceToken: widget.deviceToken,
       cameraName: widget.cameraName,
     );
 
-    // بعد إعادة تشغيل التطبيق تكون الخدمة جديدة ولا يوجد بث قديم؛
-    // ابدأ الكاميرا فوراً ولا تنتظر طلب مشاهدة من الوالد.
+    // التأكد من تشغيل الكاميرا فوراً
     await _svc.ensureCameraStarted();
     if (mounted) {
       final current = _svc.localStream;
@@ -114,10 +132,31 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     }
   }
 
-  /// ✅ إصلاح: تعرض النافذة لمشاهد واحد فقط في كل مرة، وتتجاهل أي مشاهد
-  /// سبق أن عرضنا له نافذة الموافقة (لمنع التكرار).
+  // ✅ إصلاح جذري: الاستجابة لاستيقاظ التطبيق (إضاءة الشاشة)
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('[CameraScreen] App Resumed — forcing camera start');
+      if (mounted) {
+        _svc.ensureCameraStarted(force: true).then((_) {
+          if (mounted) {
+            setState(() {
+              _local = _svc.localStream;
+              if (_renderersReady && _showLocalPreview) {
+                _localRenderer.srcObject = _local;
+              }
+            });
+          }
+        });
+      }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      debugPrint('[CameraScreen] App Paused');
+    }
+  }
+
   Future<void> _maybeShowApprovalDialog() async {
-    // تنظيف المشاهدين الذين غادروا
     _dialogsShownFor.removeWhere((id) => !_pending.containsKey(id));
 
     for (final e in _pending.entries.toList()) {
@@ -127,7 +166,8 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
     }
   }
 
-  Future<void> _showApprovalDialogFor(String viewerId, String callerName) async {
+  Future<void> _showApprovalDialogFor(
+      String viewerId, String callerName) async {
     if (!mounted) return;
 
     final approved = await showDialog<bool>(
@@ -151,7 +191,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
     if (!mounted) return;
 
-    // احذف من السجل لأننا انتهينا من هذه النافذة
     _dialogsShownFor.remove(viewerId);
 
     if (approved == true) {
@@ -163,6 +202,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // ✅ إزالة المراقب
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
@@ -220,8 +260,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text("تأكيد",
-                style: TextStyle(color: Colors.red)),
+            child: const Text("تأكيد", style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -251,8 +290,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen> {
                 icon: Icon(_svc.remoteAudioMuted
                     ? Icons.volume_off
                     : Icons.volume_up),
-                onPressed: () =>
-                    setState(() => _svc.toggleRemoteAudio()),
+                onPressed: () => setState(() => _svc.toggleRemoteAudio()),
               ),
             IconButton(
               icon: Badge(

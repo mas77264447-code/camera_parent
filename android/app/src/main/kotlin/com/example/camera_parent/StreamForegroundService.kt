@@ -37,6 +37,7 @@ class StreamForegroundService : Service() {
         private const val START_AGENT_DELAY_MS = 2500L
         private const val RESTART_ALARM_DELAY_MS = 3000L
         private const val RESTART_REQUEST_CODE = 4822
+        private const val WAKELOCK_TIMEOUT_MS = 10 * 60 * 1000L // 10 دقائق
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -62,7 +63,7 @@ class StreamForegroundService : Service() {
             FlutterServiceBridge.stopAgent()
             releaseWakeLock()
             ServiceWatchdog.cancel(this)
-            CameraWakeOverlay.hide() // ✅ إخفاء النافذة عند الإيقاف
+            CameraWakeOverlay.hide()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelfResult(startId)
             return START_NOT_STICKY
@@ -76,7 +77,7 @@ class StreamForegroundService : Service() {
 
         val notification = buildNotification()
 
-        // ✅ إصلاح: إظهار النافذة الشفافة (Overlay) لكي يسمح أندرويد للكاميرا بالعمل
+        // إظهار النافذة الشفافة
         if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
             CameraWakeOverlay.show(applicationContext)
         }
@@ -130,7 +131,7 @@ class StreamForegroundService : Service() {
             "CameraParent::StreamWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire()
+            acquire(WAKELOCK_TIMEOUT_MS) // ✅ إصلاح: وضع مهلة زمنية
         }
     }
 
@@ -183,7 +184,6 @@ class StreamForegroundService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(startAgentRunnable)
         releaseWakeLock()
-        // إخفاء النافذة الشفافة عند تدمير الخدمة
         CameraWakeOverlay.hide()
         super.onDestroy()
     }
@@ -192,11 +192,11 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // ✅ إصلاح 1: تغيير الأهمية إلى HIGH لكي يسمح النظام بفتح الشاشة
+            // ✅ إصلاح: جعل الإشعار هادئاً (LOW) لكي لا يزعج المستخدم
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "بث الكاميرا",
-                NotificationManager.IMPORTANCE_HIGH
+                NotificationManager.IMPORTANCE_LOW
             ).apply { description = "إشعار البث المباشر شغال" }
             getSystemService(NotificationManager::class.java)
                 ?.createNotificationChannel(channel)
@@ -216,9 +216,6 @@ class StreamForegroundService : Service() {
             .setContentText("التطبيق يعمل في الخلفية")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
-            // ✅ إصلاح 2: إجبار النظام على فتح الشاشة فوق شاشة القفل
-            
-            .setPriority(NotificationCompat.PRIORITY_HIGH) // ✅ إصلاح 3: أولوية عالية
             .setOngoing(true)
             .build()
     }
