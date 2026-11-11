@@ -59,8 +59,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
   }
 
   Future<void> _init() async {
-    // ✅ تم إزالة طلب DeviceAdmin من هنا لتجنب تجميد التطبيق عند الاستيقاظ
-    
+    // ✅ حماية: لا تطلب صلاحيات إذا كانت الواجهة غير موجودة (استيقاظ في الخلفية)
+    if (!mounted) return;
+
     // طلب صلاحيات الكاميرا والميكروفون والإشعارات
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
@@ -124,13 +125,14 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
     }
   }
 
-  // ✅ إصلاح جذري: الاستجابة لاستيقاظ التطبيق (إضاءة الشاشة)
+  // ✅ إصلاح جذري: لا تتدخل إلا إذا كانت الواجهة مفتوحة فعلاً والخدمة تعمل
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      debugPrint('[CameraScreen] App Resumed — forcing camera start');
-      if (mounted) {
+      // ✅ فقط إذا كانت الواجهة مفتوحة فعلاً (وليس مجرد استيقاظ في الخلفية)
+      if (mounted && _svc.running) {
+        debugPrint('[CameraScreen] Resumed — ensuring camera');
         _svc.ensureCameraStarted(force: true).then((_) {
           if (mounted) {
             setState(() {
