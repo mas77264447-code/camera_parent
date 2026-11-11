@@ -31,20 +31,18 @@ class AgentService {
     _heartbeatInFlight = true;
 
     try {
-      // ✅ إصلاح: فحص صحة الكاميرا (بدون readyState لأنها غير مدعومة في Dart)
+      // ✅ فحص ذكي: لا نعيد التشغيل إلا إذا كانت الكاميرا (null) تماماً
+      // وليس مجرد مسار فارغ (لأن المسار الفارغ قد يكون قيد التحميل)
       final stream = StreamService.instance.localStream;
-      final videoTracks = stream?.getVideoTracks() ?? const [];
-      final cameraDead = stream == null || videoTracks.isEmpty;
-
-      // إذا كانت الكاميرا ميتة، نقوم بإجبار StreamService على إعادة تشغيلها
-      if (cameraDead && 
+      
+      if (stream == null && 
           !StreamService.instance.broadcastScreen && 
           !StreamService.instance.broadcastFiles) {
-        debugPrint('[AgentService] camera track dead, restarting...');
+        debugPrint('[AgentService] camera is completely null, restarting...');
         await StreamService.instance.ensureCameraStarted(force: true);
       }
 
-      // ✅ فحص حالة اتصال السيرفر (WebSocket)
+      // فحص حالة الاتصال بالسيرفر (WebSocket)
       await StreamService.instance.ensureHealthy();
     } catch (e) {
       debugPrint('[AgentService] heartbeat error: $e');
