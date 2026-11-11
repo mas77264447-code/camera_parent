@@ -25,7 +25,6 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-// ✅ إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
 class _CameraStreamScreenState extends State<CameraStreamScreen>
     with WidgetsBindingObserver {
   final _svc = StreamService.instance;
@@ -59,10 +58,9 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
   }
 
   Future<void> _init() async {
-    // ✅ حماية: لا تطلب صلاحيات إذا كانت الواجهة غير موجودة (استيقاظ في الخلفية)
+    // ✅ حماية: لا تطلب صلاحيات إذا كانت الواجهة غير موجودة
     if (!mounted) return;
 
-    // طلب صلاحيات الكاميرا والميكروفون والإشعارات
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
     await Permission.notification.request();
@@ -73,7 +71,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
       return;
     }
 
-    // تهيئة رسامي الفيديو (Renderers)
     try {
       await _localRenderer.initialize();
       await _remoteRenderer.initialize();
@@ -82,7 +79,6 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
       debugPrint('[CameraScreen] Renderer init failed: $e');
     }
 
-    // ربط المستمعين (Listeners) لحالة البث
     _statusSub = _svc.onStatus.listen((s) => setState(() => _status = s));
     _callersSub = _svc.onCallers.listen((c) => setState(() => _callers = c));
     _remoteSub = _svc.onRemoteStreams.listen((r) {
@@ -107,14 +103,12 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
       }
     });
 
-    // بدء خدمة البث
     await _svc.start(
       sessionId: widget.sessionId,
       deviceToken: widget.deviceToken,
       cameraName: widget.cameraName,
     );
 
-    // التأكد من تشغيل الكاميرا فوراً
     await _svc.ensureCameraStarted();
     if (mounted) {
       final current = _svc.localStream;
@@ -125,24 +119,15 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
     }
   }
 
-  // ✅ إصلاح جذري: لا تتدخل إلا إذا كانت الواجهة مفتوحة فعلاً والخدمة تعمل
+  // ✅ إصلاح جذري: الواجهة تكتفي بفحص الاتصال وتترك الكاميرا للخدمة
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      // ✅ فقط إذا كانت الواجهة مفتوحة فعلاً (وليس مجرد استيقاظ في الخلفية)
+      // ✅ الواجهة تكتفي بفحص صحة الاتصال، وتترك الكاميرا للخدمة
       if (mounted && _svc.running) {
-        debugPrint('[CameraScreen] Resumed — ensuring camera');
-        _svc.ensureCameraStarted(force: true).then((_) {
-          if (mounted) {
-            setState(() {
-              _local = _svc.localStream;
-              if (_renderersReady && _showLocalPreview) {
-                _localRenderer.srcObject = _local;
-              }
-            });
-          }
-        });
+        debugPrint('[CameraScreen] Resumed — checking health');
+        _svc.ensureHealthy();
       }
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
