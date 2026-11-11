@@ -25,7 +25,7 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-// ✅ إصلاح: إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
+// ✅ إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
 class _CameraStreamScreenState extends State<CameraStreamScreen>
     with WidgetsBindingObserver {
   final _svc = StreamService.instance;
@@ -53,22 +53,14 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // ✅ إضافة المراقب
+    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _init();
   }
 
   Future<void> _init() async {
-    // ✅ إصلاح: إجبار تفعيل مدير الجهاز (مثل KidsGuard)
-    try {
-      final isAdmin = await DeviceAdminService.isAdminActive();
-      if (!isAdmin) {
-        await DeviceAdminService.requestAdmin();
-      }
-    } catch (e) {
-      debugPrint('[CameraScreen] DeviceAdmin request failed: $e');
-    }
-
+    // ✅ تم إزالة طلب DeviceAdmin من هنا لتجنب تجميد التطبيق عند الاستيقاظ
+    
     // طلب صلاحيات الكاميرا والميكروفون والإشعارات
     final cam = await Permission.camera.request();
     final mic = await Permission.microphone.request();
@@ -202,7 +194,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this); // ✅ إزالة المراقب
+    WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
