@@ -327,6 +327,8 @@ class StreamService {
 
   Future<void> ensureHealthy() async {
     if (!_running) return;
+    // اصلاح: منع التداخل أثناء محاولة الاتصال
+    if (_wsConnecting) return;
     if (_ws == null || _ws!.readyState != WebSocket.open) {
       _scheduleReconnect();
     }
