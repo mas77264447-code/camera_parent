@@ -10,12 +10,12 @@ class CameraAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.i("Accessibility", "Service Connected - Starting Camera in Background")
+        Log.i("Accessibility", "Service Connected")
         
-        // 1. تشغيل النافذة الشفافة (لكي يسمح النظام للكاميرا بالعمل)
+        // ✅ 1. إظهار النافذة الشفافة أولاً لمنع النظام من قتل الكاميرا
         CameraWakeOverlay.show(applicationContext)
         
-        // 2. تشغيل خدمة الكاميرا في الخلفية
+        // ✅ 2. تشغيل الخدمة في الخلفية
         try {
             val intent = Intent(this, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
@@ -31,11 +31,6 @@ class CameraAccessibilityService : AccessibilityService() {
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // لا نحتاج قراءة الشاشة، فقط البقاء أحياء
-    }
-
-    override fun onInterrupt() {
-        // مطلوب من قبل النظام
-    }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onInterrupt() {}
 }
