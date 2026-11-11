@@ -16,38 +16,37 @@ class WakeFcmService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val action = message.data["action"]
-        Log.i(TAG, "onMessageReceived: action=$action")
+        if (message.data["action"] == "wake_camera") {
+            Log.i(TAG, "WAKE requested")
 
-        if (action == "wake_camera") {
+            // 1. إضاءة الشاشة
             try {
-                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                val wakeLock = powerManager.newWakeLock(
-                    PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                pm.newWakeLock(
+                    PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                     "CameraParent::WakeFcmLock"
-                )
-                wakeLock.acquire(10000)
-            } catch (e: Exception) {}
+                ).acquire(10000)
+            } catch (_: Exception) {}
 
+            // 2. تشغيل الخدمة فقط (بدون نافذة شفافة، بدون فتح تطبيق)
             val intent = Intent(this, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
                 .putExtra(StreamForegroundService.EXTRA_MODE, StreamForegroundService.MODE_CAMERA)
 
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
-                else startService(intent)
-            } catch (e: Exception) {}
-
-            try {
-                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
                 }
-                if (launchIntent != null) startActivity(launchIntent)
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "startForegroundService failed", e)
+            }
         }
     }
 
     override fun onNewToken(token: String) {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_FCM_TOKEN, token).apply()
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .edit().putString(KEY_FCM_TOKEN, token).apply()
     }
 }

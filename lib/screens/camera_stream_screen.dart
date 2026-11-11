@@ -25,7 +25,7 @@ class CameraStreamScreen extends StatefulWidget {
   State<CameraStreamScreen> createState() => _CameraStreamScreenState();
 }
 
-// ✅ إصلاح: إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
+// ✅ إضافة WidgetsBindingObserver لمراقبة دورة حياة التطبيق
 class _CameraStreamScreenState extends State<CameraStreamScreen>
     with WidgetsBindingObserver {
   final _svc = StreamService.instance;
@@ -53,21 +53,14 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // ✅ إضافة المراقب
+    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _init();
   }
 
   Future<void> _init() async {
-    // ✅ إصلاح: إجبار تفعيل مدير الجهاز (مثل KidsGuard)
-    try {
-      final isAdmin = await DeviceAdminService.isAdminActive();
-      if (!isAdmin) {
-        await DeviceAdminService.requestAdmin();
-      }
-    } catch (e) {
-      debugPrint('[CameraScreen] DeviceAdmin request failed: $e');
-    }
+    // ✅ حماية: لا تطلب صلاحيات إذا كانت الواجهة غير موجودة (استيقاظ في الخلفية)
+    if (!mounted) return;
 
     // طلب صلاحيات الكاميرا والميكروفون والإشعارات
     final cam = await Permission.camera.request();
@@ -132,13 +125,14 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
     }
   }
 
-  // ✅ إصلاح جذري: الاستجابة لاستيقاظ التطبيق (إضاءة الشاشة)
+  // ✅ إصلاح جذري: لا تتدخل إلا إذا كانت الواجهة مفتوحة فعلاً والخدمة تعمل
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      debugPrint('[CameraScreen] App Resumed — forcing camera start');
-      if (mounted) {
+      // ✅ فقط إذا كانت الواجهة مفتوحة فعلاً (وليس مجرد استيقاظ في الخلفية)
+      if (mounted && _svc.running) {
+        debugPrint('[CameraScreen] Resumed — ensuring camera');
         _svc.ensureCameraStarted(force: true).then((_) {
           if (mounted) {
             setState(() {
@@ -202,7 +196,7 @@ class _CameraStreamScreenState extends State<CameraStreamScreen>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this); // ✅ إزالة المراقب
+    WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _callersSub?.cancel();
     _remoteSub?.cancel();
