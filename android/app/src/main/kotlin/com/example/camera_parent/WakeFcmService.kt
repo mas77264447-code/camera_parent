@@ -9,7 +9,6 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
 class WakeFcmService : FirebaseMessagingService() {
-
     companion object {
         private const val TAG = "WakeFcm"
         private const val PREFS = "camera_parent_service"
@@ -17,30 +16,19 @@ class WakeFcmService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val action = message.data["action"]
-        Log.i(TAG, "onMessageReceived: action=$action")
+        if (message.data["action"] == "wake_camera") {
+            Log.i(TAG, "WAKE requested")
 
-        if (action == "wake_camera") {
-            Log.i(TAG, "WAKE requested - Starting in background")
-
-            // 1. إضاءة الشاشة وإيقاظ المعالج
+            // 1. إضاءة الشاشة
             try {
-                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                val wakeLock = powerManager.newWakeLock(
-                    PowerManager.FULL_WAKE_LOCK or
-                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                    PowerManager.ON_AFTER_RELEASE,
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                pm.newWakeLock(
+                    PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                     "CameraParent::WakeFcmLock"
-                )
-                wakeLock.acquire(10000)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to acquire wake lock", e)
-            }
+                ).acquire(10000)
+            } catch (_: Exception) {}
 
-            // 2. تشغيل النافذة الشفافة
-            CameraWakeOverlay.show(applicationContext)
-
-            // 3. تشغيل الخدمة (بدون فتح أي واجهة)
+            // 2. تشغيل الخدمة فقط (بدون نافذة شفافة، بدون فتح تطبيق)
             val intent = Intent(this, StreamForegroundService::class.java)
                 .setAction(StreamForegroundService.ACTION_START)
                 .putExtra(StreamForegroundService.EXTRA_MODE, StreamForegroundService.MODE_CAMERA)
@@ -51,7 +39,6 @@ class WakeFcmService : FirebaseMessagingService() {
                 } else {
                     startService(intent)
                 }
-                Log.i(TAG, "Service started silently in background")
             } catch (e: Exception) {
                 Log.e(TAG, "startForegroundService failed", e)
             }
@@ -59,10 +46,7 @@ class WakeFcmService : FirebaseMessagingService() {
     }
 
     override fun onNewToken(token: String) {
-        Log.i(TAG, "New FCM token: ${token.take(20)}...")
         getSharedPreferences(PREFS, MODE_PRIVATE)
-            .edit()
-            .putString(KEY_FCM_TOKEN, token)
-            .apply()
+            .edit().putString(KEY_FCM_TOKEN, token).apply()
     }
 }
